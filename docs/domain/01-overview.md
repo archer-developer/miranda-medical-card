@@ -91,6 +91,8 @@ User
 - UserID
 - имя
 - дополнительные метаданные
+- список пользователей, которым разрешён доступ на чтение к его данным (`shared_with`)
+- флаг шифрования данных (`encryption`) — взаимоисключающ с непустым `shared_with`, см. `../architecture/06-storage.md` §14
 
 Пользователи загружаются из конфигурационного файла и являются неизменяемыми во время работы сервиса.
 
@@ -300,6 +302,8 @@ Domain не знает о SQLite.
 - Medication Resolver
 - Diagnosis Resolver
 
+`Medication Resolver` и `Diagnosis Resolver` вычисляют связность между документами (например, "это тот же курс лечения") на лету — группировкой сущностей по канонизированному названию/коду при каждой пересборке Profile, а не чтением заранее сохранённых связей. Normalization намеренно не создаёт постоянных связей между сущностями разных документов — см. `../architecture/02-processing-pipeline.md` §6.
+
 Domain Services не используют LLM.
 
 ---
@@ -383,3 +387,20 @@ Domain отвечает только на один вопрос:
 - как отображается через MCP.
 
 Это делает доменную модель простой, независимой и устойчивой к изменениям инфраструктуры.
+
+---
+
+# 13. Следующие разделы
+
+Настоящий документ описывает доменную модель на уровне принципов. Подробное описание каждой сущности — поля, инварианты, Repository — вынесено в отдельные документы.
+
+- **02-user.md** — User, совместный доступ (`sharedWith`).
+- **03-files-and-documents.md** — File, MedicalDocument, Extraction.
+- **04-timeline.md** — Timeline, TimelineEvent.
+- **05-medical-profile.md** — MedicalProfile.
+- **06-medication.md** — Medication.
+- **07-diagnosis-and-allergy.md** — Diagnosis, Allergy.
+- **08-procedure.md** — Procedure.
+- **09-lab-result-and-vital-sign.md** — LabResult, VitalSign.
+- **10-medical-knowledge-and-embedding.md** — MedicalKnowledge, Embedding.
+- **11-value-objects.md** — Dosage, LabValue, BloodPressure, DateRange, MedicationStatus, DocumentType, TimelineEventType, DiagnosisCode.
