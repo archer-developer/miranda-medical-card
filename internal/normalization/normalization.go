@@ -21,6 +21,7 @@
 package normalization
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -168,7 +169,7 @@ type Result struct {
 // InstrumentalFinding (see units.go) — pass nil to skip it entirely
 // (NormalizedValue/NormalizedUnit are left zero on every entity), e.g. for
 // callers that only care about the raw structural mapping.
-func Normalize(userID, documentID string, extracted extraction.Result, resolver CanonicalUnitResolver) (Result, []error) {
+func Normalize(ctx context.Context, userID, documentID string, extracted extraction.Result, resolver CanonicalUnitResolver) (Result, []error) {
 	var errs []error
 	addErr := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(format, args...))
@@ -229,7 +230,11 @@ func Normalize(userID, documentID string, extracted extraction.Result, resolver 
 		var normValue float64
 		var normUnit string
 		if resolver != nil {
-			normValue, normUnit, _ = normalizeUnit(resolver, userID, indicatorName, l.Value, l.Unit)
+			var unitErr error
+			normValue, normUnit, unitErr = normalizeUnit(ctx, resolver, userID, indicatorName, l.Value, l.Unit)
+			if unitErr != nil {
+				addErr("labResults[%d] %q: normalize unit: %w", i, l.Name, unitErr)
+			}
 		}
 		code, codeSystem := l.Code, l.CodeSystem
 		if code == "" {
@@ -269,7 +274,11 @@ func Normalize(userID, documentID string, extracted extraction.Result, resolver 
 		// unlike LabResult's flat indicator namespace, the same parameter
 		// name can recur across different structures with unrelated units.
 		if resolver != nil && f.Unit != "" {
-			normValue, normUnit, _ = normalizeUnit(resolver, userID, structure+"/"+f.Parameter, f.Value, f.Unit)
+			var unitErr error
+			normValue, normUnit, unitErr = normalizeUnit(ctx, resolver, userID, structure+"/"+f.Parameter, f.Value, f.Unit)
+			if unitErr != nil {
+				addErr("instrumentalFindings[%d] %s/%s: normalize unit: %w", i, structure, f.Parameter, unitErr)
+			}
 		}
 		result.InstrumentalFindings = append(result.InstrumentalFindings, InstrumentalFinding{
 			ID:               fmt.Sprintf("finding_%s_%d", documentID, i),

@@ -1,0 +1,75 @@
+# miranda-medical-card configuration template.
+#
+# This .dist file documents every available field with its built-in default
+# (see internal/config.Default()) and is checked into git; it is never
+# loaded directly. To configure a real deployment, copy it to
+# config/config.yaml (or split it into several config/*.yaml files) and edit
+# only what needs to differ — every config/*.yaml file is gitignored except
+# this one. Full merge semantics (which files get loaded, in what order, how
+# they combine): see internal/config's package doc comment and
+# cmd/miranda-medical-card/main.go's configFilePaths.
+#
+# Secrets themselves never go in a config file, this one included — only the
+# *name* of an environment variable to read them from at startup (fields
+# ending in _env/_envs). See .env.example.
+
+# http_addr: ":8791"
+# auth_token_env: "MEDICAL_CARD_MCP_TOKEN"
+
+# tls: on by default. The server generates and reuses its own self-signed
+# certificate at cert_file/key_file on first start (see
+# internal/tlscert.EnsureSelfSigned) rather than requiring a CA-issued one —
+# this link never leaves localhost and has no public DNS name.
+# tls:
+#   enabled: true
+#   cert_file: "data/tls/cert.pem"
+#   key_file: "data/tls/key.pem"
+#   hosts: ["127.0.0.1", "localhost"]
+
+# database:
+#   path: "data/medical-card.db"
+
+# files: where uploaded document binaries are stored — see internal/filestore.
+# files:
+#   dir: "data/files"
+
+# llm: Gemini models used by each Pipeline/medical.ask stage — see
+# internal/config.LLMConfig's doc comment for why document_model covers both
+# OCR and Structured Extraction for now. api_key_envs supports several
+# environment variables for automatic key rotation on rate limits (useful on
+# free-tier keys) — list as many as you have.
+# llm:
+#   api_key_envs: ["GEMINI_API_KEY_1"]
+#   document_model: "gemini-3.6-flash"
+#   planner_model: "gemini-3.5-flash-lite"
+#   answer_model: "gemini-3.6-flash"
+
+# embedding:
+#   api_key_env: "GEMINI_API_KEY_1"
+#   model: "gemini-embedding-2"
+
+# search:
+#   default_limit: 10
+#   max_limit: 50
+
+# users has no built-in default and MUST be set: the closed list of
+# household members every tool call's userId is checked against (see
+# docs/architecture/01-overview.md §4). Left unset, the service refuses to
+# start rather than run with no allowlist at all. shared_with grants other
+# listed users read-only access (docs/domain/02-user.md §4); encryption and
+# a non-empty shared_with are mutually exclusive. This repo's own template
+# intentionally does not hardcode real household member ids — set the real
+# list only in the server's own config.yaml, e.g.:
+# users:
+#   - id: "alex"
+#     display_name: "Alexander"
+#     birth_date: "1988-04-12"
+#     sex: "male"
+#   - id: "kid"
+#     display_name: "Kid"
+#     birth_date: "2020-01-01"
+#     shared_with: ["alex"]  # parents can read the kid's data
+#     encryption: false
+
+logging:
+  level: "info"

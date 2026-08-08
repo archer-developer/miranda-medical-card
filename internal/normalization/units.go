@@ -1,5 +1,7 @@
 package normalization
 
+import "context"
+
 // This file implements dimensional (scale-only) unit conversion —
 // deliberately NOT molar-mass-dependent conversion (e.g. mmol/L <-> mg/dL
 // for a specific analyte like glucose or cholesterol, where the factor
@@ -75,34 +77,49 @@ func convertUnit(value float64, fromUnit, toUnit string) (converted float64, ok 
 // document that established a canonical unit is later deleted).
 type CanonicalUnitResolver interface {
 	// CanonicalUnit returns the previously-established canonical unit for
-	// (userID, indicatorName) and true, or ("", false) if this indicator
-	// has never been recorded for this user before now.
-	CanonicalUnit(userID, indicatorName string) (unit string, found bool)
+	// (userID, indicatorName) and true, or ("", false, nil) if this
+	// indicator has never been recorded for this user before now. err is
+	// for genuine lookup failures (e.g. a database error) — deliberately
+	// not conflated with "not found," which is an expected, common outcome
+	// (every user's very first document hits it for every indicator), not
+	// a failure.
+	CanonicalUnit(ctx context.Context, userID, indicatorName string) (unit string, found bool, err error)
 }
 
 // normalizeUnit resolves (value, unit)'s canonical form for
-// (userID, indicatorName) against resolver. Three outcomes:
+// (userID, indicatorName) against resolver. Outcomes:
 //   - No canonical unit exists yet for this indicator: this measurement's
 //     own unit becomes canonical by definition (NormalizedValue/Unit equal
 //     Value/Unit unchanged).
 //   - A canonical unit exists and convertUnit recognizes the pair: returns
 //     the converted value in that unit.
 //   - A canonical unit exists but convertUnit doesn't recognize the pair
-//     (an exotic or not-yet-catalogued unit): returns ("", 0, false) —
+//     (an exotic or not-yet-catalogued unit): returns (0, "", nil) —
 //     callers must leave NormalizedValue/NormalizedUnit unset rather than
 //     guess, exactly like an unparseable date is left nil rather than
-//     defaulted (see parseOptionalDate).
-func normalizeUnit(resolver CanonicalUnitResolver, userID, indicatorName string, value float64, unit string) (normalizedValue float64, normalizedUnit string, ok bool) {
+//     defaulted (see parseOptionalDate). This is not reported as an error:
+//     an uncatalogued unit is an expected, unremarkable outcome, not a
+//     failure.
+//   - resolver.CanonicalUnit itself fails (a real, unexpected error, e.g. a
+//     database error): returns (0, "", err) — propagated to the caller as
+//     an entry in Normalize's error list, the same treatment as an
+//     unparseable date, rather than silently guessing "not found" and
+//     risking a wrong NormalizedUnit standing unlabeled next to correctly
+//     converted values for the same indicator.
+func normalizeUnit(ctx context.Context, resolver CanonicalUnitResolver, userID, indicatorName string, value float64, unit string) (normalizedValue float64, normalizedUnit string, err error) {
 	if unit == "" {
-		return 0, "", false
+		return 0, "", nil
 	}
-	canonical, found := resolver.CanonicalUnit(userID, indicatorName)
+	canonical, found, err := resolver.CanonicalUnit(ctx, userID, indicatorName)
+	if err != nil {
+		return 0, "", err
+	}
 	if !found {
-		return value, unit, true
+		return value, unit, nil
 	}
 	converted, convOK := convertUnit(value, unit, canonical)
 	if !convOK {
-		return 0, "", false
+		return 0, "", nil
 	}
-	return converted, canonical, true
+	return converted, canonical, nil
 }

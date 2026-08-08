@@ -1,7 +1,9 @@
 package normalization_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,9 +42,9 @@ func newFakeResolver() *fakeResolver {
 	return &fakeResolver{canonical: map[string]string{}}
 }
 
-func (r *fakeResolver) CanonicalUnit(userID, indicatorName string) (string, bool) {
+func (r *fakeResolver) CanonicalUnit(ctx context.Context, userID, indicatorName string) (string, bool, error) {
 	unit, ok := r.canonical[userID+"/"+indicatorName]
-	return unit, ok
+	return unit, ok, nil
 }
 
 // recordUnits stands in for what a real integration does after Normalize
@@ -61,7 +63,7 @@ func (r *fakeResolver) recordUnits(userID string, results []normalization.LabRes
 func TestNormalize_InvitroCBC(t *testing.T) {
 	extracted := loadFixture(t, "invitro_cbc_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs, "no date-parsing issues expected on this fixture")
 
 	require.Len(t, result.LabResults, 20)
@@ -87,7 +89,7 @@ func TestNormalize_InvitroCBC(t *testing.T) {
 func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 	extracted := loadFixture(t, "helix_biochem_lipid_cbc_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.LabResults, 39)
@@ -109,7 +111,7 @@ func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 func TestNormalize_LodeConsultation(t *testing.T) {
 	extracted := loadFixture(t, "lode_consultation_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.Diagnoses, 9)
@@ -151,7 +153,7 @@ func TestNormalize_GravitaUltrasound(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &findings))
 	extracted.InstrumentalFindings = findings.InstrumentalFindings
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs, "every measuredAt in this fixture is the same valid date — any parse error here is a real bug")
 
 	require.Len(t, result.InstrumentalFindings, 76)
@@ -189,7 +191,7 @@ func TestNormalize_InvalidDateDoesNotDiscardOtherEntities(t *testing.T) {
 		},
 	}
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
 	require.Len(t, errs, 1, "exactly the one bad date should be reported")
 	require.Len(t, result.LabResults, 2, "both entities must still be present — a bad date on one must not discard the other")
 	require.Nil(t, result.LabResults[0].TakenAt)
@@ -219,7 +221,7 @@ func TestNormalize_UnitNormalization_FirstSeenBecomesCanonical(t *testing.T) {
 		DocumentType: "lab_report",
 		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 14.4, Unit: "г/дл"}},
 	}
-	firstResult, errs := normalization.Normalize("user_test", "doc_1", first, resolver)
+	firstResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver)
 	require.Empty(t, errs)
 	require.Equal(t, 14.4, firstResult.LabResults[0].NormalizedValue)
 	require.Equal(t, "г/дл", firstResult.LabResults[0].NormalizedUnit, "first-ever measurement: its own unit becomes canonical")
@@ -229,7 +231,7 @@ func TestNormalize_UnitNormalization_FirstSeenBecomesCanonical(t *testing.T) {
 		DocumentType: "lab_report",
 		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 150, Unit: "г/л"}},
 	}
-	secondResult, errs := normalization.Normalize("user_test", "doc_2", second, resolver)
+	secondResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver)
 	require.Empty(t, errs)
 	require.Equal(t, "г/дл", secondResult.LabResults[0].NormalizedUnit, "converted to match the already-established canonical unit")
 	require.InDelta(t, 15.0, secondResult.LabResults[0].NormalizedValue, 0.001, "150 г/л = 15.0 г/дл")
@@ -246,13 +248,13 @@ func TestNormalize_UnitNormalization_CellCountsAreExactlyEqualNotJustProportiona
 	first := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.80, Unit: "млн/мкл"}},
 	}
-	firstResult, _ := normalization.Normalize("user_test", "doc_1", first, resolver)
+	firstResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver)
 	resolver.recordUnits("user_test", firstResult.LabResults)
 
 	second := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.9, Unit: "10^12 клеток/л"}},
 	}
-	secondResult, _ := normalization.Normalize("user_test", "doc_2", second, resolver)
+	secondResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver)
 	require.Equal(t, "млн/мкл", secondResult.LabResults[0].NormalizedUnit)
 	require.Equal(t, 4.9, secondResult.LabResults[0].NormalizedValue, "1 10^12/л = 1 млн/мкл exactly — no scaling")
 }
@@ -264,7 +266,7 @@ func TestNormalize_UnitNormalization_UnknownUnitLeftUnset(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Some Indicator", Value: 5, Unit: "gizmos"}},
 	}
-	result, errs := normalization.Normalize("user_test", "doc_1", extracted, resolver)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver)
 	require.Empty(t, errs)
 	require.Zero(t, result.LabResults[0].NormalizedValue)
 	require.Empty(t, result.LabResults[0].NormalizedUnit, "gizmos -> widgets isn't a known conversion — must not guess")
@@ -283,7 +285,7 @@ func TestNormalize_LOINC_FallbackDictionaryAppliesWhenNoCodePrinted(t *testing.T
 			{Name: "Совершенно неизвестный показатель", Value: 1, Unit: "ед"},
 		},
 	}
-	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Equal(t, "718-7", result.LabResults[0].Code, "known alias should resolve via the fallback dictionary")
@@ -304,18 +306,38 @@ func TestNormalize_LOINC_PrintedCodeTakesPriorityOverDictionary(t *testing.T) {
 			{Name: "Гемоглобин (HGB)", Code: "custom-lab-code-123", CodeSystem: "local", Value: 150, Unit: "г/л"},
 		},
 	}
-	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Equal(t, "custom-lab-code-123", result.LabResults[0].Code)
 	require.Equal(t, "local", result.LabResults[0].CodeSystem)
 }
 
+// erroringResolver always fails — used to verify Normalize treats a genuine
+// resolver failure as a reportable error (not a silent "not found").
+type erroringResolver struct{}
+
+func (erroringResolver) CanonicalUnit(ctx context.Context, userID, indicatorName string) (string, bool, error) {
+	return "", false, errors.New("boom: canonical unit lookup unavailable")
+}
+
+func TestNormalize_UnitNormalization_ResolverErrorIsReportedNotSwallowed(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Гемоглобин", Value: 150, Unit: "г/л"}},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, erroringResolver{})
+
+	require.Len(t, errs, 1, "a resolver failure must surface as an error, not be swallowed as 'not found'")
+	require.Zero(t, result.LabResults[0].NormalizedValue, "must not guess a normalized value when the resolver itself failed")
+	require.Empty(t, result.LabResults[0].NormalizedUnit)
+	require.Equal(t, 150.0, result.LabResults[0].Value, "the raw value must still be present — a resolver failure must not discard the entity")
+}
+
 func TestNormalize_UnitNormalization_NilResolverLeavesNormalizedFieldsZero(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "ALT", Value: 28.3, Unit: "Ед/л"}},
 	}
-	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
 	require.Empty(t, errs)
 	require.Zero(t, result.LabResults[0].NormalizedValue)
 	require.Empty(t, result.LabResults[0].NormalizedUnit)

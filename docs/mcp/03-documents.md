@@ -126,7 +126,7 @@ Medical Knowledge Base
 ```json
 {
     "documentId": "doc_01J9...",
-    "status": "completed",
+    "status": "READY",
     "summary": "Консультативное заключение. Диагнозы: эссенциальная гипертензия (I10), нарушение липидного обмена (E78). Рекомендации по физической активности и питанию.",
     "extractedCounts": {
         "diagnoses": 9,
