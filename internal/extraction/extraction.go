@@ -282,6 +282,18 @@ type StructuredProvider interface {
 	Structured(ctx context.Context, req llm.StructuredRequest) (json.RawMessage, error)
 }
 
+// ocrTemperature keeps transcription low-temperature for the same reason
+// Structured defaults to low temperature (see llm.StructuredRequest.Temperature's
+// doc comment) — observed directly on a real document: at the provider's
+// default (higher) temperature, OCR stopped mid-sentence right after a
+// document's boilerplate consent-form preamble, never transcribing the
+// actual clinical content (diagnoses, plan) that followed on the same
+// visible, legible page. ChatRequest.Temperature has no forced default of
+// its own (see its doc comment — Chat covers many use cases, some of which
+// want the provider's own default), so OCR sets it explicitly here rather
+// than relying on one.
+var ocrTemperature = 0.1
+
 // OCR runs Stage 1: transcribe imageBase64 (mimeType e.g. "image/jpeg",
 // "application/pdf") into plain text.
 func OCR(ctx context.Context, provider ChatProvider, imageBase64, mimeType string) (string, error) {
@@ -290,6 +302,7 @@ func OCR(ctx context.Context, provider ChatProvider, imageBase64, mimeType strin
 			{Role: llm.RoleSystem, Content: OCRPrompt},
 			{Role: llm.RoleUser, Parts: []llm.ContentPart{{ImageBase64: imageBase64, MIMEType: mimeType}}},
 		},
+		Temperature: &ocrTemperature,
 	}
 	stream, err := provider.Chat(ctx, req)
 	if err != nil {

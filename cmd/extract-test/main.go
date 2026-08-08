@@ -27,7 +27,14 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 )
 
-const model = "gemini-3.6-flash"
+// ocrModel is deliberately a cheaper/higher-quota model than
+// structuredModel — OCR (Stage 1) is "just" transcription, and splitting
+// models this way spends the scarcer, stronger model's daily quota only on
+// the stage that actually needs its reasoning (Stage 2).
+const (
+	ocrModel        = "gemini-3.5-flash-lite"
+	structuredModel = "gemini-3.6-flash"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -48,18 +55,20 @@ func run() error {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	provider, err := gemini.New(ctx, "gemini-extract", model,
-		[]string{"GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"},
-		gemini.ToolsConfig{},
-		gemini.RotationConfig{CooldownSeconds: 10, MaxRetryCycles: 1},
-		logger,
-	)
+	apiKeyEnvs := []string{"GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"}
+	rotation := gemini.RotationConfig{CooldownSeconds: 10, MaxRetryCycles: 1}
+
+	ocrProvider, err := gemini.New(ctx, "gemini-ocr", ocrModel, apiKeyEnvs, gemini.ToolsConfig{}, rotation, logger)
 	if err != nil {
-		return fmt.Errorf("build gemini provider: %w", err)
+		return fmt.Errorf("build gemini OCR provider: %w", err)
+	}
+	structuredProvider, err := gemini.New(ctx, "gemini-structured", structuredModel, apiKeyEnvs, gemini.ToolsConfig{}, rotation, logger)
+	if err != nil {
+		return fmt.Errorf("build gemini structured provider: %w", err)
 	}
 
 	for _, path := range os.Args[1:] {
-		if err := extractOne(ctx, provider, path); err != nil {
+		if err := extractOne(ctx, ocrProvider, structuredProvider, path); err != nil {
 			fmt.Fprintf(os.Stderr, "--- %s: FAILED: %v\n\n", path, err)
 			continue
 		}
@@ -67,7 +76,7 @@ func run() error {
 	return nil
 }
 
-func extractOne(ctx context.Context, provider *gemini.Provider, path string) error {
+func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredProvider *gemini.Provider, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
@@ -78,9 +87,15 @@ func extractOne(ctx context.Context, provider *gemini.Provider, path string) err
 
 	fmt.Fprintf(os.Stderr, "--- extracting %s (%s, %d bytes) ---\n", path, mimeType, len(data))
 
-	result, raw, err := extraction.Extract(ctx, provider, imageBase64, mimeType)
+	text, err := extraction.OCR(ctx, ocrProvider, imageBase64, mimeType)
 	if err != nil {
-		return err
+		return fmt.Errorf("ocr: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
+
+	result, raw, err := extraction.Structured(ctx, structuredProvider, text)
+	if err != nil {
+		return fmt.Errorf("structured: %w", err)
 	}
 
 	var pretty bytes.Buffer
