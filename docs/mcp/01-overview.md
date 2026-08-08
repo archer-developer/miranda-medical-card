@@ -180,6 +180,8 @@ medical.download_file
 ```
 medical.upload_document
 
+medical.reprocess_document
+
 medical.list_documents
 
 medical.get_document
@@ -340,7 +342,7 @@ string, необязательный, по умолчанию равен userId
 
 Идентификатор пользователя, чьи данные требуется получить, если он отличается от `userId`. Используется, когда один член семьи спрашивает о данных другого — например, родитель спрашивает про здоровье ребёнка.
 
-Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_file`, `medical.upload_document`, `medical.delete_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
+Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_file`, `medical.upload_document`, `medical.reprocess_document`, `medical.delete_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
 
 Если `subjectId` отличается от `userId`, сервис проверяет, что пользователь `subjectId` явно разрешил доступ (`shared_with` в своей конфигурации, см. `../architecture/01-overview.md` §4). Если доступ не разрешён, сервис отвечает так же, как если бы `subjectId` не существовал (`USER_NOT_FOUND`) — не раскрывая, что пользователь существует, но доступ запрещён.
 
@@ -396,12 +398,14 @@ string, необязательный, по умолчанию равен userId
 Например:
 
 - перестроение Embeddings;
-- повторная обработка документов;
+- массовая переобработка документов (после смены модели/промпта);
 - перестроение Timeline;
 - переиндексация поиска;
 - обслуживание базы данных.
 
 Подобные операции выполняются через CLI самого сервиса и не предназначены для использования Miranda.
+
+Точечная переобработка *одного* документа по инициативе пользователя ("переделай, результат выглядит неполным") — не административная операция, а обычный пользовательский сценарий, поэтому доступна через MCP как `medical.reprocess_document` (см. `03-documents.md` §6).
 
 Это позволяет сохранить MCP API компактным и ориентированным исключительно на пользовательские сценарии.
 
@@ -431,6 +435,7 @@ string, необязательный, по умолчанию равен userId
 | `medical.upload_file` | Загрузка бинарного файла |
 | `medical.download_file` | Получение бинарного файла |
 | `medical.upload_document` | Импорт медицинского документа |
+| `medical.reprocess_document` | Повторная обработка документа по запросу пользователя |
 | `medical.list_documents` | Получение списка документов |
 | `medical.get_document` | Получение информации о документе |
 | `medical.delete_document` | Удаление документа |

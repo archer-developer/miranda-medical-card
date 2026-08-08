@@ -92,12 +92,12 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 	}
 	fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 
-	result, _, err := extraction.Structured(ctx, structuredProvider, text)
+	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, text)
 	if err != nil {
 		return fmt.Errorf("structured: %w", err)
 	}
 
-	findings, findingsRaw, err := extraction.InstrumentalStructured(ctx, structuredProvider, text)
+	findings, findingsRaw, err := extraction.InstrumentalStructuredWithRetry(ctx, structuredProvider, text, result.DocumentType == "imaging_report")
 	if err != nil {
 		return fmt.Errorf("instrumental structured: %w", err)
 	}

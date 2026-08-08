@@ -399,6 +399,11 @@ func OCR(ctx context.Context, provider ChatProvider, imageBase64, mimeType strin
 // rest unmarshaled from the model's JSON) and the raw JSON for callers that
 // want to persist it verbatim as Extraction.raw (see
 // docs/domain/03-files-and-documents.md §4).
+//
+// A single call to this function does not retry on a suspiciously empty
+// result — see StructuredWithRetry for that. Structured stays a thin,
+// honest wrapper around one LLM call so callers that want raw, unretried
+// behavior (e.g. a test asserting on a specific attempt) still have it.
 func Structured(ctx context.Context, provider StructuredProvider, text string) (Result, json.RawMessage, error) {
 	req := llm.StructuredRequest{
 		Messages: []llm.Message{
@@ -419,6 +424,78 @@ func Structured(ctx context.Context, provider StructuredProvider, text string) (
 		return Result{}, raw, fmt.Errorf("extraction: structured: unmarshal result: %w", err)
 	}
 	result.FullText = text
+	return result, raw, nil
+}
+
+// minFullTextForSuspicion is the fullText length (characters) above which
+// an entirely empty structured result is treated as a likely extraction
+// failure rather than a genuinely sparse document. Below this length, a
+// short document (e.g. a one-line note) legitimately having nothing to
+// extract is plausible and not retried.
+const minFullTextForSuspicion = 300
+
+// maxStructuredRetries caps how many *additional* attempts
+// StructuredWithRetry makes beyond the first when a result looks
+// suspiciously empty. Chosen empirically: on a real, previously-reliable
+// lab report (Helix biochemistry/lipid/CBC panel, ~40 result rows), 3
+// consecutive attempts at the API's low-but-nonzero temperature (see
+// llm.StructuredRequest.Temperature) all returned every category empty
+// despite a complete, correct fullText and a clean finishReason=STOP (no
+// error, no truncation) — worse than the roughly-even odds seen earlier
+// the same day on other documents. 2 extra attempts is a starting point,
+// not a value derived from a rigorous failure-rate measurement; revisit if
+// real usage shows it's not enough (or is overkill).
+const maxStructuredRetries = 2
+
+// isSuspiciouslyEmpty reports whether result looks like the observed
+// failure mode described on maxStructuredRetries: every structured
+// category empty despite a substantial transcribed text. Deliberately
+// ignores InstrumentalFindings (populated by a separate call, see
+// InstrumentalStructured) and metadata fields (documentType/doctor/etc.) —
+// a document can legitimately have, say, no diagnoses while still having
+// lab results, so this only fires when *every* clinical category is empty
+// at once, not when any single one is.
+func isSuspiciouslyEmpty(result Result) bool {
+	if len(result.FullText) < minFullTextForSuspicion {
+		return false
+	}
+	return len(result.Diagnoses) == 0 &&
+		len(result.Medications) == 0 &&
+		len(result.LabResults) == 0 &&
+		len(result.Procedures) == 0 &&
+		len(result.Allergies) == 0 &&
+		len(result.VitalSigns) == 0 &&
+		len(result.Recommendations) == 0
+}
+
+// StructuredWithRetry calls Structured, and retries (up to
+// maxStructuredRetries additional times) if the result looks suspiciously
+// empty (see isSuspiciouslyEmpty) — this is the function real Pipeline code
+// and Extract call; Structured itself stays retry-free for callers that
+// need the raw single-attempt behavior. Returns the last attempt's result
+// even if every attempt was suspicious — StructuredWithRetry cannot tell
+// the difference between "the model keeps failing" and "this document
+// genuinely has a lot of text and legitimately nothing structured to
+// extract from it," so it never turns "suspicious" into a hard error;
+// see docs/mcp/03-documents.md's "Автоматический ретрай" section for how
+// the caller (upload_document) is expected to still surface this via
+// extractedCounts for the user to notice and request
+// medical.reprocess_document if genuinely wrong.
+func StructuredWithRetry(ctx context.Context, provider StructuredProvider, text string) (Result, json.RawMessage, error) {
+	var (
+		result Result
+		raw    json.RawMessage
+		err    error
+	)
+	for attempt := 0; attempt <= maxStructuredRetries; attempt++ {
+		result, raw, err = Structured(ctx, provider, text)
+		if err != nil {
+			return Result{}, nil, err
+		}
+		if !isSuspiciouslyEmpty(result) {
+			break
+		}
+	}
 	return result, raw, nil
 }
 
@@ -450,6 +527,39 @@ func InstrumentalStructured(ctx context.Context, provider StructuredProvider, te
 	return parsed.InstrumentalFindings, raw, nil
 }
 
+// InstrumentalStructuredWithRetry is InstrumentalStructured's retrying
+// counterpart — but unlike StructuredWithRetry, an empty result here is the
+// *expected* outcome for most documents (a lab report or prescription
+// legitimately has zero instrumental findings), so retrying on emptiness
+// unconditionally would waste a call on every non-imaging document for no
+// benefit. expectFindings gates this: pass true only when the document is
+// already known (typically from Stage 2a's DocumentType, e.g.
+// "imaging_report") to actually be an instrumental study — see Extract.
+// When expectFindings is false, this makes exactly one attempt, same as
+// calling InstrumentalStructured directly.
+func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredProvider, text string, expectFindings bool) ([]InstrumentalFinding, json.RawMessage, error) {
+	attempts := 1
+	if expectFindings {
+		attempts += maxStructuredRetries
+	}
+
+	var (
+		findings []InstrumentalFinding
+		raw      json.RawMessage
+		err      error
+	)
+	for attempt := 0; attempt < attempts; attempt++ {
+		findings, raw, err = InstrumentalStructured(ctx, provider, text)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(findings) > 0 {
+			break
+		}
+	}
+	return findings, raw, nil
+}
+
 // Provider is the union Extract needs: something that can both Chat (Stage
 // 1) and Structured (Stage 2) — gemini.Provider satisfies this directly;
 // router.Router does too once at least one configured provider implements
@@ -459,8 +569,9 @@ type Provider interface {
 	StructuredProvider
 }
 
-// Extract runs all stages against one document image: OCR, then Structured
-// (Stage 2a) and InstrumentalStructured (Stage 2b) as two independent calls
+// Extract runs all stages against one document image: OCR, then
+// StructuredWithRetry (Stage 2a, retried automatically if suspiciously
+// empty) and InstrumentalStructured (Stage 2b) as two independent calls
 // over the same transcribed text, merged into one Result. This is the
 // function real Pipeline code should call; the individual stages are
 // exported separately for tests/tooling that want to inspect or reuse an
@@ -471,12 +582,12 @@ func Extract(ctx context.Context, provider Provider, imageBase64, mimeType strin
 		return Result{}, nil, err
 	}
 
-	result, _, err := Structured(ctx, provider, text)
+	result, _, err := StructuredWithRetry(ctx, provider, text)
 	if err != nil {
 		return Result{}, nil, err
 	}
 
-	findings, _, err := InstrumentalStructured(ctx, provider, text)
+	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, text, result.DocumentType == "imaging_report")
 	if err != nil {
 		return Result{}, nil, err
 	}
