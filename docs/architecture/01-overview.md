@@ -101,7 +101,7 @@ Miranda отвечает за:
 
 ``` yaml
 users:
-  - id: archer
+  - id: alex
     display_name: Alexander
     birth_date: 1988-04-12
     sex: male
@@ -110,7 +110,16 @@ users:
     display_name: Anna
     birth_date: 1992-08-03
     sex: female
+
+  - id: kid
+    display_name: Kid
+    birth_date: 2020-01-01
+    sex: male
+    shared_with: [alex, anna]  # родители могут читать данные ребёнка
+    encryption: false          # см. п.5 ниже: shared_with и encryption взаимоисключающи
 ```
+
+`shared_with` — необязательный список `userId`, которым разрешено читать (но не изменять и не удалять) данные этого пользователя. По умолчанию пуст: данные каждого пользователя видны только ему самому. См. `../mcp/01-overview.md` §11 про то, как это влияет на параметры MCP Tools, и `06-storage.md` §14 про несовместимость с `encryption`.
 
 При запуске сервис загружает файл в память.
 
