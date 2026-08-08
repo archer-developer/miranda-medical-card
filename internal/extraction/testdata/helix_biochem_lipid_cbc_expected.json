@@ -1,0 +1,325 @@
+{
+  "documentType": "lab_report",
+  "documentDate": "2025-03-15",
+  "organization": "ООО «Тестовая международная лаборатория»",
+  "doctor": "Докторова А.А.",
+  "language": "ru",
+  "diagnoses": [],
+  "medications": [
+    {
+      "name": "периндоприл"
+    },
+    {
+      "name": "бисопролол"
+    }
+  ],
+  "labResults": [
+    {
+      "name": "Аланинаминотрансфераза (АЛТ)",
+      "value": 28.3,
+      "unit": "Ед/л",
+      "referenceLow": 1,
+      "referenceHigh": 41,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Аспартатаминотрансфераза (АСТ)",
+      "value": 21.5,
+      "unit": "Ед/л",
+      "referenceLow": 1,
+      "referenceHigh": 40,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Общий белок",
+      "value": 74.3,
+      "unit": "г/л",
+      "referenceLow": 64,
+      "referenceHigh": 83,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Билирубин общий",
+      "value": 7.6,
+      "unit": "мкмоль/л",
+      "referenceHigh": 21,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Билирубин прямой",
+      "value": 2.8,
+      "unit": "мкмоль/л",
+      "referenceLow": 0.3,
+      "referenceHigh": 5,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Гамма-глутамилтрансфераза (ГГТ)",
+      "value": 46,
+      "unit": "Ед/л",
+      "referenceLow": 10,
+      "referenceHigh": 71,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Креатинин",
+      "value": 111,
+      "unit": "мкмоль/л",
+      "referenceLow": 62,
+      "referenceHigh": 106,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Мочевина",
+      "value": 6.6,
+      "unit": "ммоль/л",
+      "referenceLow": 2.76,
+      "referenceHigh": 8.07,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Глюкоза (сыворотка)",
+      "value": 5.12,
+      "unit": "ммоль/л",
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "ЛПВП-холестерин (HDL)",
+      "value": 1.07,
+      "unit": "ммоль/л",
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Индекс атерогенности",
+      "value": 3.822,
+      "unit": "Ед",
+      "referenceHigh": 3,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "ЛПНП-холестерин (LDL)",
+      "value": 3.29,
+      "unit": "ммоль/л",
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Триглицериды",
+      "value": 1.27,
+      "unit": "ммоль/л",
+      "referenceHigh": 1.7,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Холестерин",
+      "value": 5.16,
+      "unit": "ммоль/л",
+      "referenceHigh": 5.17,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Лейкоциты (WBC)",
+      "value": 5.58,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 3.8,
+      "referenceHigh": 8.76,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Эритроциты (RBC)",
+      "value": 4.9,
+      "unit": "10^12 клеток/л",
+      "referenceLow": 4.54,
+      "referenceHigh": 6,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Гемоглобин (HGB)",
+      "value": 150,
+      "unit": "г/л",
+      "referenceLow": 130,
+      "referenceHigh": 170,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Гематокрит (HCT)",
+      "value": 44.8,
+      "unit": "%",
+      "referenceLow": 43.2,
+      "referenceHigh": 54.5,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Средний объем эритроцита (MCV)",
+      "value": 91.4,
+      "unit": "фл",
+      "referenceLow": 86.6,
+      "referenceHigh": 102,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Среднее содержание гемоглобина в эритроците (МСН)",
+      "value": 30.6,
+      "unit": "пг",
+      "referenceLow": 25.6,
+      "referenceHigh": 30.7,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Средняя концентрация гемоглобина в эритроците (МСНС)",
+      "value": 335,
+      "unit": "г/л",
+      "referenceLow": 300,
+      "referenceHigh": 380,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Ширина распределения эритроцитов (RDW-SD)",
+      "value": 39,
+      "unit": "фл",
+      "referenceLow": 36.3,
+      "referenceHigh": 47.3,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Ширина распределения эритроцитов (RDW-CV)",
+      "value": 11.7,
+      "unit": "%",
+      "referenceLow": 11.2,
+      "referenceHigh": 13.4,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Тромбоциты (PLT)",
+      "value": 308,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 150,
+      "referenceHigh": 450,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Тромбокрит (PCT)",
+      "value": 0.3,
+      "unit": "%",
+      "referenceLow": 0.15,
+      "referenceHigh": 0.45,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Средний объем тромбоцитов (MPV)",
+      "value": 9.9,
+      "unit": "фл",
+      "referenceLow": 9.2,
+      "referenceHigh": 12.1,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Ширина распределения тромбоцитов по объемам (PDW)",
+      "value": 11.8,
+      "unit": "%",
+      "referenceLow": 9.5,
+      "referenceHigh": 15.2,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Коэффициент больших тромбоцитов (P-LCR)",
+      "value": 24.4,
+      "unit": "%",
+      "referenceLow": 17.9,
+      "referenceHigh": 43.7,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Нейтрофильные гранулоциты (NEUT %)",
+      "value": 44.6,
+      "unit": "%",
+      "referenceLow": 40.2,
+      "referenceHigh": 71.1,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Нейтрофильные гранулоциты (NEUT)",
+      "value": 2.49,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 1.53,
+      "referenceHigh": 4.98,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Лимфоциты (LYMPH)",
+      "value": 2.43,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 1.13,
+      "referenceHigh": 3,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Лимфоциты (LYMPH%)",
+      "value": 43.5,
+      "unit": "%",
+      "referenceLow": 21.9,
+      "referenceHigh": 48.5,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Моноциты (MONO%)",
+      "value": 7.7,
+      "unit": "%",
+      "referenceLow": 4.4,
+      "referenceHigh": 10,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Моноциты (MONO)",
+      "value": 0.43,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 0.22,
+      "referenceHigh": 0.63,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Эозинофилы (EO%)",
+      "value": 2.9,
+      "unit": "%",
+      "referenceLow": 0.6,
+      "referenceHigh": 5.2,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Эозинофилы (EO)",
+      "value": 0.16,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 0.03,
+      "referenceHigh": 0.29,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Базофилы (BASO%)",
+      "value": 1.3,
+      "unit": "%",
+      "referenceLow": 0.2,
+      "referenceHigh": 1.4,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "Базофилы (BASO)",
+      "value": 0.07,
+      "unit": "10^9 клеток/л",
+      "referenceLow": 0.02,
+      "referenceHigh": 0.07,
+      "takenAt": "2025-03-14"
+    },
+    {
+      "name": "СОЭ (метод кинетики агрегации эритроцитов), венозная кровь",
+      "value": 3,
+      "unit": "мм/час",
+      "referenceLow": 2,
+      "referenceHigh": 15,
+      "takenAt": "2025-03-14"
+    }
+  ],
+  "instrumentalFindings": [],
+  "procedures": [],
+  "allergies": [],
+  "vitalSigns": [],
+  "recommendations": []
+}

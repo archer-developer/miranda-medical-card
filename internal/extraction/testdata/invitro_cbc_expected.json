@@ -1,0 +1,174 @@
+{
+  "documentType": "lab_report",
+  "documentDate": "2026-05-08",
+  "organization": "ООО \"Тестовая лаборатория\"",
+  "doctor": "Докторова А.А.",
+  "language": "ru",
+  "diagnoses": [],
+  "medications": [],
+  "labResults": [
+    {
+      "name": "Гематокрит",
+      "value": 42.1,
+      "unit": "%",
+      "referenceLow": 39,
+      "referenceHigh": 49,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Гемоглобин",
+      "value": 14.4,
+      "unit": "г/дл",
+      "referenceLow": 13.2,
+      "referenceHigh": 17.3,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Эритроциты",
+      "value": 4.8,
+      "unit": "млн/мкл",
+      "referenceLow": 4.3,
+      "referenceHigh": 5.7,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "MCV (ср. объем эритр.)",
+      "value": 87.8,
+      "unit": "фл",
+      "referenceLow": 80,
+      "referenceHigh": 99,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "RDW (шир. распред. эритр)",
+      "value": 12.4,
+      "unit": "%",
+      "referenceLow": 11.6,
+      "referenceHigh": 14.8,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "MCH (ср. содер. Hb в эр.)",
+      "value": 29.9,
+      "unit": "пг",
+      "referenceLow": 27,
+      "referenceHigh": 34,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "MCHC (ср. конц. Hb в эр.)",
+      "value": 34.2,
+      "unit": "г/дл",
+      "referenceLow": 32,
+      "referenceHigh": 37,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Тромбоциты",
+      "value": 284,
+      "unit": "тыс/мкл",
+      "referenceLow": 150,
+      "referenceHigh": 400,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Лейкоциты",
+      "value": 6.34,
+      "unit": "тыс/мкл",
+      "referenceLow": 4.5,
+      "referenceHigh": 11,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Нейтрофилы (общ.число), %",
+      "value": 50.9,
+      "unit": "%",
+      "referenceLow": 48,
+      "referenceHigh": 78,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Лимфоциты, %",
+      "value": 38.8,
+      "unit": "%",
+      "referenceLow": 19,
+      "referenceHigh": 37,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Моноциты, %",
+      "value": 6.9,
+      "unit": "%",
+      "referenceLow": 3,
+      "referenceHigh": 11,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Эозинофилы, %",
+      "value": 2.8,
+      "unit": "%",
+      "referenceLow": 1,
+      "referenceHigh": 5,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Базофилы, %",
+      "value": 0.6,
+      "unit": "%",
+      "referenceHigh": 1.0,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Нейтрофилы, абс.",
+      "value": 3.23,
+      "unit": "тыс/мкл",
+      "referenceLow": 1.78,
+      "referenceHigh": 5.38,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Лимфоциты, абс.",
+      "value": 2.45,
+      "unit": "тыс/мкл",
+      "referenceLow": 1.32,
+      "referenceHigh": 3.57,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Моноциты, абс.",
+      "value": 0.44,
+      "unit": "тыс/мкл",
+      "referenceLow": 0.2,
+      "referenceHigh": 0.95,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Эозинофилы, абс.",
+      "value": 0.18,
+      "unit": "тыс/мкл",
+      "referenceHigh": 0.7,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "Базофилы, абс.",
+      "value": 0.04,
+      "unit": "тыс/мкл",
+      "referenceHigh": 0.2,
+      "takenAt": "2026-05-08"
+    },
+    {
+      "name": "СОЭ",
+      "value": 5,
+      "unit": "мм/ч",
+      "referenceHigh": 15,
+      "takenAt": "2026-05-08"
+    }
+  ],
+  "instrumentalFindings": [],
+  "procedures": [],
+  "allergies": [],
+  "vitalSigns": [],
+  "recommendations": [
+    "Необходима консультация специалиста."
+  ]
+}

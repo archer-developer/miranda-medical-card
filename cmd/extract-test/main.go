@@ -81,16 +81,27 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 		return fmt.Errorf("read file: %w", err)
 	}
 
-	mimeType := mimeTypeFor(path, data)
-	imageBase64 := base64.StdEncoding.EncodeToString(data)
+	// A .txt input is treated as already-transcribed text (e.g. a saved
+	// fixture, see internal/extraction/testdata) — skips Stage 1 (OCR)
+	// entirely and goes straight to Structured, so re-validating the
+	// Stage 2 prompt against known-good text doesn't cost an OCR call or
+	// require the original image.
+	var text string
+	if strings.ToLower(filepath.Ext(path)) == ".txt" {
+		text = string(data)
+		fmt.Fprintf(os.Stderr, "--- using %s as already-transcribed text (%d chars), skipping OCR ---\n\n", path, len(text))
+	} else {
+		mimeType := mimeTypeFor(path, data)
+		imageBase64 := base64.StdEncoding.EncodeToString(data)
 
-	fmt.Fprintf(os.Stderr, "--- extracting %s (%s, %d bytes) ---\n", path, mimeType, len(data))
+		fmt.Fprintf(os.Stderr, "--- extracting %s (%s, %d bytes) ---\n", path, mimeType, len(data))
 
-	text, err := extraction.OCR(ctx, ocrProvider, imageBase64, mimeType)
-	if err != nil {
-		return fmt.Errorf("ocr: %w", err)
+		text, err = extraction.OCR(ctx, ocrProvider, imageBase64, mimeType)
+		if err != nil {
+			return fmt.Errorf("ocr: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 	}
-	fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 
 	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, text)
 	if err != nil {
