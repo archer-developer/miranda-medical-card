@@ -73,6 +73,8 @@ User
 
 ├── Lab Results
 
+├── Instrumental Findings
+
 ├── Files
 
 ├── Self-Reported Events
@@ -273,6 +275,12 @@ Knowledge не предназначен для прямого использов
 
 ---
 
+## Instrumental Finding
+
+Один измеренный или описанный параметр из инструментального исследования (УЗИ, МРТ, КТ, ЭКГ и т.п.) — размер органа, эхогенность, толщина стенки. Параллельна `Lab Result`, но для инструментальных, а не лабораторных методов; часто не числовая (описательные находки тоже трендятся).
+
+---
+
 # 5. Value Objects
 
 В доменной модели рекомендуется использовать Value Objects вместо примитивных типов.
@@ -423,3 +431,4 @@ Domain отвечает только на один вопрос:
 - **10-medical-knowledge-and-embedding.md** — MedicalKnowledge, Embedding.
 - **11-value-objects.md** — Dosage, LabValue, BloodPressure, DateRange, MedicationStatus, DocumentType, TimelineEventType, DiagnosisCode.
 - **12-self-reported-events.md** — SelfReportedEvent, MedicationIntake.
+- **13-instrumental-finding.md** — InstrumentalFinding.

@@ -61,7 +61,31 @@ Rules:
 - Omit a field entirely (do not include it, do not set it to an empty string) if the text does not state it — never fabricate a value.
 - If the text contains no instances of a given category (e.g. no medications mentioned), return an empty array for that field, not null.
 - You must attempt to populate every category the text actually contains data for, no matter how many entries there are — e.g. a lab report with 40 result rows must produce 40 entries in "labResults", not a subset and not an empty array. Omitting an individual field within one entry because you're unsure of it is fine; omitting the entire entry, or the entire array, when the text clearly contains the data is not.
+- "labResults" is for laboratory (blood/urine/etc.) test panels only. Measurements and observations from imaging or instrumental studies (ultrasound, MRI, CT, X-ray, ECG, echo-KG) are handled by a separate extraction pass — ignore them here even if the text contains them.
 - If you are not confident you can read a value correctly, omit that specific field rather than guessing.`
+
+// InstrumentalPrompt is Stage 2b's instruction — a separate, narrowly
+// scoped call from Prompt/Schema (Stage 2a), asked only to extract
+// instrumental-study findings. Originally instrumentalFindings was one more
+// property on the same schema as everything else, but real-document testing
+// showed that made the *whole* result unreliable, not just the new field:
+// on a dense ultrasound report (~30 structure/parameter combinations across
+// 8 organs), diagnoses/doctor/documentDate — fields that extracted
+// perfectly reliably before instrumentalFindings existed — started coming
+// back empty too, repeatedly. Splitting the sheer volume of requested
+// structured output across two calls, each with a narrower single
+// responsibility, restored reliability — the same lesson as OCR vs.
+// Structured (see this package's doc comment), applied a second time.
+const InstrumentalPrompt = `You are a medical document extraction assistant. You will be given the transcribed text of one medical document from an instrumental study (ultrasound, MRI, CT, X-ray, ECG, echo-KG, or similar).
+
+Extract every measured or observed parameter for every anatomical structure/organ mentioned, as a structured JSON object matching the provided schema. You must NOT interpret, diagnose, or draw medical conclusions — record only what is literally stated.
+
+Rules:
+- One entry per (structure, parameter) combination. A report describing 8 organs with 3-5 parameters each must produce 24-40 entries, not a summary or a subset.
+- Use "value"+"unit" for a quantitative parameter (e.g. a size in mm), "qualitativeValue" for a descriptive one (e.g. echogenicity, contours) — never force a description into "value".
+- Omit a field entirely if the text does not state it — never fabricate a value.
+- If the text contains no instrumental findings at all, return an empty array, not null.
+- If you are not confident you can read a specific value correctly, omit that one field rather than guessing — but still include the entry for the (structure, parameter) itself if it's clearly mentioned.`
 
 // Schema is the JSON Schema passed as llm.StructuredRequest.Schema for
 // Stage 2. Field shapes intentionally track the domain entities in
@@ -197,24 +221,62 @@ func Schema() map[string]any {
 	}
 }
 
+// InstrumentalSchemaName is passed as llm.StructuredRequest.SchemaName for
+// Stage 2b (see InstrumentalPrompt's doc comment for why this is a
+// separate call from Schema/Prompt).
+const InstrumentalSchemaName = "medical_instrumental_findings"
+
+// InstrumentalSchema is the JSON Schema for Stage 2b — deliberately just
+// one property, instrumentalFindings, unlike Schema's many. See
+// InstrumentalPrompt's doc comment for why this is split out rather than a
+// property on Schema.
+func InstrumentalSchema() map[string]any {
+	dateProp := map[string]any{"type": "string", "description": "ISO 8601 date (YYYY-MM-DD)"}
+
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"instrumentalFindings": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"structure":        map[string]any{"type": "string", "description": "Anatomical structure/organ, as written, e.g. 'Печень', 'Желчный пузырь', 'Почка правая'."},
+						"parameter":        map[string]any{"type": "string", "description": "The specific measured or observed attribute within that structure, as written, e.g. 'правая доля КВР', 'толщина стенки', 'эхогенность', 'особенности'."},
+						"value":            map[string]any{"type": "number", "description": "Numeric value, if the parameter is quantitative."},
+						"unit":             map[string]any{"type": "string", "description": "e.g. мм, см, см/с — only if value is set."},
+						"qualitativeValue": map[string]any{"type": "string", "description": "Descriptive value when the parameter is not numeric, e.g. 'однородная', 'не расширена', 'обычная'."},
+						"referenceLow":     map[string]any{"type": "number"},
+						"referenceHigh":    map[string]any{"type": "number"},
+						"measuredAt":       dateProp,
+					},
+					"required": []string{"structure", "parameter"},
+				},
+			},
+		},
+		"required": []string{"instrumentalFindings"},
+	}
+}
+
 // Result is the Go-side mirror of Schema — used to unmarshal and
 // pretty-print a Structured call's output for review. FullText is not part
 // of Schema (it comes from Stage 1, OCR) but is included here since callers
 // need both together.
 type Result struct {
-	DocumentType    string       `json:"documentType"`
-	DocumentDate    string       `json:"documentDate,omitempty"`
-	Organization    string       `json:"organization,omitempty"`
-	Doctor          string       `json:"doctor,omitempty"`
-	Language        string       `json:"language,omitempty"`
-	FullText        string       `json:"fullText"`
-	Diagnoses       []Diagnosis  `json:"diagnoses,omitempty"`
-	Medications     []Medication `json:"medications,omitempty"`
-	LabResults      []LabResult  `json:"labResults,omitempty"`
-	Procedures      []Procedure  `json:"procedures,omitempty"`
-	Allergies       []Allergy    `json:"allergies,omitempty"`
-	VitalSigns      []VitalSign  `json:"vitalSigns,omitempty"`
-	Recommendations []string     `json:"recommendations,omitempty"`
+	DocumentType         string                `json:"documentType"`
+	DocumentDate         string                `json:"documentDate,omitempty"`
+	Organization         string                `json:"organization,omitempty"`
+	Doctor               string                `json:"doctor,omitempty"`
+	Language             string                `json:"language,omitempty"`
+	FullText             string                `json:"fullText"`
+	Diagnoses            []Diagnosis           `json:"diagnoses,omitempty"`
+	Medications          []Medication          `json:"medications,omitempty"`
+	LabResults           []LabResult           `json:"labResults,omitempty"`
+	InstrumentalFindings []InstrumentalFinding `json:"instrumentalFindings,omitempty"`
+	Procedures           []Procedure           `json:"procedures,omitempty"`
+	Allergies            []Allergy             `json:"allergies,omitempty"`
+	VitalSigns           []VitalSign           `json:"vitalSigns,omitempty"`
+	Recommendations      []string              `json:"recommendations,omitempty"`
 }
 
 type Diagnosis struct {
@@ -246,6 +308,20 @@ type LabResult struct {
 	ReferenceLow  float64 `json:"referenceLow,omitempty"`
 	ReferenceHigh float64 `json:"referenceHigh,omitempty"`
 	TakenAt       string  `json:"takenAt,omitempty"`
+}
+
+// InstrumentalFinding mirrors docs/domain/13-instrumental-finding.md — a
+// measured or observed parameter from an instrumental study (ultrasound,
+// MRI, CT, ECG, ...), as opposed to LabResult's laboratory test panels.
+type InstrumentalFinding struct {
+	Structure        string  `json:"structure"`
+	Parameter        string  `json:"parameter"`
+	Value            float64 `json:"value,omitempty"`
+	Unit             string  `json:"unit,omitempty"`
+	QualitativeValue string  `json:"qualitativeValue,omitempty"`
+	ReferenceLow     float64 `json:"referenceLow,omitempty"`
+	ReferenceHigh    float64 `json:"referenceHigh,omitempty"`
+	MeasuredAt       string  `json:"measuredAt,omitempty"`
 }
 
 type Procedure struct {
@@ -346,6 +422,34 @@ func Structured(ctx context.Context, provider StructuredProvider, text string) (
 	return result, raw, nil
 }
 
+// InstrumentalStructured runs Stage 2b: extract only instrumental-study
+// findings from already-transcribed text. Kept separate from Structured
+// (Stage 2a) — see InstrumentalPrompt's doc comment for why combining them
+// into one call turned out to be unreliable on real, dense documents.
+func InstrumentalStructured(ctx context.Context, provider StructuredProvider, text string) ([]InstrumentalFinding, json.RawMessage, error) {
+	req := llm.StructuredRequest{
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: InstrumentalPrompt},
+			{Role: llm.RoleUser, Content: text},
+		},
+		Schema:     InstrumentalSchema(),
+		SchemaName: InstrumentalSchemaName,
+	}
+
+	raw, err := provider.Structured(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extraction: instrumental structured: %w", err)
+	}
+
+	var parsed struct {
+		InstrumentalFindings []InstrumentalFinding `json:"instrumentalFindings"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, raw, fmt.Errorf("extraction: instrumental structured: unmarshal result: %w", err)
+	}
+	return parsed.InstrumentalFindings, raw, nil
+}
+
 // Provider is the union Extract needs: something that can both Chat (Stage
 // 1) and Structured (Stage 2) — gemini.Provider satisfies this directly;
 // router.Router does too once at least one configured provider implements
@@ -355,14 +459,32 @@ type Provider interface {
 	StructuredProvider
 }
 
-// Extract runs both stages against one document image: OCR then Structured.
-// This is the function real Pipeline code should call; OCR and Structured
-// are exported separately for tests/tooling that want to inspect or reuse
-// an intermediate transcription (e.g. cmd/extract-test).
+// Extract runs all stages against one document image: OCR, then Structured
+// (Stage 2a) and InstrumentalStructured (Stage 2b) as two independent calls
+// over the same transcribed text, merged into one Result. This is the
+// function real Pipeline code should call; the individual stages are
+// exported separately for tests/tooling that want to inspect or reuse an
+// intermediate result (e.g. cmd/extract-test).
 func Extract(ctx context.Context, provider Provider, imageBase64, mimeType string) (Result, json.RawMessage, error) {
 	text, err := OCR(ctx, provider, imageBase64, mimeType)
 	if err != nil {
 		return Result{}, nil, err
 	}
-	return Structured(ctx, provider, text)
+
+	result, _, err := Structured(ctx, provider, text)
+	if err != nil {
+		return Result{}, nil, err
+	}
+
+	findings, _, err := InstrumentalStructured(ctx, provider, text)
+	if err != nil {
+		return Result{}, nil, err
+	}
+	result.InstrumentalFindings = findings
+
+	merged, err := json.Marshal(result)
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("extraction: marshal merged result: %w", err)
+	}
+	return result, merged, nil
 }

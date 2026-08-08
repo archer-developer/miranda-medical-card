@@ -236,6 +236,8 @@ Provider Registry
 
 ├── Lab Results
 
+├── Instrumental Findings
+
 ├── Documents
 
 └── Embeddings
@@ -486,11 +488,12 @@ Context Builder может ограничивать объем данных.
 1. Timeline
 2. Medication
 3. Lab Results
-4. Diagnosis
-5. Procedures
-6. Medical Profile
-7. Documents
-8. Embeddings
+4. Instrumental Findings
+5. Diagnosis
+6. Procedures
+7. Medical Profile
+8. Documents
+9. Embeddings
 
 Конкретный порядок может изменяться в зависимости от сервиса.
 

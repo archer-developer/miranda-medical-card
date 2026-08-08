@@ -153,6 +153,24 @@ Value Object не имеет собственного текстового оп�
 
 ---
 
-# 11. Общий принцип
+# 11. InstrumentalModality
+
+Метод инструментального исследования (`InstrumentalFinding.modality`, см. `13-instrumental-finding.md` §3).
+
+```text
+ultrasound
+mri
+ct
+xray
+ecg
+echo_kg
+other
+```
+
+Отдельная от `Procedure.type` (см. `08-procedure.md` §2) классификация: `Procedure.type` описывает *категорию события* ("это обследование"), `InstrumentalModality` — *конкретный метод*, которым оно выполнено. Одному `Procedure` с `type: examination` соответствует ровно одна `InstrumentalModality`.
+
+---
+
+# 12. Общий принцип
 
 Ни один Value Object не имеет собственного `id`, собственного Repository или собственного жизненного цикла — он существует только как часть содержащей его Entity и удаляется/пересоздаётся вместе с ней.

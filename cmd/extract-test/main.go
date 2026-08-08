@@ -11,7 +11,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -93,20 +92,27 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 	}
 	fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 
-	result, raw, err := extraction.Structured(ctx, structuredProvider, text)
+	result, _, err := extraction.Structured(ctx, structuredProvider, text)
 	if err != nil {
 		return fmt.Errorf("structured: %w", err)
 	}
 
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, raw, "", "  "); err != nil {
-		return fmt.Errorf("indent result: %w", err)
+	findings, findingsRaw, err := extraction.InstrumentalStructured(ctx, structuredProvider, text)
+	if err != nil {
+		return fmt.Errorf("instrumental structured: %w", err)
+	}
+	result.InstrumentalFindings = findings
+	fmt.Fprintf(os.Stderr, "--- stage 2b (instrumental findings) raw ---\n%s\n\n", string(findingsRaw))
+
+	merged, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal merged result: %w", err)
 	}
 
-	fmt.Printf("=== %s ===\n%s\n\n", path, pretty.String())
-	fmt.Fprintf(os.Stderr, "summary: type=%s date=%s diagnoses=%d medications=%d labResults=%d procedures=%d allergies=%d vitalSigns=%d recommendations=%d\n\n",
+	fmt.Printf("=== %s ===\n%s\n\n", path, string(merged))
+	fmt.Fprintf(os.Stderr, "summary: type=%s date=%s diagnoses=%d medications=%d labResults=%d instrumentalFindings=%d procedures=%d allergies=%d vitalSigns=%d recommendations=%d\n\n",
 		result.DocumentType, result.DocumentDate, len(result.Diagnoses), len(result.Medications),
-		len(result.LabResults), len(result.Procedures), len(result.Allergies), len(result.VitalSigns), len(result.Recommendations))
+		len(result.LabResults), len(result.InstrumentalFindings), len(result.Procedures), len(result.Allergies), len(result.VitalSigns), len(result.Recommendations))
 	return nil
 }
 
