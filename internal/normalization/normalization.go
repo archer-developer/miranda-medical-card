@@ -11,9 +11,13 @@
 // междокументных связей" for why that's read-time logic (Medication
 // Resolver / Diagnosis Resolver, see docs/domain/01-overview.md §7), not
 // Normalization's job. What this package does do: assign generated ids,
-// parse/validate dates, and carry every extraction field through to its
-// corresponding domain field 1:1 — no name canonicalization yet (see
-// canonicalize's doc comment for the specific, still-open gap).
+// parse/validate dates, carry every extraction field through to its
+// corresponding domain field 1:1 (no name canonicalization yet — see
+// canonicalize's doc comment for the specific, still-open gap), and —
+// the one deliberate exception to "document-scoped only" — dimensional
+// unit normalization for LabResult/InstrumentalFinding (see units.go for
+// why picking a canonical unit is mechanical enough not to have the same
+// problems as entity linking).
 package normalization
 
 import (
@@ -57,16 +61,23 @@ type Medication struct {
 }
 
 // LabResult mirrors docs/domain/09-lab-result-and-vital-sign.md §2.
+// Value/Unit are exactly as extracted, never touched by this package.
+// NormalizedValue/NormalizedUnit are Normalization's own derived,
+// rebuildable addition (see units.go's CanonicalUnitResolver) — empty when
+// the unit isn't recognized as convertible to this indicator's established
+// canonical unit, never a guessed value.
 type LabResult struct {
-	ID            string
-	UserID        string
-	DocumentID    string
-	IndicatorName string
-	Value         float64
-	Unit          string
-	ReferenceLow  float64
-	ReferenceHigh float64
-	TakenAt       *time.Time
+	ID              string
+	UserID          string
+	DocumentID      string
+	IndicatorName   string
+	Value           float64
+	Unit            string
+	NormalizedValue float64
+	NormalizedUnit  string
+	ReferenceLow    float64
+	ReferenceHigh   float64
+	TakenAt         *time.Time
 }
 
 // InstrumentalFinding mirrors docs/domain/13-instrumental-finding.md §3.
@@ -84,6 +95,8 @@ type InstrumentalFinding struct {
 	Parameter        string
 	Value            float64
 	Unit             string
+	NormalizedValue  float64
+	NormalizedUnit   string
 	QualitativeValue string
 	ReferenceLow     float64
 	ReferenceHigh    float64
@@ -145,7 +158,12 @@ type Result struct {
 // medication shouldn't discard the other 8 correctly-extracted ones. Errors
 // are annotated with enough context (entity type + index + field) to find
 // the offending Extraction entry.
-func Normalize(userID, documentID string, extracted extraction.Result) (Result, []error) {
+//
+// resolver supplies dimensional unit normalization for LabResult/
+// InstrumentalFinding (see units.go) — pass nil to skip it entirely
+// (NormalizedValue/NormalizedUnit are left zero on every entity), e.g. for
+// callers that only care about the raw structural mapping.
+func Normalize(userID, documentID string, extracted extraction.Result, resolver CanonicalUnitResolver) (Result, []error) {
 	var errs []error
 	addErr := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(format, args...))
@@ -202,16 +220,24 @@ func Normalize(userID, documentID string, extracted extraction.Result) (Result, 
 		if err != nil {
 			addErr("labResults[%d] %q: takenAt: %w", i, l.Name, err)
 		}
+		indicatorName := canonicalize(l.Name)
+		var normValue float64
+		var normUnit string
+		if resolver != nil {
+			normValue, normUnit, _ = normalizeUnit(resolver, userID, indicatorName, l.Value, l.Unit)
+		}
 		result.LabResults = append(result.LabResults, LabResult{
-			ID:            fmt.Sprintf("lab_%s_%d", documentID, i),
-			UserID:        userID,
-			DocumentID:    documentID,
-			IndicatorName: canonicalize(l.Name),
-			Value:         l.Value,
-			Unit:          l.Unit,
-			ReferenceLow:  l.ReferenceLow,
-			ReferenceHigh: l.ReferenceHigh,
-			TakenAt:       takenAt,
+			ID:              fmt.Sprintf("lab_%s_%d", documentID, i),
+			UserID:          userID,
+			DocumentID:      documentID,
+			IndicatorName:   indicatorName,
+			Value:           l.Value,
+			Unit:            l.Unit,
+			NormalizedValue: normValue,
+			NormalizedUnit:  normUnit,
+			ReferenceLow:    l.ReferenceLow,
+			ReferenceHigh:   l.ReferenceHigh,
+			TakenAt:         takenAt,
 		})
 	}
 
@@ -220,14 +246,28 @@ func Normalize(userID, documentID string, extracted extraction.Result) (Result, 
 		if err != nil {
 			addErr("instrumentalFindings[%d] %s/%s: measuredAt: %w", i, f.Structure, f.Parameter, err)
 		}
+		structure := canonicalize(f.Structure)
+		var normValue float64
+		var normUnit string
+		// Only quantitative findings (Unit set) go through unit
+		// normalization — a qualitative-only finding (e.g. "эхогенность:
+		// обычная") has nothing to convert. The lookup key combines
+		// structure and parameter (e.g. "Печень/правая доля КВР") since,
+		// unlike LabResult's flat indicator namespace, the same parameter
+		// name can recur across different structures with unrelated units.
+		if resolver != nil && f.Unit != "" {
+			normValue, normUnit, _ = normalizeUnit(resolver, userID, structure+"/"+f.Parameter, f.Value, f.Unit)
+		}
 		result.InstrumentalFindings = append(result.InstrumentalFindings, InstrumentalFinding{
 			ID:               fmt.Sprintf("finding_%s_%d", documentID, i),
 			UserID:           userID,
 			DocumentID:       documentID,
-			Structure:        canonicalize(f.Structure),
+			Structure:        structure,
 			Parameter:        f.Parameter,
 			Value:            f.Value,
 			Unit:             f.Unit,
+			NormalizedValue:  normValue,
+			NormalizedUnit:   normUnit,
 			QualitativeValue: f.QualitativeValue,
 			ReferenceLow:     f.ReferenceLow,
 			ReferenceHigh:    f.ReferenceHigh,

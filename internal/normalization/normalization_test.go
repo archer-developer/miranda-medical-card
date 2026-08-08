@@ -26,10 +26,42 @@ func loadFixture(t *testing.T, name string) extraction.Result {
 	return result
 }
 
+// fakeResolver is a minimal in-memory normalization.CanonicalUnitResolver
+// — mirrors how a real Repository-backed implementation behaves ("the
+// first Normalize call for an indicator establishes its canonical unit")
+// without a database. Matches this family's "narrow interface + small
+// hand-written fake" convention (see miranda-service-skeleton/CLAUDE.md)
+// over a mocking framework.
+type fakeResolver struct {
+	canonical map[string]string // "userID/indicatorName" -> unit
+}
+
+func newFakeResolver() *fakeResolver {
+	return &fakeResolver{canonical: map[string]string{}}
+}
+
+func (r *fakeResolver) CanonicalUnit(userID, indicatorName string) (string, bool) {
+	unit, ok := r.canonical[userID+"/"+indicatorName]
+	return unit, ok
+}
+
+// recordUnits stands in for what a real integration does after Normalize
+// returns: persist each result's NormalizedUnit so it becomes canonical for
+// any later document. Only records the first unit seen per indicator,
+// matching CanonicalUnitResolver's "first write wins" contract.
+func (r *fakeResolver) recordUnits(userID string, results []normalization.LabResult) {
+	for _, res := range results {
+		key := userID + "/" + res.IndicatorName
+		if _, exists := r.canonical[key]; !exists && res.NormalizedUnit != "" {
+			r.canonical[key] = res.NormalizedUnit
+		}
+	}
+}
+
 func TestNormalize_InvitroCBC(t *testing.T) {
 	extracted := loadFixture(t, "invitro_cbc_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted)
+	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs, "no date-parsing issues expected on this fixture")
 
 	require.Len(t, result.LabResults, 20)
@@ -55,7 +87,7 @@ func TestNormalize_InvitroCBC(t *testing.T) {
 func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 	extracted := loadFixture(t, "helix_biochem_lipid_cbc_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted)
+	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.LabResults, 39)
@@ -77,7 +109,7 @@ func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 func TestNormalize_LodeConsultation(t *testing.T) {
 	extracted := loadFixture(t, "lode_consultation_expected.json")
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted)
+	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.Diagnoses, 9)
@@ -119,7 +151,7 @@ func TestNormalize_GravitaUltrasound(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &findings))
 	extracted.InstrumentalFindings = findings.InstrumentalFindings
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted)
+	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
 	require.Empty(t, errs, "every measuredAt in this fixture is the same valid date — any parse error here is a real bug")
 
 	require.Len(t, result.InstrumentalFindings, 76)
@@ -157,9 +189,94 @@ func TestNormalize_InvalidDateDoesNotDiscardOtherEntities(t *testing.T) {
 		},
 	}
 
-	result, errs := normalization.Normalize("user_test", "doc_test", extracted)
+	result, errs := normalization.Normalize("user_test", "doc_test", extracted, nil)
 	require.Len(t, errs, 1, "exactly the one bad date should be reported")
 	require.Len(t, result.LabResults, 2, "both entities must still be present — a bad date on one must not discard the other")
 	require.Nil(t, result.LabResults[0].TakenAt)
 	require.NotNil(t, result.LabResults[1].TakenAt)
+}
+
+// TestNormalize_UnitNormalization_FirstSeenBecomesCanonical uses the exact
+// real values from the two fixtures that motivated unit normalization in
+// the first place (invitro_cbc's Гемоглобин, 14.4 г/дл; helix's Гемоглобин
+// (HGB), 150 г/л — see units.go's package doc comment) to verify the
+// "first seen wins" mechanism end to end.
+//
+// Deliberately uses the same literal indicator name for both measurements,
+// unlike the two real fixtures' actual literal names ("Гемоглобин" vs
+// "Гемоглобин (HGB)") — CanonicalUnitResolver looks up by indicatorName,
+// and those two strings aren't recognized as the same indicator without
+// canonicalize() first solving name matching (still an open gap, see
+// canonicalize's doc comment). Unit normalization and name canonicalization
+// are two different open problems that happen to both need solving before
+// these two real documents' Гемоглобин values actually get compared to
+// each other in practice — this test isolates and verifies only the first
+// one.
+func TestNormalize_UnitNormalization_FirstSeenBecomesCanonical(t *testing.T) {
+	resolver := newFakeResolver()
+
+	first := extraction.Result{
+		DocumentType: "lab_report",
+		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 14.4, Unit: "г/дл"}},
+	}
+	firstResult, errs := normalization.Normalize("user_test", "doc_1", first, resolver)
+	require.Empty(t, errs)
+	require.Equal(t, 14.4, firstResult.LabResults[0].NormalizedValue)
+	require.Equal(t, "г/дл", firstResult.LabResults[0].NormalizedUnit, "first-ever measurement: its own unit becomes canonical")
+	resolver.recordUnits("user_test", firstResult.LabResults)
+
+	second := extraction.Result{
+		DocumentType: "lab_report",
+		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 150, Unit: "г/л"}},
+	}
+	secondResult, errs := normalization.Normalize("user_test", "doc_2", second, resolver)
+	require.Empty(t, errs)
+	require.Equal(t, "г/дл", secondResult.LabResults[0].NormalizedUnit, "converted to match the already-established canonical unit")
+	require.InDelta(t, 15.0, secondResult.LabResults[0].NormalizedValue, 0.001, "150 г/л = 15.0 г/дл")
+}
+
+// TestNormalize_UnitNormalization_CellCountsAreExactlyEqualNotJustProportional
+// covers the second real pair from the same two fixtures — Эритроциты
+// "млн/мкл" vs "10^12 клеток/л" — where the conversion factor is exactly 1
+// (see units.go's package doc comment for the arithmetic), not a case where
+// getting the factor slightly wrong would be easy to miss in a spot check.
+func TestNormalize_UnitNormalization_CellCountsAreExactlyEqualNotJustProportional(t *testing.T) {
+	resolver := newFakeResolver()
+
+	first := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.80, Unit: "млн/мкл"}},
+	}
+	firstResult, _ := normalization.Normalize("user_test", "doc_1", first, resolver)
+	resolver.recordUnits("user_test", firstResult.LabResults)
+
+	second := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.9, Unit: "10^12 клеток/л"}},
+	}
+	secondResult, _ := normalization.Normalize("user_test", "doc_2", second, resolver)
+	require.Equal(t, "млн/мкл", secondResult.LabResults[0].NormalizedUnit)
+	require.Equal(t, 4.9, secondResult.LabResults[0].NormalizedValue, "1 10^12/л = 1 млн/мкл exactly — no scaling")
+}
+
+func TestNormalize_UnitNormalization_UnknownUnitLeftUnset(t *testing.T) {
+	resolver := newFakeResolver()
+	resolver.canonical["user_test/Some Indicator"] = "widgets"
+
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Some Indicator", Value: 5, Unit: "gizmos"}},
+	}
+	result, errs := normalization.Normalize("user_test", "doc_1", extracted, resolver)
+	require.Empty(t, errs)
+	require.Zero(t, result.LabResults[0].NormalizedValue)
+	require.Empty(t, result.LabResults[0].NormalizedUnit, "gizmos -> widgets isn't a known conversion — must not guess")
+}
+
+func TestNormalize_UnitNormalization_NilResolverLeavesNormalizedFieldsZero(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "ALT", Value: 28.3, Unit: "Ед/л"}},
+	}
+	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	require.Empty(t, errs)
+	require.Zero(t, result.LabResults[0].NormalizedValue)
+	require.Empty(t, result.LabResults[0].NormalizedUnit)
+	require.Equal(t, 28.3, result.LabResults[0].Value, "the raw value must be unaffected by resolver being nil")
 }
