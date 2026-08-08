@@ -30,7 +30,7 @@
 | `id` | string (`dx_...`) | ✅ | Идентификатор. |
 | `userId` | string | ✅ | Владелец. |
 | `documentId` | string | ✅ | Документ-источник. |
-| `code` | `DiagnosisCode` (VO) | ❌ | Код диагноза (ICD-10 и т.п.), если распознан. Отсутствие кода не блокирует создание сущности — см. `../architecture/02-processing-pipeline.md` §16 "автоматическое определение ICD-10" как будущее расширение. |
+| `code` | `MedicalCode` (VO, см. `11-value-objects.md` §10) | ❌ | Код диагноза (ICD-10 и т.п.), если распознан. Отсутствие кода не блокирует создание сущности — см. `../architecture/02-processing-pipeline.md` §16 "автоматическое определение ICD-10" как будущее расширение. |
 | `name` | string | ✅ | Название диагноза как в документе. |
 | `diagnosedAt` | date | ❌ | Дата постановки. |
 | `status` | enum (`suspected`, `active`, `chronic`, `resolved`) | ✅ | См. §4. |

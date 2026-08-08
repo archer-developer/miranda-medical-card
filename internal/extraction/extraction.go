@@ -156,6 +156,8 @@ func Schema() map[string]any {
 					"type": "object",
 					"properties": map[string]any{
 						"name":          map[string]any{"type": "string", "description": "Indicator name as printed, e.g. ALT, LDL."},
+						"code":          map[string]any{"type": "string", "description": "Lab test code, if printed (e.g. LOINC)."},
+						"codeSystem":    map[string]any{"type": "string", "description": "e.g. loinc — only if a code is present."},
 						"value":         map[string]any{"type": "number"},
 						"unit":          map[string]any{"type": "string"},
 						"referenceLow":  map[string]any{"type": "number"},
@@ -303,6 +305,8 @@ type Medication struct {
 
 type LabResult struct {
 	Name          string  `json:"name"`
+	Code          string  `json:"code,omitempty"`
+	CodeSystem    string  `json:"codeSystem,omitempty"`
 	Value         float64 `json:"value"`
 	Unit          string  `json:"unit,omitempty"`
 	ReferenceLow  float64 `json:"referenceLow,omitempty"`

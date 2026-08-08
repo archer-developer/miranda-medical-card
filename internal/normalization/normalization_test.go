@@ -270,6 +270,47 @@ func TestNormalize_UnitNormalization_UnknownUnitLeftUnset(t *testing.T) {
 	require.Empty(t, result.LabResults[0].NormalizedUnit, "gizmos -> widgets isn't a known conversion — must not guess")
 }
 
+// TestNormalize_LOINC_FallbackDictionaryAppliesWhenNoCodePrinted covers the
+// far more common real-world path than transcription: the source document
+// never printed a LOINC code at all (true of every fixture under
+// internal/extraction/testdata — none of our real lab reports print one),
+// so the small curated alias table in loinc.go is what actually assigns a
+// code in practice.
+func TestNormalize_LOINC_FallbackDictionaryAppliesWhenNoCodePrinted(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Гемоглобин (HGB)", Value: 150, Unit: "г/л"},
+			{Name: "Совершенно неизвестный показатель", Value: 1, Unit: "ед"},
+		},
+	}
+	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	require.Empty(t, errs)
+
+	require.Equal(t, "718-7", result.LabResults[0].Code, "known alias should resolve via the fallback dictionary")
+	require.Equal(t, "loinc", result.LabResults[0].CodeSystem)
+
+	require.Empty(t, result.LabResults[1].Code, "an indicator not in the dictionary must be left uncoded, never guessed")
+	require.Empty(t, result.LabResults[1].CodeSystem)
+}
+
+// TestNormalize_LOINC_PrintedCodeTakesPriorityOverDictionary covers the
+// rarer path — extraction.LabResult.Code/CodeSystem is only ever populated
+// when Extraction transcribed a code that was literally printed in the
+// document — and a printed code, when present, must win over the fallback
+// dictionary rather than being silently overwritten.
+func TestNormalize_LOINC_PrintedCodeTakesPriorityOverDictionary(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Гемоглобин (HGB)", Code: "custom-lab-code-123", CodeSystem: "local", Value: 150, Unit: "г/л"},
+		},
+	}
+	result, errs := normalization.Normalize("user_test", "doc_1", extracted, nil)
+	require.Empty(t, errs)
+
+	require.Equal(t, "custom-lab-code-123", result.LabResults[0].Code)
+	require.Equal(t, "local", result.LabResults[0].CodeSystem)
+}
+
 func TestNormalize_UnitNormalization_NilResolverLeavesNormalizedFieldsZero(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "ALT", Value: 28.3, Unit: "Ед/л"}},

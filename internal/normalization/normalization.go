@@ -65,12 +65,17 @@ type Medication struct {
 // NormalizedValue/NormalizedUnit are Normalization's own derived,
 // rebuildable addition (see units.go's CanonicalUnitResolver) — empty when
 // the unit isn't recognized as convertible to this indicator's established
-// canonical unit, never a guessed value.
+// canonical unit, never a guessed value. Code/CodeSystem come either from
+// Extraction transcribing a printed code, or — far more often in
+// practice — this package's own small LOINC alias lookup (see loinc.go,
+// including its accuracy caveat) when nothing was printed.
 type LabResult struct {
 	ID              string
 	UserID          string
 	DocumentID      string
 	IndicatorName   string
+	Code            string
+	CodeSystem      string
 	Value           float64
 	Unit            string
 	NormalizedValue float64
@@ -226,11 +231,19 @@ func Normalize(userID, documentID string, extracted extraction.Result, resolver 
 		if resolver != nil {
 			normValue, normUnit, _ = normalizeUnit(resolver, userID, indicatorName, l.Value, l.Unit)
 		}
+		code, codeSystem := l.Code, l.CodeSystem
+		if code == "" {
+			if loinc, ok := lookupLOINC(l.Name); ok {
+				code, codeSystem = loinc, "loinc"
+			}
+		}
 		result.LabResults = append(result.LabResults, LabResult{
 			ID:              fmt.Sprintf("lab_%s_%d", documentID, i),
 			UserID:          userID,
 			DocumentID:      documentID,
 			IndicatorName:   indicatorName,
+			Code:            code,
+			CodeSystem:      codeSystem,
 			Value:           l.Value,
 			Unit:            l.Unit,
 			NormalizedValue: normValue,

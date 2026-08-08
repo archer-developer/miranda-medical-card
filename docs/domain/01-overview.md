@@ -294,7 +294,7 @@ Knowledge не предназначен для прямого использов
 - MedicationStatus
 - DocumentType
 - TimelineEventType
-- DiagnosisCode
+- MedicalCode
 
 Это позволяет инкапсулировать бизнес-правила внутри модели.
 
@@ -429,6 +429,6 @@ Domain отвечает только на один вопрос:
 - **08-procedure.md** — Procedure.
 - **09-lab-result-and-vital-sign.md** — LabResult, VitalSign.
 - **10-medical-knowledge-and-embedding.md** — MedicalKnowledge, Embedding.
-- **11-value-objects.md** — Dosage, LabValue, BloodPressure, DateRange, MedicationStatus, DocumentType, TimelineEventType, DiagnosisCode.
+- **11-value-objects.md** — Dosage, LabValue, BloodPressure, DateRange, MedicationStatus, DocumentType, TimelineEventType, MedicalCode.
 - **12-self-reported-events.md** — SelfReportedEvent, MedicationIntake.
 - **13-instrumental-finding.md** — InstrumentalFinding.
