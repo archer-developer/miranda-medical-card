@@ -277,6 +277,8 @@ Embedding Search позволяет найти:
 - связанные симптомы;
 - косвенные упоминания.
 
+Свободный текст самостоятельно зафиксированных событий (`SelfReportedEvent.rawText`/`description`, см. `../domain/12-self-reported-events.md` §6 и `../mcp/07-events.md`) — один из лучших кандидатов для Embedding Search: вопросы вида "когда мне было плохо" чаще относятся именно к тому, что пользователь сам о себе рассказал, чем к формальным документам.
+
 ---
 
 ## Когда использовать Embeddings
@@ -375,16 +377,18 @@ Timeline может ссылаться на тот же документ, кот
 Например:
 
 ```text
-Timeline Event        1.00
+Timeline Event (документ)        1.00
 
-Medication            1.00
+Medication / Lab Result          1.00
 
-Lab Result            1.00
+Timeline Event (self-reported)   0.90
 
-FTS                   0.82
+FTS                              0.82
 
-Embedding             0.74
+Embedding                        0.74
 ```
+
+Данные, извлечённые из документа, верифицируемы третьей стороной (врач, лаборатория) и получают полную уверенность. Самостоятельно зафиксированные события (`symptom`, `medication_taken` — см. `../domain/12-self-reported-events.md` §6) остаются структурированными фактами в SQLite и поэтому приоритетнее FTS/Embeddings, но не наравне с документальными — они неверифицируемы, поэтому используют собственную, более низкую ступень Confidence.
 
 Confidence используется только внутри Search Engine.
 
@@ -473,6 +477,7 @@ LLM — самая высокая
 | Процедуры | SQLite |
 | Timeline | SQLite |
 | Medical Profile | SQLite |
+| Самостоятельные события (symptom/medication_taken) | SQLite |
 | Документы | FTS |
 | Семантика | Embeddings |
 

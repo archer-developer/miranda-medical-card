@@ -32,8 +32,8 @@
 | `type` | `TimelineEventType` (VO) | ✅ | Тип события — см. Value Objects (`11-value-objects.md`) за полным перечнем. |
 | `title` | string | ✅ | Краткое название для отображения. |
 | `summary` | text | ✅ | Краткое описание, только факты — без медицинских выводов (см. `../mcp/06-timeline.md` §9). |
-| `documentId` | string | ❌ | Документ-источник, если событие связано с конкретным документом. |
-| `sourceEntityType` | enum (`medication`, `diagnosis`, `procedure`, `lab_result`, `vital_sign`, `document`) | ❌ | Тип доменной сущности того же документа, породившей это событие. |
+| `documentId` | string | ❌ | Документ-источник, если событие связано с конкретным документом. Отсутствует у событий, порождённых `medical.log_event` (`type: symptom` / `medication_taken`) — см. `12-self-reported-events.md` §5. |
+| `sourceEntityType` | enum (`medication`, `diagnosis`, `procedure`, `lab_result`, `vital_sign`, `document`, `self_reported_event`, `medication_intake`) | ❌ | Тип доменной сущности, породившей это событие — той же документ (для document-derived событий) либо `SelfReportedEvent`/`MedicationIntake` (для событий из `medical.log_event`, см. `12-self-reported-events.md` §5). |
 | `sourceEntityId` | string | ❌ | Идентификатор этой сущности. Используется только для перестроения/удаления события вместе с сущностью — не образует связь между документами (см. §4). |
 
 ## Пример
@@ -67,7 +67,7 @@ Timeline(userId) = { события: TimelineEvent[] | событие.userId == 
 
 # 4. Инварианты
 
-- Каждое `TimelineEvent`, у которого задан `sourceEntityId`, привязано **строго к сущности из того же документа** (`documentId`), из которого оно построено — это внутренняя (intra-document) связь, необходимая только для перестроения/удаления события синхронно с сущностью. Она не является межdocumентной связью и не участвует в сопоставлении "тот же курс лечения" между разными документами — межdocumентная связность намеренно не хранится нигде в модели (см. `../architecture/02-processing-pipeline.md` §6 "Почему нет постоянных междокументных связей").
+- Каждое `TimelineEvent`, у которого задан `sourceEntityId` и `documentId`, привязано **строго к сущности из того же документа** — это внутренняя (intra-document) связь, необходимая только для перестроения/удаления события синхронно с сущностью. Она не является межdocumентной связью и не участвует в сопоставлении "тот же курс лечения" между разными документами — межdocumентная связность намеренно не хранится нигде в модели (см. `../architecture/02-processing-pipeline.md` §6 "Почему нет постоянных междокументных связей"). Для событий без `documentId` (`type: symptom` / `medication_taken`) `sourceEntityId` ссылается на `SelfReportedEvent`/`MedicationIntake` — см. `12-self-reported-events.md` §5.
 - `TimelineEvent` не редактируется вручную — пересобирается автоматически при импорте или удалении документа (см. `../mcp/06-timeline.md` §11).
 - Удаление `MedicalDocument` удаляет все `TimelineEvent` с этим `documentId`.
 - Каждая доменная сущность, имеющая дату (Medication, Diagnosis, Procedure, LabResult, VitalSign), при создании порождает хотя бы одно `TimelineEvent` (см. `../architecture/02-processing-pipeline.md` §7).

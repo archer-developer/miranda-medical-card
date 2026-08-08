@@ -90,7 +90,22 @@ Value Objects инкапсулируют бизнес-правила, котор
 
 ---
 
-# 7. DocumentType
+# 7. DocumentStatus
+
+Замкнутое перечисление статусов прохождения Pipeline — используется и `MedicalDocument.status` (см. `03-files-and-documents.md` §3), и `SelfReportedEvent.status` (см. `12-self-reported-events.md` §3), поскольку оба проходят через один и тот же по духу процесс, только разной длины.
+
+```text
+PENDING
+RUNNING
+READY
+FAILED
+```
+
+См. `../architecture/02-processing-pipeline.md` §14 за полным описанием семантики каждого значения.
+
+---
+
+# 8. DocumentType
 
 Замкнутое (но расширяемое без изменения MCP API — см. `../mcp/03-documents.md` §10) перечисление типов документа (`MedicalDocument.documentType`, см. `03-files-and-documents.md` §3).
 
@@ -100,7 +115,7 @@ Value Objects инкапсулируют бизнес-правила, котор
 
 ---
 
-# 8. TimelineEventType
+# 9. TimelineEventType
 
 Замкнутое (расширяемое) перечисление типов событий Timeline (`TimelineEvent.type`, см. `04-timeline.md` §2), полный список — `../mcp/06-timeline.md` §6:
 
@@ -117,13 +132,15 @@ lab_result
 vaccination
 vital_sign
 document
+symptom
+medication_taken
 ```
 
-Отображения из доменных сущностей в конкретное значение см. в соответствующих файлах: `06-medication.md` §4 (Medication), `07-diagnosis-and-allergy.md` §2/§3 (Diagnosis/Allergy), `08-procedure.md` §4 (Procedure), `09-lab-result-and-vital-sign.md` §2/§3 (LabResult/VitalSign).
+Отображения из доменных сущностей в конкретное значение см. в соответствующих файлах: `06-medication.md` §4 (Medication), `07-diagnosis-and-allergy.md` §2/§3 (Diagnosis/Allergy), `08-procedure.md` §4 (Procedure), `09-lab-result-and-vital-sign.md` §2/§3 (LabResult/VitalSign), `12-self-reported-events.md` §5 (SelfReportedEvent/MedicationIntake — единственные два типа без `documentId`).
 
 ---
 
-# 9. DiagnosisCode
+# 10. DiagnosisCode
 
 Код диагноза (`Diagnosis.code`, см. `07-diagnosis-and-allergy.md` §2).
 
@@ -136,6 +153,6 @@ Value Object не имеет собственного текстового оп�
 
 ---
 
-# 10. Общий принцип
+# 11. Общий принцип
 
 Ни один Value Object не имеет собственного `id`, собственного Repository или собственного жизненного цикла — он существует только как часть содержащей его Entity и удаляется/пересоздаётся вместе с ней.

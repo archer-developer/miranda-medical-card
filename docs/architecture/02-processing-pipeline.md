@@ -568,3 +568,41 @@ Pipeline изначально проектируется расширяемым.
 - извлечение показателей носимых устройств (Apple Health, Google Fit и др.).
 
 Добавление новых этапов не должно изменять существующую архитектуру Pipeline.
+
+---
+
+# 17. Альтернативный вход: Self-Reported Events
+
+Помимо `Upload` (§4.1), у Pipeline есть второй, более короткий вход — `medical.log_event` (см. `../mcp/07-events.md`), для фактов, о которых пользователь сообщает напрямую в диалоге, без документа (например "приступ головной боли, принял ибупрофен").
+
+```text
+                     Текст пользователя
+                              │
+                              ▼
+             Save SelfReportedEvent (rawText, occurredAt)
+                              │
+                              ▼
+             Structured Extraction (текст, не OCR)
+                              │
+                              ▼
+                       Normalization
+             (канонизация вещества, если есть MedicationIntake)
+                              │
+                              ▼
+                         Timeline
+                              │
+                              ▼
+                    Embeddings / FTS
+                              │
+                              ▼
+                           READY
+```
+
+Отличия от основного Pipeline:
+
+- нет этапа `Upload`/`Save Artifact` — нет бинарного файла, нечего сохранять и дедуплицировать;
+- нет этапа `OCR / Vision` — вход уже является текстом;
+- нет `Summary` как отдельного этапа — `SelfReportedEvent.description` заполняется тем же вызовом, что и `category` (см. `../mcp/07-events.md` §3), поскольку исходный текст и так короткий;
+- неудача Structured Extraction не переводит запись в `FAILED` — см. `../mcp/07-events.md` §3 "Возможные ошибки": исходный текст пользователя сохраняется даже без структурированных полей, поскольку, в отличие от документа, здесь нет отдельного `download_file`, к которому можно было бы вернуться, если структурирование не удалось.
+
+Оба входа сходятся начиная с `Normalization` и используют один и тот же `TimelineBuilder`. `ProfileBuilder` в v1 не читает `MedicationIntake`/`SelfReportedEvent` — Medical Profile по-прежнему строится только из документально подтверждённых сущностей (см. `../domain/12-self-reported-events.md` §6 и `../domain/05-medical-profile.md`).

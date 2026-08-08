@@ -128,6 +128,10 @@ Timeline состоит из независимых медицинских со�
 - `vaccination`
 - `vital_sign`
 - `document`
+- `symptom`
+- `medication_taken`
+
+`symptom` и `medication_taken` — единственные типы, порождаемые не из документа, а из `medical.log_event` (см. `07-events.md`); соответствующие события не содержат `documentId` (см. §10).
 
 Новые типы могут добавляться без изменения MCP API.
 
@@ -202,6 +206,8 @@ Summary не должен содержать медицинских выводо
 ```
 
 Miranda может использовать `medical.get_document`, чтобы получить информацию об исходном документе.
+
+События типов `symptom` и `medication_taken` (см. §6) не связаны ни с каким документом — поле `documentId` у них отсутствует, поскольку они порождены `medical.log_event`, а не Documents API (см. `07-events.md`).
 
 ---
 

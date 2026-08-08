@@ -73,7 +73,11 @@ User
 
 ├── Lab Results
 
-└── Files
+├── Files
+
+├── Self-Reported Events
+
+└── Medication Intakes
 ```
 
 Все данные принадлежат конкретному пользователю.
@@ -255,6 +259,20 @@ Knowledge не предназначен для прямого использов
 
 ---
 
+## Self-Reported Event
+
+Медицинский факт, зафиксированный пользователем напрямую через диалог с Miranda, без исходного документа (например "приступ головной боли").
+
+Второй, помимо документа, вид первичного источника — исходный текст неизменяем так же, как оригинальный файл.
+
+---
+
+## Medication Intake
+
+Факт однократного приёма лекарства. Не то же самое, что `Medication` — не имеет статуса и не описывает курс лечения, только момент и вещество.
+
+---
+
 # 5. Value Objects
 
 В доменной модели рекомендуется использовать Value Objects вместо примитивных типов.
@@ -404,3 +422,4 @@ Domain отвечает только на один вопрос:
 - **09-lab-result-and-vital-sign.md** — LabResult, VitalSign.
 - **10-medical-knowledge-and-embedding.md** — MedicalKnowledge, Embedding.
 - **11-value-objects.md** — Dosage, LabValue, BloodPressure, DateRange, MedicationStatus, DocumentType, TimelineEventType, DiagnosisCode.
+- **12-self-reported-events.md** — SelfReportedEvent, MedicationIntake.
