@@ -36,7 +36,17 @@ const SchemaName = "medical_document_extraction"
 // beyond faithful transcription. Deliberately the only thing this call is
 // asked to do — see this package's doc comment for why keeping it separate
 // from Structured Extraction turned out to matter.
-const OCRPrompt = `Transcribe the complete text of this document, preserving reading order. Render any tables as plain text rows (one row per line), keeping every column's value. Do not summarize, skip, or omit any part of the document, including headers, footers, disclaimers, and page numbers. Output only the transcribed text, nothing else — no commentary, no markdown formatting.`
+//
+// The explicit " | " column delimiter was added after a real failure: a
+// single-row lab result table transcribed its "Результат"/"Комментарий"
+// columns run together with no separator at all ("отрицат. Скрининговое
+// исследование...", one column bleeding straight into the next), which
+// left Stage 2 unable to reliably tell where the actual result value ended
+// and unrelated commentary began. "one row per line, keeping every
+// column's value" didn't say *how* to keep columns apart, so the model
+// didn't. Naming the delimiter removes that ambiguity — Stage 2's job
+// becomes "split on ' | '", not "guess".
+const OCRPrompt = `Transcribe the complete text of this document, preserving reading order. Render any tables as plain text rows, one row per line, with each column's value separated by " | " (a space, a pipe, a space) — never let two columns run together with no separator. Do not summarize, skip, or omit any part of the document, including headers, footers, disclaimers, and page numbers. Output only the transcribed text, nothing else — no commentary, no markdown formatting.`
 
 // Prompt is Stage 2's instruction, applied to the already-transcribed text
 // from Stage 1 (OCR). It is deliberately conservative: extract only what's
@@ -63,7 +73,9 @@ Rules:
 - If the text contains no instances of a given category (e.g. no medications mentioned), return an empty array for that field, not null.
 - You must attempt to populate every category the text actually contains data for, no matter how many entries there are — e.g. a lab report with 40 result rows must produce 40 entries in "labResults", not a subset and not an empty array. Omitting an individual field within one entry because you're unsure of it is fine; omitting the entire entry, or the entire array, when the text clearly contains the data is not.
 - "labResults" is for laboratory (blood/urine/etc.) test panels only. Measurements and observations from imaging or instrumental studies (ultrasound, MRI, CT, X-ray, ECG, echo-KG) are handled by a separate extraction pass — ignore them here even if the text contains them.
-- A lab result is not always numeric: use "value"+"unit" for a quantitative result, "qualitativeValue" for a non-numeric one (e.g. blood type, a positive/negative/detected/not-detected test result, a text finding) — never force a non-numeric result into "value", and never omit the entry just because it has no numeric value.
+- A lab result is not always numeric: use "value"+"unit" for a quantitative result, "qualitativeValue" for a non-numeric one (e.g. blood type, a positive/negative/detected/not-detected test result, a text finding) — never force a non-numeric result into "value", and never omit the entry just because it has no numeric value. Recognize qualitative results under any of their common abbreviated or full forms — "отрицат."/"отрицательно"/"negative", "полож."/"положительно"/"positive", "обнаружено"/"не обнаружено", "detected"/"not detected", "норма"/"в пределах нормы" — these are results, not commentary to skip.
+- A table row under a header like "Исследование"/"Показатель"/"Анализ" + "Результат" + (optionally) "Норма"/"Референсные значения"/"Комментарий" is a lab result row, no matter how many rows the table has — a table with exactly one row is still a table you must extract, not something to treat as an aside. Columns are separated by " | " (see the transcription's own formatting) — use that to tell where the result value ends and an adjacent comment column begins; do not fold a comment column's text into "qualitativeValue".
+- A document's length or the proportion of it that is patient-facing informational/educational text (safety instructions, legal disclaimers, contact information, general health advice) has no bearing on whether to extract the actual clinical data — a document that is 95% boilerplate and 5% one real lab result must still produce that one labResults entry.
 - If you are not confident you can read a value correctly, omit that specific field rather than guessing.`
 
 // InstrumentalPrompt is Stage 2b's instruction — a separate, narrowly
