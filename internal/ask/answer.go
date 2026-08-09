@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	llm "github.com/archer-developer/miranda-llm"
 )
@@ -38,8 +39,10 @@ type answerResult struct {
 // GenerateAnswer runs the Answer Generator
 // (docs/architecture/03-knowledge-providers.md §14): the second and last
 // LLM call, question + the Context Builder's output in, a grounded answer
-// out.
-func GenerateAnswer(ctx context.Context, provider StructuredProvider, question, builtContext string) (string, error) {
+// out. escalate, if non-nil, is tried once if provider hard-errors (see
+// structuredWithEscalation), matching llm.yaml's answer_provider
+// escalation config, if set. A nil logger falls back to slog.Default().
+func GenerateAnswer(ctx context.Context, provider, escalate StructuredProvider, question, builtContext string, logger *slog.Logger) (string, error) {
 	req := llm.StructuredRequest{
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: answerPrompt},
@@ -49,7 +52,7 @@ func GenerateAnswer(ctx context.Context, provider StructuredProvider, question, 
 		SchemaName: AnswerSchemaName,
 	}
 
-	raw, err := provider.Structured(ctx, req)
+	raw, err := structuredWithEscalation(ctx, provider, escalate, req, "generate answer", logger)
 	if err != nil {
 		return "", fmt.Errorf("ask: generate answer: %w", err)
 	}

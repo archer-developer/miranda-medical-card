@@ -43,7 +43,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 		ask.NewTimelineProvider(storage.NewTimelineRepository(s)),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(s)),
 	)
-	asker := ask.NewAsker(provider, provider, registry, 5*time.Second, 20, nil)
+	asker := ask.NewAsker(provider, nil, provider, nil, registry, 5*time.Second, 20, nil)
 
 	server := mcpserver.New(pl, asker, users, 50*1024*1024, nil)
 

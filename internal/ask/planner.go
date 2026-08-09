@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	llm "github.com/archer-developer/miranda-llm"
@@ -50,8 +51,12 @@ Rules:
 
 // Plan runs the Planner (docs/architecture/03-knowledge-providers.md §6):
 // one Structured call choosing which registered Providers to invoke, and
-// with what parameters, for question.
-func Plan(ctx context.Context, provider StructuredProvider, question string, registry *Registry) ([]PlannerSelection, error) {
+// with what parameters, for question. escalate, if non-nil, is tried once
+// if provider hard-errors (see structuredWithEscalation) — e.g. falling
+// back from Gemini to Claude on a rate limit, matching llm.yaml's
+// planner_provider escalation config, if set. A nil logger falls back to
+// slog.Default().
+func Plan(ctx context.Context, provider, escalate StructuredProvider, question string, registry *Registry, logger *slog.Logger) ([]PlannerSelection, error) {
 	req := llm.StructuredRequest{
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: fmt.Sprintf(plannerPromptTemplate, describeProviders(registry))},
@@ -61,7 +66,7 @@ func Plan(ctx context.Context, provider StructuredProvider, question string, reg
 		SchemaName: PlannerSchemaName,
 	}
 
-	raw, err := provider.Structured(ctx, req)
+	raw, err := structuredWithEscalation(ctx, provider, escalate, req, "plan", logger)
 	if err != nil {
 		return nil, fmt.Errorf("ask: plan: %w", err)
 	}

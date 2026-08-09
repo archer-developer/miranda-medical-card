@@ -18,9 +18,11 @@ type Result struct {
 // GenerateAnswer together — the internal Pipeline behind medical.ask (see
 // docs/mcp/04-medical.md §7).
 type Asker struct {
-	planner  StructuredProvider
-	answerer StructuredProvider
-	registry *Registry
+	planner          StructuredProvider
+	plannerEscalate  StructuredProvider
+	answerer         StructuredProvider
+	answererEscalate StructuredProvider
+	registry         *Registry
 
 	providerTimeout time.Duration
 	maxChunks       int
@@ -31,17 +33,28 @@ type Asker struct {
 // StructuredProvider or different ones (see docs/architecture/05-llm.md §7
 // — Planner favors a fast/cheap model, Answer Generator favors generation
 // quality; which concrete models these are is a main.go config concern,
-// not this package's). A nil logger falls back to slog.Default().
-func NewAsker(planner, answerer StructuredProvider, registry *Registry, providerTimeout time.Duration, maxChunks int, logger *slog.Logger) *Asker {
+// not this package's). plannerEscalate/answererEscalate are each tried
+// once if their corresponding primary provider hard-errors (see
+// structuredWithEscalation) — either or both may be nil to disable
+// escalation for that step, matching llm.yaml's per-provider escalation
+// config (planner_provider and answer_provider are independent providers
+// with independent escalation targets, unlike document_provider's OCR+
+// Structured Extraction, which share one). A nil logger falls back to
+// slog.Default().
+func NewAsker(planner, plannerEscalate, answerer, answererEscalate StructuredProvider, registry *Registry, providerTimeout time.Duration, maxChunks int, logger *slog.Logger) *Asker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Asker{planner: planner, answerer: answerer, registry: registry, providerTimeout: providerTimeout, maxChunks: maxChunks, logger: logger}
+	return &Asker{
+		planner: planner, plannerEscalate: plannerEscalate,
+		answerer: answerer, answererEscalate: answererEscalate,
+		registry: registry, providerTimeout: providerTimeout, maxChunks: maxChunks, logger: logger,
+	}
 }
 
 // Ask implements docs/mcp/04-medical.md §5-11.
 func (a *Asker) Ask(ctx context.Context, userID, question string) (Result, error) {
-	selections, err := Plan(ctx, a.planner, question, a.registry)
+	selections, err := Plan(ctx, a.planner, a.plannerEscalate, question, a.registry, a.logger)
 	if err != nil {
 		return Result{}, fmt.Errorf("ask: plan: %w", err)
 	}
@@ -65,7 +78,7 @@ func (a *Asker) Ask(ctx context.Context, userID, question string) (Result, error
 	// to thread a logger into that package function too.
 	a.logger.Debug("ask: generating answer", "question", question, "chunks", len(ranked), "context", builtContext)
 
-	answer, err := GenerateAnswer(ctx, a.answerer, question, builtContext)
+	answer, err := GenerateAnswer(ctx, a.answerer, a.answererEscalate, question, builtContext, a.logger)
 	if err != nil {
 		return Result{}, fmt.Errorf("ask: generate answer: %w", err)
 	}

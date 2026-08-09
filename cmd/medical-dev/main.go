@@ -203,9 +203,14 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 	return p, nil
 }
 
-func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, documentProviderName string) extraction.StructuredProvider {
+// resolveEscalationProvider mirrors cmd/miranda-medical-card/main.go's
+// helper of the same name — see that copy's doc comment. providerName is
+// any configured role (document_provider, planner_provider,
+// answer_provider), not just the document one — each has its own
+// independent escalation target.
+func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
-		if c.Name != documentProviderName {
+		if c.Name != providerName {
 			continue
 		}
 		if !c.Escalation.Enabled {
@@ -468,6 +473,8 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	if err != nil {
 		return err
 	}
+	plannerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.PlannerProvider)
+	answerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.AnswerProvider)
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
@@ -484,7 +491,7 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 		ask.NewDocumentProvider(storage.NewFTSRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
-	asker := ask.NewAsker(plannerProvider, answerProvider, registry, 20*time.Second, 20, logger)
+	asker := ask.NewAsker(plannerProvider, plannerEscalationProvider, answerProvider, answerEscalationProvider, registry, 20*time.Second, 20, logger)
 
 	fmt.Println("Question")
 	fmt.Println(strings.Repeat("-", 40))

@@ -196,6 +196,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("main: %w", err)
 	}
 	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
+	plannerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.PlannerProvider)
+	answerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.AnswerProvider)
 
 	embeddingAPIKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	if embeddingAPIKey == "" {
@@ -219,7 +221,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		ask.NewDocumentProvider(storage.NewFTSRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
-	asker := ask.NewAsker(plannerProvider, answerProvider, registry, askProviderTimeout, askMaxChunks, logger)
+	asker := ask.NewAsker(plannerProvider, plannerEscalationProvider, answerProvider, answerEscalationProvider, registry, askProviderTimeout, askMaxChunks, logger)
 
 	if cfg.TLS.Enabled {
 		if err := tlscert.EnsureSelfSigned(cfg.TLS.CertFile, cfg.TLS.KeyFile, cfg.TLS.Hosts); err != nil {
@@ -239,6 +241,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"plannerProvider", cfg.LLM.PlannerProvider,
 		"answerProvider", cfg.LLM.AnswerProvider,
 		"escalationConfigured", escalationProvider != nil,
+		"plannerEscalationConfigured", plannerEscalationProvider != nil,
+		"answerEscalationConfigured", answerEscalationProvider != nil,
 		"embeddingModel", cfg.Embedding.Model,
 		"addr", cfg.HTTPAddr,
 		"tls", cfg.TLS.Enabled,
@@ -316,14 +320,19 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 	return p, nil
 }
 
-// resolveEscalationProvider looks up documentProviderName's own
+// resolveEscalationProvider looks up providerName's own
 // ProviderConfig.Escalation and, if enabled, resolves its TargetProvider —
-// see extraction.StructuredWithRetry's escalate parameter. Returns nil
-// (disabling escalation) when the document provider has no escalation
-// configured, which is the default.
-func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, documentProviderName string) extraction.StructuredProvider {
+// see extraction.StructuredWithRetry's escalate parameter (and, since
+// escalation now also covers OCR, extraction.Extract's). Returns nil
+// (disabling escalation) when providerName has no escalation configured,
+// which is the default. Called once per role — document_provider,
+// planner_provider, answer_provider — since each is an independent
+// ProviderConfig with its own, independent escalation target (unlike
+// document_provider's OCR+Structured Extraction, which share one because
+// they're the same call's two stages).
+func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
-		if c.Name != documentProviderName {
+		if c.Name != providerName {
 			continue
 		}
 		if !c.Escalation.Enabled {

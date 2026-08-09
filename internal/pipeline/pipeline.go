@@ -63,7 +63,7 @@ type Result struct {
 // (e.g. "an Extraction row is never active except via Activate").
 type Pipeline struct {
 	provider           extraction.Provider
-	escalationProvider extraction.StructuredProvider
+	escalationProvider extraction.Provider
 	files              *filestore.Store
 
 	fileRepo         storage.FileRepository
@@ -98,18 +98,20 @@ type Pipeline struct {
 
 // New builds a Pipeline. provider supplies both OCR (Chat) and Structured
 // Extraction calls (see extraction.Provider); escalationProvider, if
-// non-nil, is tried once for Structured Extraction (see
-// extraction.StructuredWithRetry) when provider's own attempts are
-// exhausted and still suspiciously empty — nil disables this entirely
-// (see config.LLMConfig.EscalationModel). embedder generates Embedding
-// Search vectors (see docs/architecture/04-search.md §14), tagged with
+// non-nil, is tried once for OCR (on any hard error) and once for
+// Structured Extraction (see extraction.StructuredWithRetry, when
+// provider's own attempts are exhausted and still suspiciously empty) —
+// nil disables both entirely (see config.LLMConfig.EscalationModel). Typed
+// as the full extraction.Provider, not just StructuredProvider, precisely
+// because it needs to run OCR too. embedder generates Embedding Search
+// vectors (see docs/architecture/04-search.md §14), tagged with
 // embeddingProvider/embeddingModel on every stored row (see
 // storage.Embedding.Provider/ModelVersion — the latter is what
 // EmbeddingRepository.ListByUser scopes a search to, so it must stay
 // consistent for vectors to remain comparable). files and s are opened once
 // at process startup and shared across every request. A nil logger falls
 // back to slog.Default().
-func New(provider extraction.Provider, escalationProvider extraction.StructuredProvider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
+func New(provider extraction.Provider, escalationProvider extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
 	if logger == nil {
 		logger = slog.Default()
 	}

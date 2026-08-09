@@ -108,7 +108,7 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 		return fmt.Errorf("structured: %w", err)
 	}
 
-	findings, findingsRaw, err := extraction.InstrumentalStructuredWithRetry(ctx, structuredProvider, text, result.DocumentType == "imaging_report", logger)
+	findings, findingsRaw, err := extraction.InstrumentalStructuredWithRetry(ctx, structuredProvider, nil, text, result.DocumentType == "imaging_report", logger)
 	if err != nil {
 		return fmt.Errorf("instrumental structured: %w", err)
 	}

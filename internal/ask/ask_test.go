@@ -37,7 +37,7 @@ func TestAsker_Ask_EndToEnd(t *testing.T) {
 		JSON: json.RawMessage(`{"answer":"Согласно результатам анализа от 12 марта 2025, ALT составил 54.7 U/L, что выше нормы (до 40 U/L)."}`),
 	})
 
-	asker := ask.NewAsker(planner, answerer, registry, 5*time.Second, 20, nil)
+	asker := ask.NewAsker(planner, nil, answerer, nil, registry, 5*time.Second, 20, nil)
 	result, err := asker.Ask(ctx, "user1", "Когда впервые повысился ALT?")
 	require.NoError(t, err)
 	require.Contains(t, result.Answer, "54.7")
@@ -54,7 +54,7 @@ func TestAsker_Ask_NoProvidersSelectedStillAnswers(t *testing.T) {
 		JSON: json.RawMessage(`{"answer":"В медицинской истории нет информации об этом."}`),
 	})
 
-	asker := ask.NewAsker(planner, answerer, registry, 5*time.Second, 20, nil)
+	asker := ask.NewAsker(planner, nil, answerer, nil, registry, 5*time.Second, 20, nil)
 	result, err := asker.Ask(context.Background(), "user1", "Какая столица Франции?")
 	require.NoError(t, err)
 	require.Contains(t, result.Answer, "нет информации")
@@ -70,7 +70,7 @@ func TestAsker_Ask_ProviderErrorDoesNotFailWholeRequest(t *testing.T) {
 	})
 	answerer := llmtest.New("answerer").WithStructured(llmtest.StructuredResponse{JSON: json.RawMessage(`{"answer":"ok"}`)})
 
-	asker := ask.NewAsker(planner, answerer, registry, 5*time.Second, 20, nil)
+	asker := ask.NewAsker(planner, nil, answerer, nil, registry, 5*time.Second, 20, nil)
 	result, err := asker.Ask(context.Background(), "user1", "question")
 	require.NoError(t, err, "one provider failing must not fail the whole ask")
 	require.Equal(t, "ok", result.Answer)

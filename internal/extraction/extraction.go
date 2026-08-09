@@ -618,12 +618,23 @@ func structuredAttempts(ctx context.Context, provider StructuredProvider, text s
 // Pipeline code and Extract call; Structured itself stays retry-free for
 // callers that need the raw single-attempt behavior.
 //
-// If escalate is non-nil and the primary provider's own attempts are
-// exhausted and still suspicious, StructuredWithRetry makes up to
+// If escalate is non-nil, StructuredWithRetry makes up to
 // maxEscalationAttempts further attempts against escalate — a different
 // model/provider that doesn't necessarily share whatever made the primary
-// one miss — instead of trying the primary a third time. escalate may be
-// nil to disable this entirely (the default; see
+// one miss — in either of two cases, instead of trying the primary a
+// third time:
+//   - the primary provider's own attempts are exhausted and still
+//     suspicious (see isSuspiciouslyEmpty);
+//   - the primary provider hard-errors — a 429/401 that keyrotation.Run
+//     inside the provider itself couldn't resolve by rotating to the next
+//     configured API key (i.e. every configured key for that provider is
+//     already exhausted/invalid), found missing in production
+//     (2026-08-09): a quota-exhausted Gemini failed medical.upload_document
+//     outright even with a configured Claude escalation target, because
+//     this path used to give up immediately rather than trying escalate at
+//     all.
+//
+// escalate may be nil to disable this entirely (the default; see
 // config.LLMConfig.EscalationModel). This is deliberately NOT
 // router.Router's tool-based escalation: that mechanism lets a model
 // decide mid-conversation to hand a turn to a stronger one, which makes
@@ -633,15 +644,14 @@ func structuredAttempts(ctx context.Context, provider StructuredProvider, text s
 // вероятно, не нужна Medical Service". This is a plain, caller-driven "if
 // that didn't work, ask someone else" instead.
 //
-// A hard error from any single Structured call is never itself retried
-// here — a 429/401 never reaches this loop as a completed "attempt" at
-// all, since keyrotation.Run inside the provider already resolves it by
-// rotating to the next configured API key before Structured returns. If
-// the escalation provider itself hard-errors, StructuredWithRetry logs it
-// and falls back to the primary provider's (suspicious) result rather
-// than failing the whole call — an escalation provider being unreachable
-// shouldn't turn an otherwise-successful (if empty) extraction into a
-// hard failure.
+// If escalate itself hard-errors after the primary was only suspicious
+// (not hard-erroring), StructuredWithRetry logs it and falls back to the
+// primary provider's (suspicious) result rather than failing the whole
+// call — an unreachable escalation provider shouldn't turn an
+// otherwise-successful (if empty) extraction into a hard failure. But if
+// the primary itself hard-errored and escalate also hard-errors, there is
+// no result left to fall back to — that combination is returned as a real
+// error.
 //
 // Returns the last attempt's result even if every attempt (primary and
 // escalation) was suspicious — StructuredWithRetry cannot tell the
@@ -665,11 +675,18 @@ func StructuredWithRetry(ctx context.Context, provider StructuredProvider, escal
 	}
 
 	result, raw, suspicious, err := structuredAttempts(ctx, provider, text, maxStructuredRetries+1, "primary", logger)
-	if err != nil {
+	switch {
+	case err != nil && escalate != nil:
+		logger.Warn("extraction: primary provider hard-errored, escalating to a different provider",
+			"attempts", maxStructuredRetries+1, "error", err)
+		escResult, escRaw, escSuspicious, escErr := structuredAttempts(ctx, escalate, text, maxEscalationAttempts, "escalation", logger)
+		if escErr != nil {
+			return Result{}, nil, fmt.Errorf("extraction: structured: primary failed: %w; escalation also failed: %w", err, escErr)
+		}
+		result, raw, suspicious = escResult, escRaw, escSuspicious
+	case err != nil:
 		return Result{}, nil, err
-	}
-
-	if suspicious && escalate != nil {
+	case suspicious && escalate != nil:
 		logger.Warn("extraction: primary provider's structured result still suspiciously empty, escalating to a different provider",
 			"attempts", maxStructuredRetries+1, "fullTextLen", len(text), "documentType", result.DocumentType)
 		escResult, escRaw, escSuspicious, escErr := structuredAttempts(ctx, escalate, text, maxEscalationAttempts, "escalation", logger)
@@ -720,14 +737,23 @@ func InstrumentalStructured(ctx context.Context, provider StructuredProvider, te
 // *expected* outcome for most documents (a lab report or prescription
 // legitimately has zero instrumental findings), so retrying on emptiness
 // unconditionally would waste a call on every non-imaging document for no
-// benefit. expectFindings gates this: pass true only when the document is
-// already known (typically from Stage 2a's DocumentType, e.g.
-// "imaging_report") to actually be an instrumental study — see Extract.
-// When expectFindings is false, this makes exactly one attempt, same as
-// calling InstrumentalStructured directly. A nil logger falls back to
-// slog.Default(); every attempt is logged at Debug — see
-// StructuredWithRetry's doc comment for the logging rationale.
-func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredProvider, text string, expectFindings bool, logger *slog.Logger) ([]InstrumentalFinding, json.RawMessage, error) {
+// benefit — this never escalates on a merely-empty result, only ever on a
+// hard error (see escalate below). expectFindings gates the emptiness
+// retry: pass true only when the document is already known (typically from
+// Stage 2a's DocumentType, e.g. "imaging_report") to actually be an
+// instrumental study — see Extract. When expectFindings is false, this
+// makes exactly one attempt against provider, same as calling
+// InstrumentalStructured directly.
+//
+// escalate, if non-nil, is tried once (a single InstrumentalStructured
+// call, regardless of expectFindings) if every attempt against provider
+// hard-errors — same "all configured keys for provider are already
+// exhausted" reasoning as StructuredWithRetry's own hard-error escalation;
+// see that function's doc comment. escalate may be nil to disable this
+// (the default). A nil logger falls back to slog.Default(); every attempt
+// is logged at Debug — see StructuredWithRetry's doc comment for the
+// logging rationale.
+func InstrumentalStructuredWithRetry(ctx context.Context, provider, escalate StructuredProvider, text string, expectFindings bool, logger *slog.Logger) ([]InstrumentalFinding, json.RawMessage, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -744,7 +770,15 @@ func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredPro
 	for attempt := 1; attempt <= attempts; attempt++ {
 		findings, raw, err = InstrumentalStructured(ctx, provider, text)
 		if err != nil {
-			return nil, nil, err
+			if escalate == nil {
+				return nil, nil, err
+			}
+			logger.Warn("extraction: instrumental structured hard-errored, escalating to a different provider", "error", err)
+			findings, raw, err = InstrumentalStructured(ctx, escalate, text)
+			if err != nil {
+				return nil, nil, fmt.Errorf("extraction: instrumental structured: primary failed and escalation also failed: %w", err)
+			}
+			return findings, raw, nil
 		}
 		logger.Debug("extraction: instrumental structured attempt",
 			"attempt", attempt, "maxAttempts", attempts, "expectFindings", expectFindings,
@@ -765,7 +799,36 @@ type Provider interface {
 	StructuredProvider
 }
 
-// Extract runs all stages against one document image: OCR, then
+// ocrWithEscalation runs OCR against provider; if that hard-errors and
+// escalate is non-nil, retries once against escalate instead of failing
+// Extract outright — found missing in production (2026-08-09): a Gemini
+// 429 on OCR failed the whole pipeline run even though document_provider
+// had a configured escalation target, because escalate previously wasn't
+// even a ChatProvider (Extract's escalate parameter was typed as the
+// Structured-only StructuredProvider, so there was nothing capable of
+// running OCR to fall back to). Unlike StructuredWithRetry's escalation,
+// this is unconditional on any error rather than gated on a "suspicious"
+// result — OCR either produces text or it doesn't, there's no analogous
+// "successful but suspiciously empty" shape to detect first the way
+// isSuspiciouslyEmpty does for Stage 2a.
+func ocrWithEscalation(ctx context.Context, provider, escalate ChatProvider, imageBase64, mimeType string, logger *slog.Logger) (string, error) {
+	text, err := OCR(ctx, provider, imageBase64, mimeType)
+	if err == nil {
+		return text, nil
+	}
+	if escalate == nil {
+		return "", err
+	}
+	logger.Warn("extraction: ocr failed, escalating to a different provider", "error", err)
+	text, escErr := OCR(ctx, escalate, imageBase64, mimeType)
+	if escErr != nil {
+		return "", fmt.Errorf("ocr: primary failed: %w; escalation also failed: %w", err, escErr)
+	}
+	return text, nil
+}
+
+// Extract runs all stages against one document image: OCR (escalated to
+// escalate on a hard error — see ocrWithEscalation), then
 // StructuredWithRetry (Stage 2a, retried automatically if suspiciously
 // empty, escalated to escalate if that's also exhausted — see
 // StructuredWithRetry) and InstrumentalStructured (Stage 2b) as two
@@ -773,11 +836,13 @@ type Provider interface {
 // Result. This is the function real Pipeline code should call; the
 // individual stages are exported separately for tests/tooling that want to
 // inspect or reuse an intermediate result (e.g. cmd/extract-test).
-// escalate may be nil to disable Stage 2a escalation entirely (Stage 2b,
-// InstrumentalStructuredWithRetry, is never escalated — see its own call
-// below). A nil logger falls back to slog.Default() and is threaded into
-// both retrying stages — see StructuredWithRetry's doc comment for what
-// gets logged at which level.
+// escalate may be nil to disable escalation entirely for both OCR and
+// Stage 2a (Stage 2b, InstrumentalStructuredWithRetry, is never escalated
+// — see its own call below); it's typed as the full Provider (not just
+// StructuredProvider) precisely because it now needs to run OCR too, not
+// only Structured. A nil logger falls back to slog.Default() and is
+// threaded into every retrying stage — see StructuredWithRetry's doc
+// comment for what gets logged at which level.
 //
 // stillSuspicious mirrors StructuredWithRetry's own internal "suspicious"
 // check (see isSuspiciouslyEmpty) on the final Stage 2a result, after
@@ -792,12 +857,12 @@ type Provider interface {
 // doc comment describes; a genuinely short/sparse document (below
 // minFullTextForSuspicion) or one whose type has no known expected
 // category never sets this.
-func Extract(ctx context.Context, provider Provider, escalate StructuredProvider, imageBase64, mimeType string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
+func Extract(ctx context.Context, provider Provider, escalate Provider, imageBase64, mimeType string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	text, err := OCR(ctx, provider, imageBase64, mimeType)
+	text, err := ocrWithEscalation(ctx, provider, escalate, imageBase64, mimeType, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}
@@ -809,7 +874,7 @@ func Extract(ctx context.Context, provider Provider, escalate StructuredProvider
 	}
 	stillSuspicious = isSuspiciouslyEmpty(result)
 
-	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, text, result.DocumentType == "imaging_report", logger)
+	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, escalate, text, result.DocumentType == "imaging_report", logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}

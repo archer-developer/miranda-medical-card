@@ -183,7 +183,7 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 	// expectFindings=true unconditionally here: this fixture is already
 	// known to be an imaging report, unlike Extract's own call site which
 	// has to derive that from Stage 2a's own output first.
-	got, _, err := extraction.InstrumentalStructuredWithRetry(context.Background(), provider, text, true, nil)
+	got, _, err := extraction.InstrumentalStructuredWithRetry(context.Background(), provider, nil, text, true, nil)
 	require.NoError(t, err)
 
 	require.Len(t, got, len(expected.InstrumentalFindings), "instrumentalFindings count")
@@ -268,6 +268,86 @@ func TestStructuredWithRetry_EscalationProviderFailureFallsBackToPrimary(t *test
 	require.Empty(t, got.LabResults)
 }
 
+// TestStructuredWithRetry_EscalatesOnPrimaryHardError covers the gap found
+// in production (2026-08-09): a hard error from the primary (e.g. every
+// configured API key already 429'd) used to return immediately without
+// ever trying escalate — escalation only fired for a "successful but
+// suspiciously empty" result, never a genuine failure. A hard error now
+// triggers one escalation attempt too.
+func TestStructuredWithRetry_EscalatesOnPrimaryHardError(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20)
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("boom: 429 quota exceeded")},
+	)
+	escalation := llmtest.New("fake-escalation").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType: "lab_report",
+			LabResults:   []extraction.LabResult{{Name: "ALT", Value: 28.3}},
+		})},
+	)
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), primary, escalation, text, nil)
+	require.NoError(t, err)
+	require.Len(t, got.LabResults, 1)
+}
+
+// TestStructuredWithRetry_PrimaryHardErrorNoEscalationConfiguredFails
+// confirms nil escalate keeps today's plain "primary fails, call fails"
+// behavior — not a regression.
+func TestStructuredWithRetry_PrimaryHardErrorNoEscalationConfiguredFails(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20)
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("boom: 429 quota exceeded")},
+	)
+
+	_, _, err := extraction.StructuredWithRetry(context.Background(), primary, nil, text, nil)
+	require.Error(t, err)
+}
+
+// TestStructuredWithRetry_BothPrimaryAndEscalationHardErrorReturnsError
+// confirms that when the primary hard-errors and escalation also
+// hard-errors, there's no (suspicious) result left to fall back to — this
+// must surface as a real error, unlike
+// TestStructuredWithRetry_EscalationProviderFailureFallsBackToPrimary
+// (where the primary at least had a successful, if suspicious, result).
+func TestStructuredWithRetry_BothPrimaryAndEscalationHardErrorReturnsError(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20)
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("boom: primary down")},
+	)
+	escalation := llmtest.New("fake-escalation").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("boom: escalation also down")},
+	)
+
+	_, _, err := extraction.StructuredWithRetry(context.Background(), primary, escalation, text, nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "primary down")
+	require.ErrorContains(t, err, "escalation also down")
+}
+
+// TestInstrumentalStructuredWithRetry_EscalatesOnHardError mirrors
+// StructuredWithRetry's own hard-error escalation for Stage 2b — found
+// missing in the same production gap (2026-08-09): Stage 2b took no
+// escalation provider at all, so a quota-exhausted primary would fail
+// Extract even after OCR and Stage 2a had already successfully escalated.
+func TestInstrumentalStructuredWithRetry_EscalatesOnHardError(t *testing.T) {
+	text := "short imaging report text"
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("boom: 429 quota exceeded")},
+	)
+	escalation := llmtest.New("fake-escalation").WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[{"structure":"Печень","parameter":"КВР","value":120,"unit":"мм"}]}`)},
+	)
+
+	findings, _, err := extraction.InstrumentalStructuredWithRetry(context.Background(), primary, escalation, text, false, nil)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+}
+
 // TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty
 // covers expectedCategoriesByDocumentType's fallback path: for a
 // documentType with no known expected shape (here "other"), the retry
@@ -288,6 +368,48 @@ func TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty(t 
 	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 	require.Len(t, got.Recommendations, 1, "a non-empty recommendations should stop the retry for an unmapped documentType, same as before")
+}
+
+// TestExtract_EscalatesOCROnPrimaryFailure covers the gap found in
+// production (2026-08-09): a quota-exhausted Gemini failed the whole
+// Extract call outright even with document_provider's escalation
+// configured, because none of OCR, Stage 2a, or Stage 2b's escalate
+// parameters actually accepted or used an escalation provider for a hard
+// error (Stage 2a only escalated a "successful but suspiciously empty"
+// result, never an error; OCR and Stage 2b took no escalation provider at
+// all). All three now retry once against escalate on a hard error — this
+// exercises all three in one Extract call, matching the realistic case
+// where one provider is down for every one of its endpoints (a quota
+// applies to the whole provider, not just one call type), not just OCR.
+func TestExtract_EscalatesOCROnPrimaryFailure(t *testing.T) {
+	quotaErr := errors.New("boom: 429 quota exceeded")
+	primary := llmtest.New("fake-primary", llmtest.Response{Err: quotaErr}).WithStructured(
+		llmtest.StructuredResponse{Err: quotaErr}, // stage 2a would also hit the same exhausted quota
+		llmtest.StructuredResponse{Err: quotaErr}, // stage 2b too
+	)
+	escalate := llmtest.New("fake-escalate", llmtest.Response{Text: "Общий анализ крови. Дата: 2026-03-12."}).WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType: "lab_report",
+			LabResults:   []extraction.LabResult{{Name: "ALT", Value: 28.3}},
+		})},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+
+	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, "base64img", "image/png", nil)
+	require.NoError(t, err)
+	require.False(t, stillSuspicious)
+	require.Len(t, result.LabResults, 1)
+}
+
+// TestExtract_OCRFailsOutrightWithoutEscalation confirms a nil escalate
+// (no escalation configured for document_provider in llm.yaml) keeps
+// today's plain "OCR fails, the whole call fails" behavior — not a
+// regression.
+func TestExtract_OCRFailsOutrightWithoutEscalation(t *testing.T) {
+	primary := llmtest.New("fake-primary", llmtest.Response{Err: errors.New("boom: 429 quota exceeded")})
+
+	_, _, _, err := extraction.Extract(context.Background(), primary, nil, "base64img", "image/png", nil)
+	require.Error(t, err)
 }
 
 func mustMarshalStructured(t *testing.T, result extraction.Result) json.RawMessage {
