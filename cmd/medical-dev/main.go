@@ -5,10 +5,13 @@
 // ("использовать те же Application Services, что и MCP API... не
 // обращаться напрямую к Repository").
 //
-// Implemented: profile, timeline, document, ask (the four read-oriented
-// commands directly useful for inspecting a running deployment's data).
-// Not implemented: planner, provider, search, prompt, pipeline, llm (see
-// docs/cli/medical_dev.md §5-8, §12-13) — each would need its own
+// Implemented: profile, timeline, document, ask, pipeline (the read-oriented
+// commands directly useful for inspecting a running deployment's data, plus
+// pipeline for re-running Processing Pipeline against an already-imported
+// document with full Debug-level tracing to stderr — docs/cli/medical_dev.md
+// §12).
+// Not implemented: planner, provider, search, prompt, llm (see
+// docs/cli/medical_dev.md §5-8, §13) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
 // or a single Provider's raw output, independent of a full Ask) that
 // internal/ask doesn't expose today. Also not implemented: the separate,
@@ -24,6 +27,7 @@
 //	medical-dev timeline --user alex [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--type TYPE]
 //	medical-dev document <documentId> --user alex
 //	medical-dev ask --user alex "question"
+//	medical-dev pipeline <documentId> --user alex
 package main
 
 import (
@@ -83,8 +87,10 @@ func run(args []string) error {
 		return runDocument(args, cfg, store)
 	case "ask":
 		return runAsk(args, cfg, store, logger)
+	case "pipeline":
+		return runPipeline(args, cfg, store)
 	default:
-		return fmt.Errorf("unknown command %q — expected profile, timeline, document, or ask", command)
+		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, or pipeline", command)
 	}
 }
 
@@ -110,8 +116,12 @@ func loadConfig() (config.Config, error) {
 }
 
 func newPipeline(cfg config.Config, store *storage.Store) (*pipeline.Pipeline, error) {
+	return newPipelineWithLogger(cfg, store, slog.Default())
+}
+
+func newPipelineWithLogger(cfg config.Config, store *storage.Store, logger *slog.Logger) (*pipeline.Pipeline, error) {
 	ctx := context.Background()
-	provider, err := gemini.New(ctx, "gemini-document", cfg.LLM.DocumentModel, cfg.LLM.APIKeyEnvs, gemini.ToolsConfig{}, gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1}, slog.Default())
+	provider, err := gemini.New(ctx, "gemini-document", cfg.LLM.DocumentModel, cfg.LLM.APIKeyEnvs, gemini.ToolsConfig{}, gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1}, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +134,7 @@ func newPipeline(cfg config.Config, store *storage.Store) (*pipeline.Pipeline, e
 	if err != nil {
 		return nil, err
 	}
-	return pipeline.New(provider, embedder, "gemini", cfg.Embedding.Model, files, store, slog.Default()), nil
+	return pipeline.New(provider, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
 }
 
 func printJSON(v any) error {
@@ -229,6 +239,44 @@ func runDocument(args []string, cfg config.Config, store *storage.Store) error {
 		return err
 	}
 	return printJSON(doc)
+}
+
+// --- pipeline ---
+
+// runPipeline re-runs the Processing Pipeline against an already-imported
+// document (Pipeline.ReprocessDocument — the same Application Service
+// method medical.reprocess_document uses) with a Debug-level logger writing
+// straight to stderr, so every Structured Extraction attempt and Pipeline
+// stage (see internal/extraction.StructuredWithRetry, internal/pipeline's
+// run) is visible immediately — docs/cli/medical_dev.md §12's "подробный
+// лог выполнения", without needing to enable server-wide debug logging or
+// tail logs/debug.log separately.
+func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("pipeline", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: medical-dev pipeline <documentId> --user <user>")
+	}
+	documentID := fs.Arg(0)
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	pl, err := newPipelineWithLogger(cfg, store, logger)
+	if err != nil {
+		return err
+	}
+
+	result, err := pl.ReprocessDocument(context.Background(), *user, documentID)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
 }
 
 // --- ask ---
