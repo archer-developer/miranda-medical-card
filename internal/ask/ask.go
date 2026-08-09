@@ -118,7 +118,12 @@ func (a *Asker) collect(ctx context.Context, userID, question string, selections
 			// documents/embeddings default to the raw question if the
 			// Planner didn't refine a search phrase — better than an empty
 			// query, which those two Providers treat as "nothing to do".
-			if req.Query == "" {
+			// Scoped to just those two: LabProvider also reads Query (as a
+			// fallback search term when IndicatorName is empty — see its
+			// own doc comment), and defaulting it to the entire raw
+			// question there would break the documented "no term at all
+			// means every indicator" contract.
+			if req.Query == "" && (selection.Provider == "documents" || selection.Provider == "embeddings") {
 				req.Query = question
 			}
 

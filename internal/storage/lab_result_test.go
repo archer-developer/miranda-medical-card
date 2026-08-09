@@ -70,6 +70,35 @@ func TestLabResultRepository_HistoryByIndicator_OrderedOldestFirst(t *testing.T)
 	require.Equal(t, 150.0, history[1].Value)
 }
 
+func TestLabResultRepository_HistoryByIndicator_SubstringMatchIsCaseInsensitiveAndUnicodeAware(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewLabResultRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_1", UserID: "user1", DocumentID: "doc1", IndicatorName: "Холестерин-ЛПНП", Value: 3.2, TakenAt: mustDate("2026-05-08")}))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_2", UserID: "user1", DocumentID: "doc1", IndicatorName: "Холестерин-ЛПВП", Value: 1.4, TakenAt: mustDate("2026-05-08")}))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_3", UserID: "user1", DocumentID: "doc1", IndicatorName: "АЛТ", Value: 28, TakenAt: mustDate("2026-05-08")}))
+
+	history, err := repo.HistoryByIndicator(ctx, "user1", "холестерин")
+	require.NoError(t, err)
+	require.Len(t, history, 2, "a lowercase Cyrillic query must still match both cholesterol variants — SQLite's built-in LOWER/LIKE is ASCII-only, so this must not rely on it")
+}
+
+func TestLabResultRepository_HistoryByIndicator_MatchesViaRegisteredAlias(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	aliases := storage.NewIndicatorAliasRepository(s)
+
+	require.NoError(t, aliases.SetIfAbsent(ctx, "ЛПВП-холестерин (HDL)", "Холестерин-ЛПВП"))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_1", UserID: "user1", DocumentID: "doc1", IndicatorName: "Холестерин-ЛПВП", Value: 1.4, TakenAt: mustDate("2026-05-08")}))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_2", UserID: "user1", DocumentID: "doc1", IndicatorName: "АЛТ", Value: 28, TakenAt: mustDate("2026-05-08")}))
+
+	history, err := repo.HistoryByIndicator(ctx, "user1", "HDL")
+	require.NoError(t, err, "a term registered only inside an alias string, not as a substring of the canonical name itself, must still resolve via indicator_aliases")
+	require.Len(t, history, 1)
+	require.Equal(t, "Холестерин-ЛПВП", history[0].IndicatorName)
+}
+
 func TestLabResultRepository_LatestByIndicator(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewLabResultRepository(newTestStore(t))

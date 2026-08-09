@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
@@ -19,10 +21,21 @@ type LabResultRepository interface {
 	// least one LabResult for, the single most recent one (by TakenAt) —
 	// used by ProfileBuilder (see docs/domain/05-medical-profile.md §3).
 	LatestByIndicator(ctx context.Context, userID string) (map[string]normalization.LabResult, error)
-	// HistoryByIndicator returns every LabResult userID has for
-	// indicatorName, oldest first — used by Lab Provider (see
-	// docs/architecture/04-search.md §7) to answer trend questions.
-	HistoryByIndicator(ctx context.Context, userID, indicatorName string) ([]normalization.LabResult, error)
+	// HistoryByIndicator returns every LabResult userID has whose indicator
+	// name matches query, oldest first — used by Lab Provider (see
+	// docs/architecture/04-search.md §7) to answer trend questions. A row
+	// matches if indicator_name contains query (case-insensitive substring,
+	// not exact-match — LabResult.IndicatorName is already canonicalized at
+	// ingest time, but a caller's query, e.g. a Planner-supplied
+	// indicatorName or searchQuery, rarely spells the full canonical name),
+	// or if query matches a registered indicator_aliases row (by alias or
+	// canonical_name substring) whose canonical_name equals indicator_name
+	// — so a query like "холестерин" finds every "Холестерин-ЛПНП"/
+	// "Холестерин-ЛПВП" variant, and a query naming only a registered alias
+	// (e.g. "HDL", registered only inside the longer alias string
+	// "ЛПВП-холестерин (HDL)", not as a substring of the canonical name
+	// itself) still resolves to its canonical indicator.
+	HistoryByIndicator(ctx context.Context, userID, query string) ([]normalization.LabResult, error)
 }
 
 type sqliteLabResultRepository struct {
@@ -116,16 +129,71 @@ func (r *sqliteLabResultRepository) LatestByIndicator(ctx context.Context, userI
 	return latest, nil
 }
 
-func (r *sqliteLabResultRepository) HistoryByIndicator(ctx context.Context, userID, indicatorName string) ([]normalization.LabResult, error) {
-	rows, err := r.db.QueryContext(ctx,
-		labResultSelectColumns+` FROM lab_results WHERE user_id = ? AND indicator_name = ? ORDER BY taken_at ASC`,
-		userID, indicatorName,
-	)
+// HistoryByIndicator matches in application code rather than SQL LIKE/LOWER
+// — SQLite's built-in LOWER/LIKE case-fold ASCII only, so a Cyrillic query
+// like "холестерин" would never match stored "Холестерин-ЛПНП" through
+// SQL-side case-insensitive comparison. strings.ToLower is Unicode-aware,
+// and (matching LatestByIndicator's own reasoning just above) this table's
+// per-user row count is personal-history scale, not something loading it
+// entirely into memory need worry about.
+func (r *sqliteLabResultRepository) HistoryByIndicator(ctx context.Context, userID, query string) ([]normalization.LabResult, error) {
+	all, err := r.ListByUser(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("storage: history lab results by indicator: %w", err)
+		return nil, err
+	}
+	canonicalMatches, err := r.matchingCanonicalNames(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	needle := strings.ToLower(strings.TrimSpace(query))
+	var result []normalization.LabResult
+	for _, l := range all {
+		if strings.Contains(strings.ToLower(l.IndicatorName), needle) || canonicalMatches[l.IndicatorName] {
+			result = append(result, l)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		ti, tj := result[i].TakenAt, result[j].TakenAt
+		if ti == nil {
+			return tj != nil
+		}
+		if tj == nil {
+			return false
+		}
+		return ti.Before(*tj)
+	})
+	return result, nil
+}
+
+// matchingCanonicalNames returns, as a set, every indicator_aliases
+// canonical_name whose registered alias or canonical spelling itself
+// contains query — e.g. query "HDL" matches the alias "ЛПВП-холестерин
+// (HDL)", registered under canonical "Холестерин-ЛПВП", even though "HDL"
+// isn't a substring of that canonical name itself. Loads the whole
+// (global, not per-user) dictionary — see indicator_aliases.go's doc
+// comment: it's meant to stay small and human-curated, not grow to a size
+// where this needs an indexed query.
+func (r *sqliteLabResultRepository) matchingCanonicalNames(ctx context.Context, query string) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT alias, canonical_name FROM indicator_aliases`)
+	if err != nil {
+		return nil, fmt.Errorf("storage: history lab results by indicator: list aliases: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanLabResults(rows)
+
+	needle := strings.ToLower(strings.TrimSpace(query))
+	matches := make(map[string]bool)
+	for rows.Next() {
+		var alias, canonical string
+		if err := rows.Scan(&alias, &canonical); err != nil {
+			return nil, fmt.Errorf("storage: history lab results by indicator: scan alias: %w", err)
+		}
+		// alias is already stored lower+trim (see normalizeAliasKey).
+		if strings.Contains(alias, needle) || strings.Contains(strings.ToLower(canonical), needle) {
+			matches[canonical] = true
+		}
+	}
+	return matches, rows.Err()
 }
 
 func scanLabResults(rows *sql.Rows) ([]normalization.LabResult, error) {

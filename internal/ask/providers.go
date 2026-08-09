@@ -211,10 +211,21 @@ func (p *LabProvider) Metadata() ProviderMetadata {
 }
 
 func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
+	// IndicatorName is the Planner's dedicated field for this provider, but
+	// a Planner selection sometimes puts the same kind of term in Query
+	// instead (the shared searchQuery field every provider's selection
+	// carries) — both name what to search for, so both drive the same
+	// alias/substring-aware lookup; only an empty search term falls back to
+	// every indicator (see KnowledgeRequest.IndicatorName's doc comment).
+	term := req.IndicatorName
+	if term == "" {
+		term = req.Query
+	}
+
 	var results []normalization.LabResult
 	var err error
-	if req.IndicatorName != "" {
-		results, err = p.repo.HistoryByIndicator(ctx, req.UserID, req.IndicatorName)
+	if term != "" {
+		results, err = p.repo.HistoryByIndicator(ctx, req.UserID, term)
 	} else {
 		results, err = p.repo.ListByUser(ctx, req.UserID)
 	}
