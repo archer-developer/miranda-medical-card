@@ -342,7 +342,50 @@ func (p *ProfileProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]
 		}
 		chunks = append(chunks, KnowledgeChunk{Source: "profile", Title: "Аллергии", Content: joinLines("Известные аллергии:", lines), Confidence: 1.0})
 	}
+	if len(built.LatestLabResults) > 0 {
+		var lines []string
+		for _, l := range built.LatestLabResults {
+			line := l.IndicatorName + ": "
+			if l.QualitativeValue != "" {
+				line += l.QualitativeValue
+			} else {
+				line += fmt.Sprintf("%g %s", l.Value, l.Unit)
+			}
+			line += fmt.Sprintf(" (%s)", formatDate(l.TakenAt))
+			lines = append(lines, line)
+		}
+		chunks = append(chunks, KnowledgeChunk{Source: "profile", Title: "Последние результаты анализов", Content: joinLines("Последние результаты анализов:", lines), Confidence: 1.0})
+	}
+	if len(built.LatestVitalSigns) > 0 {
+		var lines []string
+		for _, v := range built.LatestVitalSigns {
+			label := vitalSignLabels[v.Type]
+			if label == "" {
+				label = v.Type
+			}
+			var line string
+			if v.Type == "blood_pressure" {
+				line = fmt.Sprintf("%s: %g/%g мм рт.ст.", label, v.Systolic, v.Diastolic)
+			} else {
+				line = fmt.Sprintf("%s: %g %s", label, v.Value, v.Unit)
+			}
+			line += fmt.Sprintf(" (%s)", formatDate(v.MeasuredAt))
+			lines = append(lines, line)
+		}
+		chunks = append(chunks, KnowledgeChunk{Source: "profile", Title: "Последние жизненные показатели", Content: joinLines("Последние жизненные показатели:", lines), Confidence: 1.0})
+	}
 	return chunks, nil
+}
+
+// vitalSignLabels maps VitalSign.Type to a human-readable label — mirrors
+// internal/timeline's own vitalSignLabels (unexported there, so duplicated
+// here rather than adding a cross-package dependency for a 5-entry map).
+var vitalSignLabels = map[string]string{
+	"blood_pressure": "Давление",
+	"weight":         "Вес",
+	"height":         "Рост",
+	"pulse":          "Пульс",
+	"temperature":    "Температура",
 }
 
 func joinLines(header string, lines []string) string {

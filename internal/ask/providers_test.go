@@ -125,6 +125,40 @@ func TestProfileProvider_ReturnsBuiltProfileSections(t *testing.T) {
 	require.Contains(t, allergiesChunk.Content, "Пенициллин")
 }
 
+func TestProfileProvider_IncludesLatestLabResultsAndVitalSigns(t *testing.T) {
+	s := newTestStore(t)
+	profileStore := profile.NewStore(storage.NewProfileRepository(s))
+	require.NoError(t, profileStore.Replace(context.Background(), profile.Profile{
+		UserID: "user1",
+		LatestLabResults: []profile.LabResultSummary{
+			{IndicatorName: "Холестерин-ЛПНП", Value: 3.2, Unit: "ммоль/л", TakenAt: mustDate("2026-05-08")},
+		},
+		LatestVitalSigns: []profile.VitalSignSummary{
+			{Type: "blood_pressure", Systolic: 120, Diastolic: 80, MeasuredAt: mustDate("2026-05-08")},
+		},
+		RebuiltAt: time.Now(),
+	}))
+
+	provider := ask.NewProfileProvider(profileStore)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2, "one chunk for lab results, one for vital signs")
+
+	var labsChunk, vitalsChunk *ask.KnowledgeChunk
+	for i := range chunks {
+		if chunks[i].Title == "Последние результаты анализов" {
+			labsChunk = &chunks[i]
+		}
+		if chunks[i].Title == "Последние жизненные показатели" {
+			vitalsChunk = &chunks[i]
+		}
+	}
+	require.NotNil(t, labsChunk, "profile.LatestLabResults must be rendered, not silently dropped")
+	require.Contains(t, labsChunk.Content, "Холестерин-ЛПНП: 3.2 ммоль/л (2026-05-08)")
+	require.NotNil(t, vitalsChunk, "profile.LatestVitalSigns must be rendered, not silently dropped")
+	require.Contains(t, vitalsChunk.Content, "Давление: 120/80 мм рт.ст. (2026-05-08)")
+}
+
 func TestProfileProvider_NoProfileYetReturnsNoChunks(t *testing.T) {
 	s := newTestStore(t)
 	provider := ask.NewProfileProvider(profile.NewStore(storage.NewProfileRepository(s)))
