@@ -62,8 +62,9 @@ type Result struct {
 // repositories and bypass the orchestration this type exists to enforce
 // (e.g. "an Extraction row is never active except via Activate").
 type Pipeline struct {
-	provider extraction.Provider
-	files    *filestore.Store
+	provider           extraction.Provider
+	escalationProvider extraction.StructuredProvider
+	files              *filestore.Store
 
 	fileRepo       storage.FileRepository
 	documentRepo   storage.DocumentRepository
@@ -95,7 +96,11 @@ type Pipeline struct {
 }
 
 // New builds a Pipeline. provider supplies both OCR (Chat) and Structured
-// Extraction calls (see extraction.Provider); embedder generates Embedding
+// Extraction calls (see extraction.Provider); escalationProvider, if
+// non-nil, is tried once for Structured Extraction (see
+// extraction.StructuredWithRetry) when provider's own attempts are
+// exhausted and still suspiciously empty — nil disables this entirely
+// (see config.LLMConfig.EscalationModel). embedder generates Embedding
 // Search vectors (see docs/architecture/04-search.md §14), tagged with
 // embeddingProvider/embeddingModel on every stored row (see
 // storage.Embedding.Provider/ModelVersion — the latter is what
@@ -103,7 +108,7 @@ type Pipeline struct {
 // consistent for vectors to remain comparable). files and s are opened once
 // at process startup and shared across every request. A nil logger falls
 // back to slog.Default().
-func New(provider extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
+func New(provider extraction.Provider, escalationProvider extraction.StructuredProvider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -115,8 +120,9 @@ func New(provider extraction.Provider, embedder embedding.Embedder, embeddingPro
 	vitalSigns := storage.NewVitalSignRepository(s)
 
 	return &Pipeline{
-		provider: provider,
-		files:    files,
+		provider:           provider,
+		escalationProvider: escalationProvider,
+		files:              files,
 
 		fileRepo:       storage.NewFileRepository(s),
 		documentRepo:   storage.NewDocumentRepository(s),
@@ -248,7 +254,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		return fail(fmt.Errorf("pipeline: run: read file: %w", err))
 	}
 
-	extracted, raw, err := extraction.Extract(ctx, p.provider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
+	extracted, raw, err := extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
 	if err != nil {
 		return fail(fmt.Errorf("pipeline: run: extract: %w", err))
 	}

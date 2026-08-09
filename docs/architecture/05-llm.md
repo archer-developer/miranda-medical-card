@@ -385,30 +385,38 @@ Medical Service не должен реализовывать собственн�
 
 | Требование | Пакет / тип |
 |---|---|
-| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider` — каждый реализует общий интерфейс `llm.Provider` |
-| Маршрутизация моделей | `router.Router` — провайдер на каждый этап (OCR/Extraction/Planner/Answer Generator) конфигурируется отдельно вызывающим сервисом |
-| Автоматическая эскалация | `router.Router.Chat` — reliability fallback (следующий провайдер при ошибке) работает всегда; tool-based эскалация (модель сама решает передать ход) — опциональна per-provider, см. ниже |
+| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider` — каждый реализует общий интерфейс `llm.Provider`; сконфигурированы через `internal/config.ProviderConfig` (см. ниже), не через `router.Router` — см. "Tool-based эскалация" ниже за тем, почему |
+| Маршрутизация моделей | `internal/config.LLMConfig` — провайдер на каждый этап (`document_provider`/`planner_provider`/`answer_provider`) конфигурируется по имени, отдельно вызывающим сервисом |
+| Автоматическая эскалация | `router.Router` не используется (см. ниже). Caller-side эскалация по качеству результата реализована только для Structured Extraction — `internal/extraction.StructuredWithRetry`'s `escalate` параметр, см. "Конфигурация провайдеров и caller-side эскалация" ниже |
 | Ротация API-ключей | `keyrotation` (внутри `gemini.Provider`) |
-| Structured Output | `llm.StructuredProvider` / `router.Router.Structured` — отдельный однократный (не потоковый) вызов, возвращающий `json.RawMessage` по JSON Schema |
-| Streaming | `llm.Provider.Chat` — потоковый по умолчанию |
-| Retry | `keyrotation.Run` (ротация ключей) + reliability fallback `router.Router` |
+| Structured Output | `llm.StructuredProvider` / `Provider.Structured` — отдельный однократный (не потоковый) вызов, возвращающий `json.RawMessage` по JSON Schema |
+| Streaming | `llm.Provider.Chat` — потоковый по умолчанию (используется только для OCR, Stage 1 документного провайдера) |
+| Retry | `keyrotation.Run` (ротация ключей, внутри каждого провайдера) + `internal/extraction.StructuredWithRetry`'s собственный ретрай/эскалация на уровне Structured Extraction |
 | Timeout | через `context.Context`, передаваемый вызывающей стороной — библиотека не навязывает собственный таймаут |
 | Telemetry | `llmtrace.Logger` — пишет request/response каждого вызова текстовым блоком в лог; структурированного per-call учёта токенов/стоимости в виде отдельного API пока нет — это открытый пробел, а не реализованная возможность |
 
 ## Structured Output — основной способ использования для Extraction/Planner/Summary
 
-Именно `router.Router.Structured` (а не `Chat`) — правильный вызов для этапов Structured Extraction (§5), Planner (`03-knowledge-providers.md` §6) и генерации Summary (`02-processing-pipeline.md` §9): один непотоковый запрос, схема JSON Schema, результат без интерпретации моделью.
+`Provider.Structured` (а не `Chat`) — правильный вызов для этапов Structured Extraction (§5), Planner (`03-knowledge-providers.md` §6) и генерации Summary (`02-processing-pipeline.md` §9): один непотоковый запрос, схема JSON Schema, результат без интерпретации моделью.
 
-`Structured` **не** проходит через цепочку эскалации `Chat` — у одноразового structured-вызова нет открытого диалога, в рамках которого модели имело бы смысл самой решать "передать вопрос более сильной модели". Она использует только reliability fallback (следующий провайдер при ошибке).
+`Structured` **не** проходит через `router.Router`'s tool-based цепочку эскалации, которую использует `Chat`, — у одноразового structured-вызова нет открытого диалога, в рамках которого модели имело бы смысл самой решать "передать вопрос более сильной модели".
 
-## Tool-based эскалация — вероятно, не нужна Medical Service
+## Tool-based эскалация — не используется Medical Service
 
 `router.Router` поддерживает два разных механизма, объединённых в один API:
 
-1. **Reliability fallback** — при отказе провайдера (ключи исчерпаны, таймаут) автоматически пробуется следующий сконфигурированный провайдер. Работает всегда, ничего не нужно включать.
-2. **Tool-based эскалация** — провайдеру предъявляется инструмент вида `escalate_to_claude`, который модель может вызвать сама, если решит, что вопрос ей не по силам. Это имеет смысл в открытом многоходовом диалоге (agent loop Miranda), но не для одноразовых structured-вызовов Medical Service (Extraction/Planner/Answer Generator), где у модели просто нет пространства для такого самостоятельного решения посреди генерации одного структурированного ответа.
+1. **Reliability fallback** — при отказе провайдера (ключи исчерпаны, таймаут) автоматически пробуется следующий сконфигурированный провайдер.
+2. **Tool-based эскалация** — провайдеру предъявляется инструмент вида `escalate_to_claude`, который модель может вызвать сама, если решит, что вопрос ей не по силам. Это имеет смысл в открытом многоходовом диалоге (agent loop Miranda), но не для одноразовых structured-вызовов Medical Service, где у модели просто нет пространства для такого самостоятельного решения посреди генерации одного структурированного ответа.
 
-Механизм (2) полностью опционален: он включается только если передать непустой `escalations` в `router.New`. Medical Service должен по умолчанию передавать `nil`, полагаясь только на (1).
+Medical Service не использует `router.Router` вообще (ни для (1), ни для (2)) — каждый этап (`document_provider`/`planner_provider`/`answer_provider`, см. ниже) сейчас резолвится ровно в один сконфигурированный провайдер, без цепочки. Reliability fallback (несколько провайдеров на один этап) — открытая возможность на будущее, не реализованная сегодня.
+
+## Конфигурация провайдеров и caller-side эскалация по качеству результата
+
+`internal/config.LLMConfig` описывает пул именованных провайдеров (`llm.providers`, каждый — `internal/config.ProviderConfig`) и то, какой из них использует каждый этап (`document_provider`/`planner_provider`/`answer_provider`) — намеренно тем же форматом, что и `providers`/`default_provider` в `miranda/config/llm.yaml` (`LLMProvider`/`EscalationConfig` там), чтобы конфигурации двух сервисов были напрямую сопоставимы, даже когда Medical Service использует лишь часть этого формата — см. `config/config.yaml.dist` за полным примером.
+
+Отдельно от router.Router-эскалации (см. выше, не используется) у Medical Service есть свой, caller-side механизм — специфичный именно для Structured Extraction, а не общий для всех этапов: если `document_provider`'s собственные попытки исчерпаны и результат всё ещё выглядит подозрительно пустым (`internal/extraction.isSuspiciouslyEmpty`, см. `02-processing-pipeline.md` §5), делается одна попытка против `escalation.target_provider` этого же провайдера — другой модели/провайдера, которая может не разделять то, из-за чего основная не справилась. Это решение вызывающего кода (`internal/extraction.StructuredWithRetry`), а не router.Router: оно реагирует не на ошибку, а на структурно валидный, но подозрительно пустой результат — то, что router.Router (ни (1), ни (2)) в принципе не умеет замечать, поскольку не заглядывает в содержимое успешного ответа.
+
+`escalation.tool_name`/`description` в `ProviderConfig` приняты только ради полного соответствия формату miranda — Medical Service их не читает; используется только `target_provider`. `planner_provider`/`answer_provider` могут иметь свой `escalation` блок в конфиге ради единообразия схемы, но он ни на что не влияет: `isSuspiciouslyEmpty`-подобной проверки "результат выглядит плохо" для Planner/Answer Generator сегодня не определено.
 
 ---
 

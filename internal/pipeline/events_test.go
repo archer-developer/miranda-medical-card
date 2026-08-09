@@ -20,7 +20,7 @@ func TestLogEvent_SymptomWithMedicationIntake_CreatesBothTimelineEvents(t *testi
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"symptom","description":"Приступ головной боли","medicationIntake":{"drugName":"ибупрофен","doseAmount":400,"doseUnit":"mg","reason":"головная боль"}}`),
 	})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	result, err := p.LogEvent(ctx, "user1", "Приступ головной боли, принял 400 мг ибупрофена", nil)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestLogEvent_MedicationOnlyCategory_SkipsRedundantSymptomEvent(t *testing.T
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"medication_intake","description":"Принял ибупрофен","medicationIntake":{"drugName":"ибупрофен","doseAmount":400,"doseUnit":"mg"}}`),
 	})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	result, err := p.LogEvent(ctx, "user1", "Выпил ибупрофен 400", nil)
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestLogEvent_ExtractionFailureStillReachesReadyAndPreservesText(t *testing.
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{Err: errors.New("boom")})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	result, err := p.LogEvent(ctx, "user1", "нечто нераспознаваемое", nil)
 	require.NoError(t, err, "extraction failure must never fail log_event itself")
@@ -82,7 +82,7 @@ func TestLogEvent_ExtractionFailureStillReachesReadyAndPreservesText(t *testing.
 func TestLogEvent_EmptyTextRejected(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.LogEvent(ctx, "user1", "   ", nil)
 	require.Error(t, err)
@@ -94,7 +94,7 @@ func TestDeleteEvent_RemovesEventTimelineAndIntake(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"symptom","description":"d","medicationIntake":{"drugName":"ибупрофен"}}`),
 	})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	logged, err := p.LogEvent(ctx, "user1", "text", nil)
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestDeleteEvent_IdempotentAndOwnershipMismatchLooksLikeNotFound(t *testing.
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{JSON: json.RawMessage(`{}`)})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	logged, err := p.LogEvent(ctx, "user1", "text", nil)
 	require.NoError(t, err)

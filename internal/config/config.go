@@ -76,35 +76,84 @@ type FilesConfig struct {
 	MaxSizeBytes int64 `yaml:"max_size_bytes"`
 }
 
-// LLMConfig configures the Gemini models used for each Pipeline/Ask stage.
-// A single provider (Gemini) is used directly for now, the same way
-// miranda-diary's main.go constructs embedding.NewGemini directly — every
-// call site still depends only on miranda-llm's abstract interfaces
-// (extraction.Provider, embedding.Embedder), so swapping providers later is
-// a main.go change, not a business-logic change (see
-// docs/architecture/05-llm.md §8-9).
-type LLMConfig struct {
-	// APIKeyEnvs names the environment variables holding Gemini API keys,
-	// tried in order with automatic rotation on rate limits (see
-	// gemini.RotationConfig) — e.g. ["GEMINI_API_KEY_1", "GEMINI_API_KEY_2"].
+// ProviderConfig describes one configured LLM backend — deliberately
+// mirrors miranda's own internal/config.LLMProvider field-for-field (see
+// that repo's config/llm.yaml for the format this is meant to interoperate
+// with at the config-authoring level), even though Medical Service's
+// actual usage is narrower: every call this service makes is one-shot
+// Structured (Structured Extraction, Planner, Answer Generator — see
+// internal/ask, internal/extraction) plus one Chat call (OCR, Stage 1,
+// document provider only) — never an open multi-turn dialogue. See
+// Escalation's doc comment for what that narrower usage means for
+// ToolName/Description specifically.
+type ProviderConfig struct {
+	Name string `yaml:"name"`
+	// Type selects the miranda-llm package: "gemini", "anthropic", or
+	// "openai_compat".
+	Type string `yaml:"type"`
+	// BaseURL is only meaningful for Type == "openai_compat".
+	BaseURL string `yaml:"base_url,omitempty"`
+	Model   string `yaml:"model"`
+	// APIKeyEnvs names environment variables holding API keys, never the
+	// keys themselves. Only "gemini" actually rotates across more than one
+	// entry (see GeminiRotation) — "anthropic" and "openai_compat" use only
+	// APIKeyEnvs[0], same convention as miranda's own firstAPIKey.
 	APIKeyEnvs []string `yaml:"api_key_envs"`
-	// DocumentModel is used for every Document Pipeline LLM stage: OCR
+	// GeminiRotation tunes key-rotation behavior. Only meaningful when
+	// Type == "gemini".
+	GeminiRotation GeminiRotationConfig `yaml:"gemini_rotation,omitempty"`
+	// Escalation names a fallback provider (by Name, elsewhere in
+	// Providers) to try once when this provider's own Structured result
+	// comes back suspiciously empty — see
+	// internal/extraction.StructuredWithRetry's escalate parameter.
+	// Currently only consulted for LLMConfig.DocumentProvider (the only
+	// stage isSuspiciouslyEmpty is defined for). This is deliberately NOT
+	// router.Router's tool-based Chat escalation (see
+	// docs/architecture/05-llm.md §9.1): ToolName/Description exist here
+	// purely for schema fidelity with miranda's format and are otherwise
+	// unused — every call this service makes through a StructuredProvider
+	// is one-shot, with no open dialogue for a model to reason about
+	// handing off mid-generation. Only TargetProvider is actually read.
+	Escalation EscalationConfig `yaml:"escalation,omitempty"`
+}
+
+// GeminiRotationConfig tunes internal/llm/gemini-equivalent key rotation —
+// mirrors miranda's GeminiRotationConfig field-for-field.
+type GeminiRotationConfig struct {
+	CooldownSeconds int `yaml:"cooldown_seconds"`
+	MaxRetryCycles  int `yaml:"max_retry_cycles"`
+}
+
+// EscalationConfig mirrors miranda's own EscalationConfig field-for-field
+// (see ProviderConfig.Escalation for what's actually consulted here).
+type EscalationConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	ToolName string `yaml:"tool_name,omitempty"`
+	// Description is accepted for schema fidelity with miranda's format;
+	// unused (see ProviderConfig.Escalation).
+	Description    string `yaml:"description,omitempty"`
+	TargetProvider string `yaml:"target_provider"`
+}
+
+// LLMConfig lists every configured LLM backend and names which one each
+// Pipeline/Ask stage uses, by Provider name — mirrors miranda's own
+// providers/default_provider shape (see ProviderConfig's doc comment) at
+// the schema level, adapted to Medical Service having several fixed,
+// always-active stages (document/planner/answer) instead of one ordered
+// fallback chain.
+type LLMConfig struct {
+	Providers []ProviderConfig `yaml:"providers"`
+	// DocumentProvider is used for every Document Pipeline LLM stage: OCR
 	// (Stage 1) and Structured Extraction (Stage 2a/2b, see
 	// internal/extraction.Extract) and Self-Reported Event extraction (see
-	// internal/events). internal/extraction.Extract takes a single Provider
-	// for both OCR and Structured calls (they're still two separate LLM
-	// calls, which is what mattered empirically for reliability — see
-	// internal/extraction's package doc comment — just against the same
-	// model/provider instance for now); splitting this into distinct
-	// OCR/Extraction models would need internal/pipeline to call
-	// extraction.OCR/StructuredWithRetry directly instead of
-	// extraction.Extract, which is a reasonable future optimization, not a
-	// correctness gap in what's implemented here.
-	DocumentModel string `yaml:"document_model"`
-	// PlannerModel is used by the Planner (see internal/ask).
-	PlannerModel string `yaml:"planner_model"`
-	// AnswerModel is used by the Answer Generator (see internal/ask).
-	AnswerModel string `yaml:"answer_model"`
+	// internal/events) — see internal/extraction.Provider's doc comment for
+	// why OCR and Structured Extraction, though two separate LLM calls,
+	// share one provider instance.
+	DocumentProvider string `yaml:"document_provider"`
+	// PlannerProvider is used by the Planner (see internal/ask).
+	PlannerProvider string `yaml:"planner_provider"`
+	// AnswerProvider is used by the Answer Generator (see internal/ask).
+	AnswerProvider string `yaml:"answer_provider"`
 }
 
 // EmbeddingConfig configures the Gemini embedding model used for semantic
@@ -146,10 +195,26 @@ func Default() Config {
 			MaxSizeBytes: 50 * 1024 * 1024,
 		},
 		LLM: LLMConfig{
-			APIKeyEnvs:    []string{"GEMINI_API_KEY_1"},
-			DocumentModel: "gemini-3.6-flash",
-			PlannerModel:  "gemini-3.5-flash-lite",
-			AnswerModel:   "gemini-3.6-flash",
+			Providers: []ProviderConfig{
+				{
+					Name: "gemini-document", Type: "gemini", Model: "gemini-3.6-flash",
+					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
+					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
+				},
+				{
+					Name: "gemini-planner", Type: "gemini", Model: "gemini-3.5-flash-lite",
+					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
+					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
+				},
+				{
+					Name: "gemini-answer", Type: "gemini", Model: "gemini-3.6-flash",
+					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
+					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
+				},
+			},
+			DocumentProvider: "gemini-document",
+			PlannerProvider:  "gemini-planner",
+			AnswerProvider:   "gemini-answer",
 		},
 		Embedding: EmbeddingConfig{
 			APIKeyEnv: "GEMINI_API_KEY_1",
@@ -225,11 +290,52 @@ func (c Config) validate() error {
 	if c.Files.MaxSizeBytes < 1 {
 		return fmt.Errorf("config: files.max_size_bytes must be at least 1")
 	}
-	if len(c.LLM.APIKeyEnvs) == 0 {
-		return fmt.Errorf("config: llm.api_key_envs must not be empty")
+	if len(c.LLM.Providers) == 0 {
+		return fmt.Errorf("config: llm.providers must not be empty")
 	}
-	if c.LLM.DocumentModel == "" || c.LLM.PlannerModel == "" || c.LLM.AnswerModel == "" {
-		return fmt.Errorf("config: llm.document_model, planner_model, and answer_model must all be set")
+	providerNames := make(map[string]bool, len(c.LLM.Providers))
+	for i, p := range c.LLM.Providers {
+		if p.Name == "" {
+			return fmt.Errorf("config: llm.providers[%d].name must not be empty", i)
+		}
+		if providerNames[p.Name] {
+			return fmt.Errorf("config: llm.providers[%d].name %q is a duplicate", i, p.Name)
+		}
+		providerNames[p.Name] = true
+		switch p.Type {
+		case "gemini", "anthropic", "openai_compat":
+		default:
+			return fmt.Errorf("config: llm.providers[%d] (%s): type must be \"gemini\", \"anthropic\", or \"openai_compat\", got %q", i, p.Name, p.Type)
+		}
+		if p.Model == "" {
+			return fmt.Errorf("config: llm.providers[%d] (%s): model must not be empty", i, p.Name)
+		}
+		if len(p.APIKeyEnvs) == 0 {
+			return fmt.Errorf("config: llm.providers[%d] (%s): api_key_envs must not be empty", i, p.Name)
+		}
+	}
+	for i, p := range c.LLM.Providers {
+		if !p.Escalation.Enabled {
+			continue
+		}
+		if p.Escalation.TargetProvider == "" {
+			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.target_provider must be set when escalation.enabled is true", i, p.Name)
+		}
+		if !providerNames[p.Escalation.TargetProvider] {
+			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.target_provider %q references an unknown provider", i, p.Name, p.Escalation.TargetProvider)
+		}
+	}
+	if c.LLM.DocumentProvider == "" || c.LLM.PlannerProvider == "" || c.LLM.AnswerProvider == "" {
+		return fmt.Errorf("config: llm.document_provider, planner_provider, and answer_provider must all be set")
+	}
+	if !providerNames[c.LLM.DocumentProvider] {
+		return fmt.Errorf("config: llm.document_provider %q references an unknown provider", c.LLM.DocumentProvider)
+	}
+	if !providerNames[c.LLM.PlannerProvider] {
+		return fmt.Errorf("config: llm.planner_provider %q references an unknown provider", c.LLM.PlannerProvider)
+	}
+	if !providerNames[c.LLM.AnswerProvider] {
+		return fmt.Errorf("config: llm.answer_provider %q references an unknown provider", c.LLM.AnswerProvider)
 	}
 	if c.Embedding.APIKeyEnv == "" {
 		return fmt.Errorf("config: embedding.api_key_env must not be empty")

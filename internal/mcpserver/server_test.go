@@ -37,7 +37,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
-	pl := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(storage.NewTimelineRepository(s)),

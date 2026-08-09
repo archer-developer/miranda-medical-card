@@ -36,16 +36,58 @@
 #   dir: "data/files"
 #   max_size_bytes: 52428800
 
-# llm: Gemini models used by each Pipeline/medical.ask stage — see
-# internal/config.LLMConfig's doc comment for why document_model covers both
-# OCR and Structured Extraction for now. api_key_envs supports several
-# environment variables for automatic key rotation on rate limits (useful on
-# free-tier keys) — list as many as you have.
+# llm: every configured model backend (providers), and which one each
+# Pipeline/medical.ask stage uses by name (document_provider covers both
+# OCR and Structured Extraction — see internal/config.LLMConfig's doc
+# comment). Mirrors miranda's own config/llm.yaml providers/default_provider
+# shape (see internal/config.ProviderConfig's doc comment) so the two
+# formats stay directly comparable. api_key_envs supports several
+# environment variables for automatic key rotation on rate limits
+# (gemini only — useful on free-tier keys) — list as many as you have.
+#
+# escalation is optional and currently only consulted for
+# document_provider: if Structured Extraction's own retries are exhausted
+# and the result still looks suspiciously empty (see
+# internal/extraction.StructuredWithRetry), one attempt is made against
+# escalation.target_provider instead of retrying document_provider again —
+# e.g. falling back from Gemini to Claude on a document Gemini keeps
+# missing. This is NOT miranda's tool-based Chat escalation (this service
+# never makes an open multi-turn Chat call) — only target_provider is
+# read; tool_name/description exist purely for schema fidelity with
+# miranda's format.
 # llm:
-#   api_key_envs: ["GEMINI_API_KEY_1"]
-#   document_model: "gemini-3.6-flash"
-#   planner_model: "gemini-3.5-flash-lite"
-#   answer_model: "gemini-3.6-flash"
+#   providers:
+#     - name: gemini-document
+#       type: gemini
+#       model: "gemini-3.6-flash"
+#       api_key_envs: ["GEMINI_API_KEY_1"]
+#       gemini_rotation:
+#         cooldown_seconds: 30
+#         max_retry_cycles: 1
+#       escalation:
+#         enabled: true
+#         target_provider: "claude-escalation"
+#     - name: gemini-planner
+#       type: gemini
+#       model: "gemini-3.5-flash-lite"
+#       api_key_envs: ["GEMINI_API_KEY_1"]
+#       gemini_rotation:
+#         cooldown_seconds: 30
+#         max_retry_cycles: 1
+#     - name: gemini-answer
+#       type: gemini
+#       model: "gemini-3.6-flash"
+#       api_key_envs: ["GEMINI_API_KEY_1"]
+#       gemini_rotation:
+#         cooldown_seconds: 30
+#         max_retry_cycles: 1
+#     - name: claude-escalation
+#       type: anthropic
+#       model: "claude-sonnet-5"
+#       api_key_envs: ["ANTHROPIC_API_KEY"]
+#   document_provider: "gemini-document"
+#   planner_provider: "gemini-planner"
+#   answer_provider: "gemini-answer"
 
 # embedding:
 #   api_key_env: "GEMINI_API_KEY_1"

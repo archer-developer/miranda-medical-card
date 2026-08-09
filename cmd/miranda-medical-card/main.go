@@ -29,12 +29,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/archer-developer/miranda-llm/anthropic"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
+	"github.com/archer-developer/miranda-llm/openaicompat"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
 	"github.com/archer-developer/miranda-medical-card/internal/envfile"
+	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/httpserver"
 	"github.com/archer-developer/miranda-medical-card/internal/mcpserver"
@@ -151,18 +154,23 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	documentProvider, err := newGeminiProvider(ctx, "document", cfg.LLM, logger)
+	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
 	if err != nil {
-		return fmt.Errorf("main: init document model: %w", err)
+		return fmt.Errorf("main: init llm providers: %w", err)
 	}
-	plannerProvider, err := newGeminiProvider(ctx, "planner", cfg.LLM, logger)
+	documentProvider, err := resolveProvider(providers, cfg.LLM.DocumentProvider, "document_provider")
 	if err != nil {
-		return fmt.Errorf("main: init planner model: %w", err)
+		return fmt.Errorf("main: %w", err)
 	}
-	answerProvider, err := newGeminiProvider(ctx, "answer", cfg.LLM, logger)
+	plannerProvider, err := resolveProvider(providers, cfg.LLM.PlannerProvider, "planner_provider")
 	if err != nil {
-		return fmt.Errorf("main: init answer model: %w", err)
+		return fmt.Errorf("main: %w", err)
 	}
+	answerProvider, err := resolveProvider(providers, cfg.LLM.AnswerProvider, "answer_provider")
+	if err != nil {
+		return fmt.Errorf("main: %w", err)
+	}
+	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
 
 	embeddingAPIKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	if embeddingAPIKey == "" {
@@ -173,7 +181,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("main: init gemini embedder: %w", err)
 	}
 
-	pl := pipeline.New(documentProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+	pl := pipeline.New(documentProvider, escalationProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
 
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(storage.NewTimelineRepository(store)),
@@ -202,9 +210,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	logger.Info("medical-card ready",
 		"database", cfg.Database.Path,
 		"files", cfg.Files.Dir,
-		"documentModel", cfg.LLM.DocumentModel,
-		"plannerModel", cfg.LLM.PlannerModel,
-		"answerModel", cfg.LLM.AnswerModel,
+		"documentProvider", cfg.LLM.DocumentProvider,
+		"plannerProvider", cfg.LLM.PlannerProvider,
+		"answerProvider", cfg.LLM.AnswerProvider,
+		"escalationConfigured", escalationProvider != nil,
 		"embeddingModel", cfg.Embedding.Model,
 		"addr", cfg.HTTPAddr,
 		"tls", cfg.TLS.Enabled,
@@ -217,21 +226,87 @@ func run(cfg config.Config, logger *slog.Logger) error {
 // newGeminiProvider builds one gemini.Provider for stage (a log-friendly
 // name only, e.g. "planner") using model. All Gemini calls share the same
 // rotation pool of API keys (cfg.APIKeyEnvs) — see gemini.RotationConfig.
-func newGeminiProvider(ctx context.Context, stage string, cfg config.LLMConfig, logger *slog.Logger) (*gemini.Provider, error) {
-	var model string
-	switch stage {
-	case "document":
-		model = cfg.DocumentModel
-	case "planner":
-		model = cfg.PlannerModel
-	case "answer":
-		model = cfg.AnswerModel
+// buildProviders constructs every configured LLM backend once, keyed by
+// its ProviderConfig.Name, so document_provider/planner_provider/
+// answer_provider (and any provider's escalation.target_provider) can all
+// resolve by name against the same set of instances — mirrors miranda's
+// own cmd/miranda/main.go buildProviders. extraction.Provider (Chat +
+// Structured) is the return type since every provider type here
+// implements both, and that's a superset of what any single call site
+// actually needs (resolveProvider/resolveEscalationProvider narrow it
+// further where only Structured is required — see ask.StructuredProvider,
+// extraction.StructuredProvider).
+func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger *slog.Logger) (map[string]extraction.Provider, error) {
+	providers := make(map[string]extraction.Provider, len(configs))
+	for _, c := range configs {
+		switch c.Type {
+		case "gemini":
+			p, err := gemini.New(ctx, c.Name, c.Model, c.APIKeyEnvs,
+				gemini.ToolsConfig{},
+				gemini.RotationConfig{CooldownSeconds: c.GeminiRotation.CooldownSeconds, MaxRetryCycles: c.GeminiRotation.MaxRetryCycles},
+				logger,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
+			}
+			providers[c.Name] = p
+		case "anthropic":
+			apiKey := firstAPIKey(c.APIKeyEnvs)
+			if apiKey == "" {
+				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			}
+			providers[c.Name] = anthropic.New(c.Name, c.Model, apiKey, anthropic.ToolsConfig{})
+		case "openai_compat":
+			apiKey := firstAPIKey(c.APIKeyEnvs)
+			if apiKey == "" {
+				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			}
+			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, apiKey)
+		default:
+			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
+		}
 	}
-	return gemini.New(ctx, "gemini-"+stage, model, cfg.APIKeyEnvs,
-		gemini.ToolsConfig{},
-		gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
-		logger,
-	)
+	return providers, nil
+}
+
+// firstAPIKey mirrors miranda's own helper of the same name: only the
+// first configured env var is used for provider types with no built-in
+// key rotation (anthropic, openai_compat) — see ProviderConfig.APIKeyEnvs.
+func firstAPIKey(envs []string) string {
+	if len(envs) == 0 {
+		return ""
+	}
+	return os.Getenv(envs[0])
+}
+
+// resolveProvider looks up name in providers, erroring with the
+// config.yaml field name a caller would need to fix — config.go's
+// validate() already guarantees the name exists by the time main.go runs,
+// so this is a defensive check, not the primary place that error surfaces.
+func resolveProvider(providers map[string]extraction.Provider, name, field string) (extraction.Provider, error) {
+	p, ok := providers[name]
+	if !ok {
+		return nil, fmt.Errorf("llm.%s %q does not name a configured provider", field, name)
+	}
+	return p, nil
+}
+
+// resolveEscalationProvider looks up documentProviderName's own
+// ProviderConfig.Escalation and, if enabled, resolves its TargetProvider —
+// see extraction.StructuredWithRetry's escalate parameter. Returns nil
+// (disabling escalation) when the document provider has no escalation
+// configured, which is the default.
+func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, documentProviderName string) extraction.StructuredProvider {
+	for _, c := range configs {
+		if c.Name != documentProviderName {
+			continue
+		}
+		if !c.Escalation.Enabled {
+			return nil
+		}
+		return providers[c.Escalation.TargetProvider]
+	}
+	return nil
 }
 
 func serveUntilInterrupted(ctx context.Context, httpServer *http.Server, tlsCfg config.TLSConfig, logger *slog.Logger) error {

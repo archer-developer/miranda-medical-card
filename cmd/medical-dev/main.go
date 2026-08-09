@@ -41,12 +41,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/archer-developer/miranda-llm/anthropic"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
+	"github.com/archer-developer/miranda-llm/openaicompat"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
 	"github.com/archer-developer/miranda-medical-card/internal/envfile"
+	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -121,10 +124,15 @@ func newPipeline(cfg config.Config, store *storage.Store) (*pipeline.Pipeline, e
 
 func newPipelineWithLogger(cfg config.Config, store *storage.Store, logger *slog.Logger) (*pipeline.Pipeline, error) {
 	ctx := context.Background()
-	provider, err := gemini.New(ctx, "gemini-document", cfg.LLM.DocumentModel, cfg.LLM.APIKeyEnvs, gemini.ToolsConfig{}, gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1}, logger)
+	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
 	if err != nil {
 		return nil, err
 	}
+	provider, err := resolveProvider(providers, cfg.LLM.DocumentProvider, "document_provider")
+	if err != nil {
+		return nil, err
+	}
+	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
@@ -134,7 +142,73 @@ func newPipelineWithLogger(cfg config.Config, store *storage.Store, logger *slog
 	if err != nil {
 		return nil, err
 	}
-	return pipeline.New(provider, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
+	return pipeline.New(provider, escalationProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
+}
+
+// buildProviders, firstAPIKey, resolveProvider, and resolveEscalationProvider
+// mirror cmd/miranda-medical-card/main.go's helpers of the same name — see
+// that copy's doc comments. Duplicated rather than shared since these are
+// two separate main packages, same as this file's other construction
+// helpers.
+func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger *slog.Logger) (map[string]extraction.Provider, error) {
+	providers := make(map[string]extraction.Provider, len(configs))
+	for _, c := range configs {
+		switch c.Type {
+		case "gemini":
+			p, err := gemini.New(ctx, c.Name, c.Model, c.APIKeyEnvs,
+				gemini.ToolsConfig{},
+				gemini.RotationConfig{CooldownSeconds: c.GeminiRotation.CooldownSeconds, MaxRetryCycles: c.GeminiRotation.MaxRetryCycles},
+				logger,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
+			}
+			providers[c.Name] = p
+		case "anthropic":
+			apiKey := firstAPIKey(c.APIKeyEnvs)
+			if apiKey == "" {
+				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			}
+			providers[c.Name] = anthropic.New(c.Name, c.Model, apiKey, anthropic.ToolsConfig{})
+		case "openai_compat":
+			apiKey := firstAPIKey(c.APIKeyEnvs)
+			if apiKey == "" {
+				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			}
+			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, apiKey)
+		default:
+			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
+		}
+	}
+	return providers, nil
+}
+
+func firstAPIKey(envs []string) string {
+	if len(envs) == 0 {
+		return ""
+	}
+	return os.Getenv(envs[0])
+}
+
+func resolveProvider(providers map[string]extraction.Provider, name, field string) (extraction.Provider, error) {
+	p, ok := providers[name]
+	if !ok {
+		return nil, fmt.Errorf("llm.%s %q does not name a configured provider", field, name)
+	}
+	return p, nil
+}
+
+func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, documentProviderName string) extraction.StructuredProvider {
+	for _, c := range configs {
+		if c.Name != documentProviderName {
+			continue
+		}
+		if !c.Escalation.Enabled {
+			return nil
+		}
+		return providers[c.Escalation.TargetProvider]
+	}
+	return nil
 }
 
 func printJSON(v any) error {
@@ -296,11 +370,15 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	}
 
 	ctx := context.Background()
-	plannerProvider, err := gemini.New(ctx, "gemini-planner", cfg.LLM.PlannerModel, cfg.LLM.APIKeyEnvs, gemini.ToolsConfig{}, gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1}, logger)
+	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
 	if err != nil {
 		return err
 	}
-	answerProvider, err := gemini.New(ctx, "gemini-answer", cfg.LLM.AnswerModel, cfg.LLM.APIKeyEnvs, gemini.ToolsConfig{}, gemini.RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1}, logger)
+	plannerProvider, err := resolveProvider(providers, cfg.LLM.PlannerProvider, "planner_provider")
+	if err != nil {
+		return err
+	}
+	answerProvider, err := resolveProvider(providers, cfg.LLM.AnswerProvider, "answer_provider")
 	if err != nil {
 		return err
 	}

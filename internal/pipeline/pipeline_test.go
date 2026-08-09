@@ -50,7 +50,7 @@ func scriptedLabReportProvider(labResultsJSON string) *llmtest.FakeProvider {
 func TestUploadFile_DedupsByUserAndSHA256(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	data := []byte("pdf bytes")
 	first, err := p.UploadFile(ctx, "user1", "a.pdf", "application/pdf", data)
@@ -69,7 +69,7 @@ func TestUploadDocument_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 	provider := scriptedLabReportProvider(`{"documentType":"lab_report","organization":"Инвитро","documentDate":"2026-03-12","labResults":[{"name":"АЛТ","value":28.3,"unit":"Ед/л","referenceHigh":41}]}`)
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
 	require.NoError(t, err)
@@ -124,7 +124,7 @@ func TestUploadDocument_SecondCallSameFileReturnsAlreadyImported(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 	provider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestUploadDocument_ExtractionFailureMarksDocumentFailed(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 	provider := llmtest.New("fake", llmtest.Response{Err: errors.New("boom: provider unavailable")})
-	p := pipeline.New(provider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestReprocessDocument_AddsNewExtractionVersionAndReplacesEntities(t *testin
 	s, fs := newTestBackend(t)
 
 	firstProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)
-	first := pipeline.New(firstProvider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	first := pipeline.New(firstProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	file, err := first.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
 	require.NoError(t, err)
@@ -174,7 +174,7 @@ func TestReprocessDocument_AddsNewExtractionVersionAndReplacesEntities(t *testin
 	// two Pipeline instances sharing one Store/filestore here is purely a
 	// test convenience for scripting two independent LLM runs.
 	secondProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3},{"name":"АСТ","value":21.5}]}`)
-	second := pipeline.New(secondProvider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	second := pipeline.New(secondProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	secondResult, err := second.ReprocessDocument(ctx, "user1", firstResult.DocumentID)
 	require.NoError(t, err)
@@ -197,14 +197,14 @@ func TestUploadDocument_SecondDocumentConvertsToFirstDocumentsCanonicalUnit(t *t
 	s, fs := newTestBackend(t)
 
 	firstProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Гемоглобин","value":14.4,"unit":"г/дл"}]}`)
-	firstPipeline := pipeline.New(firstProvider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	firstPipeline := pipeline.New(firstProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	file1, err := firstPipeline.UploadFile(ctx, "user1", "a.pdf", "application/pdf", []byte("first pdf"))
 	require.NoError(t, err)
 	_, err = firstPipeline.UploadDocument(ctx, "user1", file1.ID)
 	require.NoError(t, err)
 
 	secondProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Гемоглобин","value":150,"unit":"г/л"}]}`)
-	secondPipeline := pipeline.New(secondProvider, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	secondPipeline := pipeline.New(secondProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	file2, err := secondPipeline.UploadFile(ctx, "user1", "b.pdf", "application/pdf", []byte("second pdf"))
 	require.NoError(t, err)
 	secondResult, err := secondPipeline.UploadDocument(ctx, "user1", file2.ID)

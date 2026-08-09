@@ -103,7 +103,7 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 		fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 	}
 
-	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, text, logger)
+	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, nil, text, logger)
 	if err != nil {
 		return fmt.Errorf("structured: %w", err)
 	}

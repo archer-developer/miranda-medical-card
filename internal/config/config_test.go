@@ -134,3 +134,113 @@ func TestLoad_MissingFileIsNotAnError(t *testing.T) {
 	require.Error(t, err, "still fails, but because users is empty, not because the file is missing")
 	require.Contains(t, err.Error(), "users")
 }
+
+func TestLoad_UnknownProviderTypeRejected(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: bad
+      type: not_a_real_type
+      model: x
+      api_key_envs: ["X"]
+  document_provider: bad
+  planner_provider: bad
+  answer_provider: bad
+`)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "type must be")
+}
+
+func TestLoad_StageReferencingUnknownProviderRejected(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-document
+      type: gemini
+      model: x
+      api_key_envs: ["X"]
+  document_provider: gemini-document
+  planner_provider: does-not-exist
+  answer_provider: gemini-document
+`)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "planner_provider")
+}
+
+func TestLoad_EscalationTargetProviderMustExist(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-document
+      type: gemini
+      model: x
+      api_key_envs: ["X"]
+      escalation:
+        enabled: true
+        target_provider: does-not-exist
+  document_provider: gemini-document
+  planner_provider: gemini-document
+  answer_provider: gemini-document
+`)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "escalation.target_provider")
+}
+
+func TestLoad_DuplicateProviderNameRejected(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: dup
+      type: gemini
+      model: x
+      api_key_envs: ["X"]
+    - name: dup
+      type: gemini
+      model: y
+      api_key_envs: ["Y"]
+  document_provider: dup
+  planner_provider: dup
+  answer_provider: dup
+`)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate")
+}
+
+func TestLoad_ValidEscalationConfigAccepted(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-document
+      type: gemini
+      model: x
+      api_key_envs: ["X"]
+      escalation:
+        enabled: true
+        target_provider: claude
+    - name: claude
+      type: anthropic
+      model: claude-sonnet-5
+      api_key_envs: ["ANTHROPIC_API_KEY"]
+  document_provider: gemini-document
+  planner_provider: gemini-document
+  answer_provider: gemini-document
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.True(t, cfg.LLM.Providers[0].Escalation.Enabled)
+	require.Equal(t, "claude", cfg.LLM.Providers[0].Escalation.TargetProvider)
+}

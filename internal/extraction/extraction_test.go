@@ -3,6 +3,7 @@ package extraction_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -116,7 +117,7 @@ func TestFixtures_InvitroCBC(t *testing.T) {
 	text := loadText(t, "invitro_cbc.txt")
 	expected := loadExpected(t, "invitro_cbc_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -129,7 +130,7 @@ func TestFixtures_HelixBiochemLipidCBC(t *testing.T) {
 	text := loadText(t, "helix_biochem_lipid_cbc.txt")
 	expected := loadExpected(t, "helix_biochem_lipid_cbc_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -149,7 +150,7 @@ func TestFixtures_LodeConsultation_CombinedSides(t *testing.T) {
 	text := loadText(t, "lode_consultation.txt")
 	expected := loadExpected(t, "lode_consultation_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -161,7 +162,7 @@ func TestFixtures_GravitaUltrasound_Clinical(t *testing.T) {
 	text := loadText(t, "gravita_ultrasound.txt")
 	expected := loadExpected(t, "gravita_ultrasound_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -190,7 +191,7 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 
 // TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory
 // replays, against a scripted fake provider (no live API needed), the exact
-// production failure this test guards against: a lab_report whose 2nd
+// production failure this test guards against: a lab_report whose 1st
 // attempt filled in "recommendations" (a near-universal field present on
 // almost any document) while labResults — the one category that actually
 // defines a lab_report — stayed empty. Before isSuspiciouslyEmpty became
@@ -198,12 +199,14 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 // §5), a non-empty recommendations alone satisfied the old "every category
 // empty" check and stopped the retry loop right there, silently losing the
 // document's lab results. It must now keep retrying until either labResults
-// is populated or attempts run out.
+// is populated or attempts run out (maxStructuredRetries+1 = 2 attempts
+// against the primary provider — see that constant's doc comment for why
+// it's kept low, escalation being the intended next step, not a 3rd
+// primary attempt).
 func TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory(t *testing.T) {
 	text := strings.Repeat("independent lab panel results section ", 20) // > minFullTextForSuspicion
 
 	provider := llmtest.New("fake").WithStructured(
-		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
 		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
 			DocumentType:    "lab_report",
 			Recommendations: []string{"Результаты не являются диагнозом"},
@@ -214,9 +217,55 @@ func TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory(t *tes
 		})},
 	)
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 	require.Len(t, got.LabResults, 1, "must keep retrying past a recommendations-only attempt until labResults is populated")
+}
+
+// TestStructuredWithRetry_EscalatesWhenPrimaryStaysSuspicious covers the
+// escalation path itself (see StructuredWithRetry's escalate parameter):
+// once the primary provider's own attempts are exhausted and still
+// suspiciously empty, one attempt against a different provider should be
+// tried — and used, if it isn't suspicious either.
+func TestStructuredWithRetry_EscalatesWhenPrimaryStaysSuspicious(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20)
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
+	)
+	escalation := llmtest.New("fake-escalation").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType: "lab_report",
+			LabResults:   []extraction.LabResult{{Name: "ALT", Value: 28.3}},
+		})},
+	)
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), primary, escalation, text, nil)
+	require.NoError(t, err)
+	require.Len(t, got.LabResults, 1, "escalation provider's non-suspicious result must be used once the primary is exhausted")
+}
+
+// TestStructuredWithRetry_EscalationProviderFailureFallsBackToPrimary
+// covers escalate hard-erroring (e.g. its own key/quota exhausted) —
+// StructuredWithRetry must not turn that into a hard failure for the whole
+// call; it should fall back to the primary provider's (still suspicious)
+// result instead, since an unreachable escalation provider shouldn't make
+// an otherwise-successful extraction fail outright.
+func TestStructuredWithRetry_EscalationProviderFailureFallsBackToPrimary(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20)
+
+	primary := llmtest.New("fake-primary").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
+	)
+	escalation := llmtest.New("fake-escalation").WithStructured(
+		llmtest.StructuredResponse{Err: errors.New("escalation provider unavailable")},
+	)
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), primary, escalation, text, nil)
+	require.NoError(t, err, "an escalation provider failure must not fail the whole call")
+	require.Empty(t, got.LabResults)
 }
 
 // TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty
@@ -236,7 +285,7 @@ func TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty(t 
 		})},
 	)
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
 	require.NoError(t, err)
 	require.Len(t, got.Recommendations, 1, "a non-empty recommendations should stop the retry for an unmapped documentType, same as before")
 }
