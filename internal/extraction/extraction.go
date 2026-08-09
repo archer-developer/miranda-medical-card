@@ -123,6 +123,10 @@ func Schema() map[string]any {
 			"organization": map[string]any{"type": "string", "description": "Clinic/lab/hospital that issued the document, as written."},
 			"doctor":       map[string]any{"type": "string", "description": "Doctor's name, as written."},
 			"language":     map[string]any{"type": "string", "description": "ISO 639-1 language code of the document's main text."},
+			"studyTitle": map[string]any{
+				"type":        "string",
+				"description": "The document's or study's own title/heading, exactly as printed — e.g. 'Общий анализ крови', 'Биохимический анализ крови', 'МРТ пояснично-крестцового отдела позвоночника без контрастного усиления', 'УЗИ органов брюшной полости'. Only if literally printed as a title or heading in the document — never inferred, summarized, or constructed from documentType plus the document's contents.",
+			},
 			"diagnoses": map[string]any{
 				"type": "array",
 				"items": map[string]any{
@@ -285,6 +289,7 @@ type Result struct {
 	Organization         string                `json:"organization,omitempty"`
 	Doctor               string                `json:"doctor,omitempty"`
 	Language             string                `json:"language,omitempty"`
+	StudyTitle           string                `json:"studyTitle,omitempty"`
 	FullText             string                `json:"fullText"`
 	Diagnoses            []Diagnosis           `json:"diagnoses,omitempty"`
 	Medications          []Medication          `json:"medications,omitempty"`
@@ -773,37 +778,52 @@ type Provider interface {
 // below). A nil logger falls back to slog.Default() and is threaded into
 // both retrying stages — see StructuredWithRetry's doc comment for what
 // gets logged at which level.
-func Extract(ctx context.Context, provider Provider, escalate StructuredProvider, imageBase64, mimeType string, logger *slog.Logger) (Result, json.RawMessage, error) {
+//
+// stillSuspicious mirrors StructuredWithRetry's own internal "suspicious"
+// check (see isSuspiciouslyEmpty) on the final Stage 2a result, after
+// every retry and escalation attempt is exhausted — the same signal that
+// function only logs (at Warn) is surfaced here to the caller as a return
+// value, since Pipeline needs it to decide the document's final status
+// (see internal/pipeline/pipeline.go's run: a lab_report with an empty
+// labResults after every attempt is marked FAILED, not READY, rather than
+// silently leaving the user with an empty-looking-successful document —
+// see docs/domain/11-value-objects.md §7 for why FAILED, not a new status
+// value). True only for the failure-shaped case StructuredWithRetry's own
+// doc comment describes; a genuinely short/sparse document (below
+// minFullTextForSuspicion) or one whose type has no known expected
+// category never sets this.
+func Extract(ctx context.Context, provider Provider, escalate StructuredProvider, imageBase64, mimeType string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	text, err := OCR(ctx, provider, imageBase64, mimeType)
 	if err != nil {
-		return Result{}, nil, err
+		return Result{}, nil, false, err
 	}
 	logger.Debug("extraction: ocr done", "fullTextLen", len(text))
 
-	result, _, err := StructuredWithRetry(ctx, provider, escalate, text, logger)
+	result, _, err = StructuredWithRetry(ctx, provider, escalate, text, logger)
 	if err != nil {
-		return Result{}, nil, err
+		return Result{}, nil, false, err
 	}
+	stillSuspicious = isSuspiciouslyEmpty(result)
 
 	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, text, result.DocumentType == "imaging_report", logger)
 	if err != nil {
-		return Result{}, nil, err
+		return Result{}, nil, false, err
 	}
 	result.InstrumentalFindings = findings
 
-	merged, err := json.Marshal(result)
+	merged, err = json.Marshal(result)
 	if err != nil {
-		return Result{}, nil, fmt.Errorf("extraction: marshal merged result: %w", err)
+		return Result{}, nil, false, fmt.Errorf("extraction: marshal merged result: %w", err)
 	}
 	logger.Debug("extraction: done",
 		"documentType", result.DocumentType, "diagnoses", len(result.Diagnoses),
 		"medications", len(result.Medications), "labResults", len(result.LabResults),
 		"instrumentalFindings", len(result.InstrumentalFindings), "procedures", len(result.Procedures),
 		"allergies", len(result.Allergies), "vitalSigns", len(result.VitalSigns),
-		"recommendations", len(result.Recommendations))
-	return result, merged, nil
+		"recommendations", len(result.Recommendations), "stillSuspicious", stillSuspicious)
+	return result, merged, stillSuspicious, nil
 }

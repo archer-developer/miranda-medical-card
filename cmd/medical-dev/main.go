@@ -9,7 +9,9 @@
 // commands directly useful for inspecting a running deployment's data, plus
 // pipeline for re-running Processing Pipeline against an already-imported
 // document with full Debug-level tracing to stderr — docs/cli/medical_dev.md
-// §12).
+// §12), and backfill-titles — not part of that doc (it's a one-off data
+// migration, not a standing diagnostic command), see
+// pipeline.Pipeline.BackfillStudyTitle's doc comment.
 // Not implemented: planner, provider, search, prompt, llm (see
 // docs/cli/medical_dev.md §5-8, §13) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
@@ -28,6 +30,7 @@
 //	medical-dev document <documentId> --user alex
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
+//	medical-dev backfill-titles --user alex [--provider gemini-planner]
 package main
 
 import (
@@ -92,8 +95,10 @@ func run(args []string) error {
 		return runAsk(args, cfg, store, logger)
 	case "pipeline":
 		return runPipeline(args, cfg, store)
+	case "backfill-titles":
+		return runBackfillTitles(args, cfg, store)
 	default:
-		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, or pipeline", command)
+		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, or backfill-titles", command)
 	}
 }
 
@@ -351,6 +356,87 @@ func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 		return err
 	}
 	return printJSON(result)
+}
+
+// --- backfill-titles ---
+
+// runBackfillTitles re-derives MedicalDocument.Title for every existing
+// document of --user via pipeline.Pipeline.BackfillStudyTitle — a one-off
+// migration for documents processed before extraction.Schema had a
+// studyTitle field (see that method's doc comment). Cheap relative to
+// `pipeline` (ReprocessDocument): no OCR, no new Extraction version, no
+// Timeline/Profile/FTS/Embeddings rebuild — replays only Stage 2a
+// (Structured) against each document's already-stored RecognizedText.
+//
+// --provider overrides which configured llm.providers entry to use instead
+// of llm.document_provider — useful when the default model's free-tier
+// daily quota (per-model, not shared across a project's models) is
+// exhausted but a differently-named model still has budget, e.g.
+// --provider gemini-planner (gemini-3.5-flash-lite) when gemini-document
+// (gemini-3.6-flash) returns 429 RESOURCE_EXHAUSTED. No escalation
+// provider is wired for this command regardless of llm.yaml's escalation
+// config — a one-off metadata backfill doesn't need it, and StudyTitle
+// simply won't be set for a document this pass can't get a title for (see
+// BackfillStudyTitle's "changed=false is not an error" contract).
+func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("backfill-titles", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	providerName := fs.String("provider", "", "override llm.document_provider with this configured provider name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := context.Background()
+
+	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
+	if err != nil {
+		return err
+	}
+	name := cfg.LLM.DocumentProvider
+	if *providerName != "" {
+		name = *providerName
+	}
+	provider, err := resolveProvider(providers, name, "provider")
+	if err != nil {
+		return err
+	}
+	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
+	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
+	if err != nil {
+		return err
+	}
+	files, err := filestore.New(cfg.Files.Dir)
+	if err != nil {
+		return err
+	}
+	pl := pipeline.New(provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+
+	docs, err := pl.ListDocuments(ctx, *user)
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range docs {
+		if doc.Status != storage.DocumentStatusReady {
+			fmt.Printf("%s: skipped (status=%s)\n", doc.ID, doc.Status)
+			continue
+		}
+		changed, newTitle, err := pl.BackfillStudyTitle(ctx, *user, doc.ID)
+		if err != nil {
+			fmt.Printf("%s: error: %v\n", doc.ID, err)
+			continue
+		}
+		if !changed {
+			fmt.Printf("%s: unchanged (%q)\n", doc.ID, doc.Title)
+			continue
+		}
+		fmt.Printf("%s: %q -> %q\n", doc.ID, doc.Title, newTitle)
+	}
+	return nil
 }
 
 // --- ask ---

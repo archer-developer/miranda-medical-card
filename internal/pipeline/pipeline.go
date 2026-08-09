@@ -66,10 +66,11 @@ type Pipeline struct {
 	escalationProvider extraction.StructuredProvider
 	files              *filestore.Store
 
-	fileRepo       storage.FileRepository
-	documentRepo   storage.DocumentRepository
-	extractionRepo storage.ExtractionRepository
-	canonicalUnits storage.CanonicalUnitRepository
+	fileRepo         storage.FileRepository
+	documentRepo     storage.DocumentRepository
+	extractionRepo   storage.ExtractionRepository
+	canonicalUnits   storage.CanonicalUnitRepository
+	indicatorAliases storage.IndicatorAliasRepository
 
 	diagnoses            storage.DiagnosisRepository
 	medications          storage.MedicationRepository
@@ -124,10 +125,11 @@ func New(provider extraction.Provider, escalationProvider extraction.StructuredP
 		escalationProvider: escalationProvider,
 		files:              files,
 
-		fileRepo:       storage.NewFileRepository(s),
-		documentRepo:   storage.NewDocumentRepository(s),
-		extractionRepo: storage.NewExtractionRepository(s),
-		canonicalUnits: storage.NewCanonicalUnitRepository(s),
+		fileRepo:         storage.NewFileRepository(s),
+		documentRepo:     storage.NewDocumentRepository(s),
+		extractionRepo:   storage.NewExtractionRepository(s),
+		canonicalUnits:   storage.NewCanonicalUnitRepository(s),
+		indicatorAliases: storage.NewIndicatorAliasRepository(s),
 
 		diagnoses:            diagnoses,
 		medications:          medications,
@@ -254,9 +256,27 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		return fail(fmt.Errorf("pipeline: run: read file: %w", err))
 	}
 
-	extracted, raw, err := extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
+	extracted, raw, stillSuspicious, err := extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
 	if err != nil {
 		return fail(fmt.Errorf("pipeline: run: extract: %w", err))
+	}
+	// stillSuspicious means every attempt (primary retries + escalation,
+	// see extraction.Extract's doc comment) came back with the categories
+	// expected for this documentType empty despite substantial recognized
+	// text — extraction.StructuredWithRetry deliberately doesn't turn this
+	// into an error itself (it can't tell "the model failed" from "this
+	// document genuinely has nothing structured to extract"), but Pipeline
+	// can be less permissive: silently marking such a document READY with
+	// zero entities looks identical to a real, empty-but-successful
+	// result, and nothing prompts the user to notice and request
+	// medical.reprocess_document. Treated the same as any other hard
+	// failure here — FAILED, not a new status value (see
+	// docs/domain/11-value-objects.md §7's PENDING -> RUNNING -> (READY |
+	// FAILED) state machine) — nothing downstream (Normalize, Timeline,
+	// Profile, FTS) runs against a result already known to have nothing
+	// useful in it.
+	if stillSuspicious {
+		return fail(fmt.Errorf("pipeline: run: extract: structured result still suspiciously empty after every attempt (including escalation, if configured) for documentType %q", extracted.DocumentType))
 	}
 
 	record, err := p.extractionRepo.Add(ctx, storage.ExtractionRecord{DocumentID: documentID, Version: version, Raw: raw})
@@ -267,7 +287,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		return fail(fmt.Errorf("pipeline: run: activate extraction: %w", err))
 	}
 
-	normalized, normErrs := normalization.Normalize(ctx, userID, documentID, extracted, p.canonicalUnits)
+	normalized, normErrs := normalization.Normalize(ctx, userID, documentID, extracted, p.canonicalUnits, p.indicatorAliases)
 	// A bad date or unresolvable unit on one entity (see Normalize's own
 	// doc comment) is not fatal to the whole document — every
 	// successfully-normalized entity is still persisted below. Each error
@@ -477,13 +497,22 @@ func documentTypeLabel(documentType string) string {
 }
 
 // buildTitle produces MedicalDocument.Title (docs/domain/03-files-and-documents.md
-// §3 — "короткое человекочитаемое название, для списков"). Purely
-// mechanical (documentType label + organization, if known) rather than an
-// LLM call — extraction.Schema has no dedicated title field to draw from,
-// and inventing one isn't worth a whole extra LLM call for what's already
-// derivable from fields Extraction does produce.
+// §3 — "короткое человекочитаемое название, для списков"). Prefers
+// extracted.StudyTitle — the document's own printed title/heading (e.g.
+// "МРТ пояснично-крестцового отдела позвоночника без контрастного
+// усиления"), transcribed by Extraction itself (see Schema's studyTitle
+// field) — since that's the specific label a user would actually recognize
+// and reference in a question, unlike the fixed 7-value documentType label
+// ("Инструментальное исследование" for every imaging study regardless of
+// modality or body part). Falls back to the mechanical documentType label +
+// organization, exactly as before, when StudyTitle wasn't printed/
+// transcribed — same "don't fabricate, leave it to the fallback" posture as
+// Organization/Doctor already have.
 func buildTitle(extracted extraction.Result) string {
 	label := documentTypeLabel(extracted.DocumentType)
+	if extracted.StudyTitle != "" {
+		label = extracted.StudyTitle
+	}
 	if extracted.Organization == "" {
 		return label
 	}

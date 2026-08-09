@@ -120,6 +120,119 @@ func TestUploadDocument_HappyPath(t *testing.T) {
 	require.Equal(t, "summary", embeddings[0].SourceType)
 }
 
+// TestUploadDocument_StudyTitleFromExtractionBecomesDocumentTitle covers
+// extraction.Schema's studyTitle field (added because the fixed
+// documentType label alone — "Лабораторное исследование" for every lab
+// report, "Инструментальное исследование" for every imaging study — gives
+// a user nothing to reference a specific document by in a medcard
+// question). When Extraction transcribes a printed title, buildTitle must
+// prefer it over the generic label.
+func TestUploadDocument_StudyTitleFromExtractionBecomesDocumentTitle(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := scriptedLabReportProvider(`{"documentType":"lab_report","organization":"Хеликс","studyTitle":"Общий анализ мочи","labResults":[{"name":"Белок","qualitativeValue":"не обнаружен"}]}`)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "urine.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+
+	doc, err := storage.NewDocumentRepository(s).Get(ctx, result.DocumentID, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "Общий анализ мочи — Хеликс", doc.Title)
+}
+
+// TestUploadDocument_MissingStudyTitleFallsBackToDocumentTypeLabel confirms
+// the pre-existing behavior is unchanged when Extraction has nothing to
+// transcribe for studyTitle (schema field omitted, e.g. no clear printed
+// heading) — same "don't fabricate" fallback Organization/Doctor already
+// have, not a regression.
+func TestUploadDocument_MissingStudyTitleFallsBackToDocumentTypeLabel(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := scriptedLabReportProvider(`{"documentType":"lab_report","organization":"Инвитро","labResults":[{"name":"АЛТ","value":28.3}]}`)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+
+	doc, err := storage.NewDocumentRepository(s).Get(ctx, result.DocumentID, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "Лабораторное исследование — Инвитро", doc.Title)
+}
+
+// TestBackfillStudyTitle_UpdatesTitleFromReplayedStructuredCall covers the
+// migration path for documents uploaded before extraction.Schema had
+// studyTitle (see pipeline.Pipeline.BackfillStudyTitle's doc comment):
+// re-running only Stage 2a against the already-stored RecognizedText (no
+// OCR, no new Extraction version) must pick up a studyTitle that wasn't
+// available the first time and update Title, without touching
+// DocumentType/Organization/RecognizedText/Summary.
+func TestBackfillStudyTitle_UpdatesTitleFromReplayedStructuredCall(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Общий анализ крови. Дата: 2026-03-12. Лаборатория Инвитро."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","organization":"Инвитро","labResults":[{"name":"АЛТ","value":28.3}]}`)},                                   // upload, stage 2a — no studyTitle yet
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},                                                                                                         // upload, stage 2b
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","organization":"Инвитро","studyTitle":"Общий анализ крови","labResults":[{"name":"АЛТ","value":28.3}]}`)}, // backfill replay
+	)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+
+	before, err := storage.NewDocumentRepository(s).Get(ctx, result.DocumentID, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "Лабораторное исследование — Инвитро", before.Title, "sanity check: no studyTitle on first extraction")
+
+	changed, newTitle, err := p.BackfillStudyTitle(ctx, "user1", result.DocumentID)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "Общий анализ крови — Инвитро", newTitle)
+
+	after, err := storage.NewDocumentRepository(s).Get(ctx, result.DocumentID, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "Общий анализ крови — Инвитро", after.Title)
+	require.Equal(t, before.DocumentType, after.DocumentType)
+	require.Equal(t, before.Organization, after.Organization)
+	require.Equal(t, before.RecognizedText, after.RecognizedText)
+	require.Equal(t, before.Summary, after.Summary, "backfill must only touch Title")
+}
+
+// TestBackfillStudyTitle_NoStudyTitleInReplayIsNotAnError covers the
+// "nothing to backfill" outcome — the replayed call still doesn't produce a
+// studyTitle (e.g. a genuinely untitled document) — which must report
+// changed=false, not an error.
+func TestBackfillStudyTitle_NoStudyTitleInReplayIsNotAnError(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Общий анализ крови."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)}, // backfill replay, still no studyTitle
+	)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+
+	changed, newTitle, err := p.BackfillStudyTitle(ctx, "user1", result.DocumentID)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, newTitle)
+}
+
 func TestUploadDocument_SecondCallSameFileReturnsAlreadyImported(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
@@ -152,6 +265,55 @@ func TestUploadDocument_ExtractionFailureMarksDocumentFailed(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, docs, 1)
 	require.Equal(t, storage.DocumentStatusFailed, docs[0].Status)
+}
+
+// TestUploadDocument_SuspiciouslyEmptyStructuredResultMarksDocumentFailed
+// covers the failure mode found on doc_3bdc49d9-7064-48d7-bc5b-9c2b0db38c05
+// in production (2026-08-09): OCR succeeded (substantial fullText) but
+// Structured Extraction returned labResults:[] on every attempt for a
+// lab_report — extraction.StructuredWithRetry itself never turns this into
+// an error (see its doc comment), so before this fix the document was
+// silently marked READY with zero entities, indistinguishable from a
+// legitimately empty document. Pipeline must now mark it FAILED instead —
+// see internal/pipeline/pipeline.go's stillSuspicious handling in run.
+func TestUploadDocument_SuspiciouslyEmptyStructuredResultMarksDocumentFailed(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+
+	longFullText := "Общий анализ крови. Дата: 2026-03-12. Лаборатория Инвитро. " +
+		"Результаты приведены ниже в виде таблицы с референсными значениями для каждого показателя. " +
+		"Данный текст намеренно длиннее порога minFullTextForSuspicion, чтобы имитировать содержательный документ, " +
+		"из которого структурированное извлечение не смогло получить ни одной записи ни за одну из попыток."
+	require.Greater(t, len(longFullText), 300, "test fixture must exceed minFullTextForSuspicion or isSuspiciouslyEmpty never fires")
+
+	emptyLabReport := `{"documentType":"lab_report","labResults":[]}`
+	provider := llmtest.New("fake", llmtest.Response{Text: longFullText}).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(emptyLabReport)}, // primary attempt 1
+		llmtest.StructuredResponse{JSON: json.RawMessage(emptyLabReport)}, // primary attempt 2 (maxStructuredRetries+1)
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	// No escalation provider configured — the primary's own attempts are
+	// exhausted and still suspicious, same as the production case (where
+	// escalation was configured but its own call failed — see
+	// extraction.StructuredWithRetry's doc comment: an unreachable
+	// escalation provider falls back to the primary's suspicious result
+	// rather than hard-failing, so the end state is the same either way).
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+
+	_, err = p.UploadDocument(ctx, "user1", file.ID)
+	require.Error(t, err, "a suspiciously-empty structured result must surface as a pipeline error, not a silent success")
+
+	docs, err := storage.NewDocumentRepository(s).List(ctx, "user1", storage.DocumentFilter{FileID: file.ID})
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	require.Equal(t, storage.DocumentStatusFailed, docs[0].Status, "must not be marked READY when nothing usable was extracted")
+
+	labResults, err := storage.NewLabResultRepository(s).ListByDocument(ctx, docs[0].ID)
+	require.NoError(t, err)
+	require.Empty(t, labResults)
 }
 
 func TestReprocessDocument_AddsNewExtractionVersionAndReplacesEntities(t *testing.T) {
