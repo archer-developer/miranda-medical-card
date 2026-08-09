@@ -41,7 +41,7 @@ File ──1:1── MedicalDocument ──1:N── Extraction
 | `filename` | string | ✅ | Оригинальное имя файла на момент загрузки. |
 | `contentType` | string | ✅ | MIME Type. |
 | `size` | int | ✅ | Размер в байтах. |
-| `sha256` | string | ✅ | Хэш содержимого, используется для дедупликации в пределах `(userId, sha256)` — см. `../mcp/02-files.md` §5. |
+| `sha256` | string | ✅ | Хэш содержимого, используется для дедупликации в пределах `(userId, sha256)` — см. `../mcp/02-files.md` §4. |
 | `storagePath` | string | ✅ | Путь к файлу в файловом хранилище (никогда не возвращается через MCP). |
 | `uploadedAt` | timestamp | ✅ | Момент загрузки. |
 
@@ -49,7 +49,7 @@ File ──1:1── MedicalDocument ──1:N── Extraction
 
 - Неизменяем после создания (§6.6 `../architecture/01-overview.md` "Оригинальные документы никогда не изменяются").
 - `(userId, sha256)` — не строгий уникальный ключ, а ключ дедупликации: реализация вправе вернуть существующий `File` вместо создания нового при совпадении.
-- Удаляется только как побочный эффект удаления последнего `MedicalDocument`, который на него ссылается (см. `../mcp/02-files.md` §7).
+- Удаляется только как побочный эффект удаления последнего `MedicalDocument`, который на него ссылается (см. `../mcp/02-files.md` §6).
 
 ## Repository
 
@@ -122,9 +122,9 @@ File ──1:1── MedicalDocument ──1:N── Extraction
 # 5. Пример жизненного цикла
 
 ```text
-upload_file()          → File{status: n/a}
-upload_document(fileId) → MedicalDocument{status: PENDING}
-                        → MedicalDocument{status: RUNNING}
+upload_document(fileUri) → скачивание файла, File{status: n/a}
+                          → MedicalDocument{status: PENDING}
+                          → MedicalDocument{status: RUNNING}
 OCR/Vision              (заполняет recognizedText)
 Structured Extraction   → Extraction{version: 1, active: true}
 Normalization            (строит Medication/Diagnosis/... — см. 06-medication.md и далее)

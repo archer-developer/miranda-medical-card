@@ -2,8 +2,9 @@ package mcpserver_test
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 	)
 	asker := ask.NewAsker(provider, provider, registry, 5*time.Second, 20, nil)
 
-	server := mcpserver.New(pl, asker, users, nil)
+	server := mcpserver.New(pl, asker, users, 50*1024*1024, nil)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -86,7 +87,7 @@ func TestServer_ListsAllRegisteredTools(t *testing.T) {
 		names[tool.Name] = true
 	}
 	for _, want := range []string{
-		"medical.upload_file", "medical.download_file",
+		"medical.download_file",
 		"medical.upload_document", "medical.reprocess_document", "medical.list_documents", "medical.get_document",
 		"medical.log_event", "medical.delete_event",
 		"medical.ask", "medical.profile", "medical.timeline",
@@ -94,6 +95,7 @@ func TestServer_ListsAllRegisteredTools(t *testing.T) {
 		require.True(t, names[want], "expected tool %s to be registered", want)
 	}
 	require.False(t, names["medical.delete_document"], "delete_document is explicitly out of scope for this pass")
+	require.False(t, names["medical.upload_file"], "medical.upload_file was removed — no MCP tool may accept raw file bytes as an argument, see docs/mcp/02-files.md §2")
 }
 
 func TestServer_UnknownUserRejected(t *testing.T) {
@@ -104,7 +106,7 @@ func TestServer_UnknownUserRejected(t *testing.T) {
 	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "USER_NOT_FOUND")
 }
 
-func TestServer_UploadFileThenUploadDocument(t *testing.T) {
+func TestServer_UploadDocumentFetchesFileURI(t *testing.T) {
 	provider := llmtest.New("fake",
 		llmtest.Response{Text: "Общий анализ крови. Дата: 2026-03-12."},
 	).WithStructured(
@@ -113,17 +115,17 @@ func TestServer_UploadFileThenUploadDocument(t *testing.T) {
 	)
 	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
 
-	uploadResult := callTool(t, session, "medical.upload_file", map[string]any{
-		"userId": "alex", "filename": "cbc.pdf", "contentType": "application/pdf",
-		"data": base64.StdEncoding.EncodeToString([]byte("pdf bytes")),
-	})
-	require.False(t, uploadResult.IsError, "%v", uploadResult.Content)
-	fileOut := decodeStructured[struct {
-		FileID string `json:"fileId"`
-	}](t, uploadResult)
-	require.NotEmpty(t, fileOut.FileID)
+	// Stands in for Miranda's file-hosting endpoint (see
+	// docs/mcp/02-files.md §2): serves the file's bytes over plain HTTP,
+	// exactly what medical.upload_document is expected to GET itself.
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="cbc.pdf"`)
+		_, _ = w.Write([]byte("pdf bytes"))
+	}))
+	t.Cleanup(fileServer.Close)
 
-	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileId": fileOut.FileID})
+	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
 	require.False(t, docResult.IsError, "%v", docResult.Content)
 	docOut := decodeStructured[struct {
 		DocumentID      string `json:"documentId"`
@@ -142,6 +144,27 @@ func TestServer_UploadFileThenUploadDocument(t *testing.T) {
 	}](t, listResult)
 	require.Len(t, listOut.Documents, 1)
 	require.Equal(t, docOut.DocumentID, listOut.Documents[0].DocumentID)
+}
+
+func TestServer_UploadDocument_InvalidFileURIRejected(t *testing.T) {
+	session := newTestSession(t, llmtest.New("fake"), []config.UserConfig{{ID: "alex"}})
+
+	result := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": "not-a-url"})
+	require.True(t, result.IsError)
+	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "INVALID_FILE")
+}
+
+func TestServer_UploadDocument_FileURINotFoundRejected(t *testing.T) {
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(fileServer.Close)
+
+	session := newTestSession(t, llmtest.New("fake"), []config.UserConfig{{ID: "alex"}})
+
+	result := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
+	require.True(t, result.IsError)
+	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "FILE_NOT_FOUND")
 }
 
 func TestServer_LogEventThenDeleteEvent(t *testing.T) {

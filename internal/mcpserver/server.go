@@ -27,9 +27,10 @@ const (
 	serverVersion = "0.1.0"
 )
 
-// New builds and returns the MCP server with every tool registered. A nil
-// logger falls back to slog.Default().
-func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, logger *slog.Logger) *mcp.Server {
+// New builds the MCP server with every tool registered. maxFileSizeBytes
+// bounds how much medical.upload_document (see documents.go) will read from
+// a caller-supplied fileUri. A nil logger falls back to slog.Default().
+func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, maxFileSizeBytes int64, logger *slog.Logger) *mcp.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -38,7 +39,7 @@ func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, log
 	server := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
 
 	registerFileTools(server, pl, gate, logger)
-	registerDocumentTools(server, pl, gate, logger)
+	registerDocumentTools(server, pl, gate, maxFileSizeBytes, logger)
 	registerEventTools(server, pl, gate, logger)
 	registerAskTool(server, asker, gate, logger)
 	registerProfileTool(server, pl, gate, logger)

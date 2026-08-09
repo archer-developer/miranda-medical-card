@@ -14,58 +14,17 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
 
+// registerFileTools registers the read side of the Files API only.
+// medical.upload_file (which used to accept a file's bytes as a base64
+// `data` argument) has been removed: a File is now created only as a side
+// effect of medical.upload_document(fileUri) fetching the content itself
+// (see documents.go, docs/mcp/03-documents.md §4) — no MCP tool in this
+// service ever accepts raw file bytes as an argument, see docs/mcp/02-files.md §2.
 func registerFileTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "medical.upload_file",
-		Description: "Загружает бинарный файл в файловое хранилище, без какой-либо медицинской обработки. Возвращает fileId для последующего medical.upload_document. См. docs/mcp/02-files.md §4.",
-	}, uploadFileHandler(pl, gate, logger))
-
-	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.download_file",
-		Description: "Возвращает ранее загруженный файл в исходном виде. См. docs/mcp/02-files.md §6.",
+		Description: "Возвращает ранее загруженный файл в исходном виде. См. docs/mcp/02-files.md §5.",
 	}, downloadFileHandler(pl, gate, logger))
-}
-
-// --- medical.upload_file ---
-
-type UploadFileInput struct {
-	UserID      string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	Filename    string `json:"filename" jsonschema:"Оригинальное имя файла."`
-	ContentType string `json:"contentType" jsonschema:"MIME Type."`
-	Data        string `json:"data" jsonschema:"Содержимое файла, закодированное в base64."`
-}
-
-type UploadFileOutput struct {
-	FileID      string `json:"fileId"`
-	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256"`
-	ContentType string `json:"contentType"`
-}
-
-func uploadFileHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[UploadFileInput, UploadFileOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in UploadFileInput) (*mcp.CallToolResult, UploadFileOutput, error) {
-		if err := gate.requireUser(in.UserID); err != nil {
-			return nil, UploadFileOutput{}, err
-		}
-		if strings.TrimSpace(in.Filename) == "" || strings.TrimSpace(in.ContentType) == "" {
-			return nil, UploadFileOutput{}, mcpError(codeInvalidFile, "filename and contentType are required")
-		}
-		data, err := base64.StdEncoding.DecodeString(in.Data)
-		if err != nil || len(data) == 0 {
-			return nil, UploadFileOutput{}, mcpError(codeInvalidFile, "data must be non-empty valid base64")
-		}
-
-		file, err := pl.UploadFile(ctx, in.UserID, in.Filename, in.ContentType, data)
-		if err != nil {
-			logger.Error("upload_file failed", "userId", in.UserID, "error", err)
-			return nil, UploadFileOutput{}, mcpError(codeStorageError, "%v", err)
-		}
-
-		logger.Info("upload_file", "userId", in.UserID, "fileId", file.ID, "size", file.Size)
-		out := UploadFileOutput{FileID: file.ID, Size: file.Size, SHA256: file.SHA256, ContentType: file.ContentType}
-		text := fmt.Sprintf("Uploaded. fileId: %s  size: %d bytes", out.FileID, out.Size)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
-	}
 }
 
 // --- medical.download_file ---

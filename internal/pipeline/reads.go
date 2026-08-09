@@ -10,7 +10,7 @@ import (
 )
 
 // This file adds the read-only Application Service methods the MCP layer
-// needs (docs/mcp/02-files.md §6, docs/mcp/03-documents.md §7-8,
+// needs (docs/mcp/02-files.md §5, docs/mcp/03-documents.md §7-8,
 // docs/mcp/05-profile.md, docs/mcp/06-timeline.md) — kept separate from
 // pipeline.go's write-path orchestration (UploadDocument/ReprocessDocument/
 // LogEvent), which is what actually earns this package its name. Routed
@@ -20,7 +20,7 @@ import (
 // principle docs/cli/medical.md §3 states explicitly for the CLI ("CLI не
 // обращается к Repository напрямую").
 
-// DownloadFile implements docs/mcp/02-files.md §6: returns a previously
+// DownloadFile implements docs/mcp/02-files.md §5: returns a previously
 // uploaded file's metadata and content, unmodified.
 func (p *Pipeline) DownloadFile(ctx context.Context, userID, fileID string) (storage.File, []byte, error) {
 	file, err := p.fileRepo.Get(ctx, fileID, userID)

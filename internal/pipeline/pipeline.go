@@ -148,11 +148,12 @@ func New(provider extraction.Provider, embedder embedding.Embedder, embeddingPro
 	}
 }
 
-// UploadFile implements the storage half of docs/mcp/02-files.md §4 — the
-// LLM-facing MCP tool layer (auth, size/MIME limits, etc.) doesn't exist yet
-// in this repo, so this is the mechanical core other code will eventually
-// wrap: write data to disk, dedup by (userID, sha256) per that doc §5, and
-// record a File row.
+// UploadFile is the storage half of File creation (docs/mcp/02-files.md §2):
+// write data to disk, dedup by (userID, sha256) per that doc's §4, and
+// record a File row. It has no MCP tool of its own — the only caller is
+// medical.upload_document's handler (internal/mcpserver/documents.go),
+// after it has fetched the bytes from a caller-supplied fileUri
+// (docs/mcp/03-documents.md §4).
 func (p *Pipeline) UploadFile(ctx context.Context, userID, filename, contentType string, data []byte) (storage.File, error) {
 	path, sha, err := p.files.Save(userID, data)
 	if err != nil {

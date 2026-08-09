@@ -24,6 +24,7 @@ const (
 	codeDocumentNotFound        = "DOCUMENT_NOT_FOUND"
 	codeDocumentAlreadyImported = "DOCUMENT_ALREADY_IMPORTED"
 	codeInvalidFile             = "INVALID_FILE"
+	codeFileFetchFailed         = "FILE_FETCH_FAILED"
 	codeInvalidEvent            = "INVALID_EVENT"
 	codePipelineFailed          = "PIPELINE_FAILED"
 	codeStorageError            = "STORAGE_ERROR"

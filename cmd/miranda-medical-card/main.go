@@ -194,7 +194,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}
 
-	server := mcpserver.New(pl, asker, cfg.Users, logger)
+	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, logger)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	handler := httpserver.New(mcpHandler, token)
 	httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: handler}

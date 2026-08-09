@@ -4,9 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
+	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -14,11 +20,18 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
 
-func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
+// fileFetchTimeout bounds the HTTP GET medical.upload_document issues
+// against a caller-supplied fileUri (see fetchFile) — a slow or hung remote
+// must not hang the whole upload_document request.
+const fileFetchTimeout = 30 * time.Second
+
+var fileFetchClient = &http.Client{Timeout: fileFetchTimeout}
+
+func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.upload_document",
-		Description: "Импортирует ранее загруженный файл (fileId из medical.upload_file) в медицинскую базу знаний: OCR, извлечение медицинских сущностей, Timeline, Medical Profile, поисковые индексы. См. docs/mcp/03-documents.md §4.",
-	}, uploadDocumentHandler(pl, gate, logger))
+		Description: "Скачивает файл по fileUri и импортирует его в медицинскую базу знаний: OCR, извлечение медицинских сущностей, Timeline, Medical Profile, поисковые индексы. См. docs/mcp/03-documents.md §4.",
+	}, uploadDocumentHandler(pl, gate, maxFileSizeBytes, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.reprocess_document",
@@ -60,8 +73,8 @@ func toExtractedCountsOutput(c pipeline.ExtractedCounts) ExtractedCountsOutput {
 // --- medical.upload_document ---
 
 type UploadDocumentInput struct {
-	UserID string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	FileID string `json:"fileId" jsonschema:"Идентификатор ранее загруженного файла."`
+	UserID  string `json:"userId" jsonschema:"Идентификатор пользователя."`
+	FileURI string `json:"fileUri" jsonschema:"URI, по которому сервис самостоятельно скачивает содержимое файла (HTTP GET)."`
 }
 
 type UploadDocumentOutput struct {
@@ -71,18 +84,37 @@ type UploadDocumentOutput struct {
 	ExtractedCounts ExtractedCountsOutput `json:"extractedCounts"`
 }
 
-func uploadDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[UploadDocumentInput, UploadDocumentOutput] {
+// uploadDocumentHandler never accepts a file's bytes as an MCP argument —
+// it takes a URI and fetches the content itself (see fetchFile). This is
+// deliberate: base64-encoding a file into a tool call's JSON is fine for
+// content an LLM already holds in its own context, but unreliable once a
+// document runs to hundreds of KB (a typical scanned document), since
+// nothing then guarantees the LLM reproduces that string byte-for-byte —
+// see docs/mcp/02-files.md §2.
+func uploadDocumentHandler(pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, logger *slog.Logger) mcp.ToolHandlerFor[UploadDocumentInput, UploadDocumentOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in UploadDocumentInput) (*mcp.CallToolResult, UploadDocumentOutput, error) {
 		if err := gate.requireUser(in.UserID); err != nil {
 			return nil, UploadDocumentOutput{}, err
 		}
-		if strings.TrimSpace(in.FileID) == "" {
-			return nil, UploadDocumentOutput{}, mcpError(codeFileNotFound, "fileId is required")
+		fileURI := strings.TrimSpace(in.FileURI)
+		if !strings.HasPrefix(fileURI, "http://") && !strings.HasPrefix(fileURI, "https://") {
+			return nil, UploadDocumentOutput{}, mcpError(codeInvalidFile, "fileUri must be a non-empty http(s) URL")
 		}
 
-		result, err := pl.UploadDocument(ctx, in.UserID, in.FileID)
+		filename, contentType, data, err := fetchFile(ctx, fileURI, maxFileSizeBytes)
 		if err != nil {
-			return nil, UploadDocumentOutput{}, uploadDocumentError(err, logger, in.UserID, in.FileID)
+			return nil, UploadDocumentOutput{}, fetchFileError(err, logger, in.UserID, fileURI)
+		}
+
+		file, err := pl.UploadFile(ctx, in.UserID, filename, contentType, data)
+		if err != nil {
+			logger.Error("upload_document: store fetched file failed", "userId", in.UserID, "fileUri", fileURI, "error", err)
+			return nil, UploadDocumentOutput{}, mcpError(codeStorageError, "%v", err)
+		}
+
+		result, err := pl.UploadDocument(ctx, in.UserID, file.ID)
+		if err != nil {
+			return nil, UploadDocumentOutput{}, uploadDocumentError(err, logger, in.UserID, file.ID)
 		}
 
 		logger.Info("upload_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status)
@@ -101,6 +133,74 @@ func uploadDocumentError(err error, logger *slog.Logger, userID, fileID string) 
 		logger.Error("upload_document failed", "userId", userID, "fileId", fileID, "error", err)
 		return mcpError(codePipelineFailed, "%v", err)
 	}
+}
+
+// errFileURINotFound is fetchFile's sentinel for a 404 response — kept
+// distinct from other fetch failures so fetchFileError can report it as
+// FILE_NOT_FOUND (the same code medical.download_file uses for "doesn't
+// exist"), rather than the more general FILE_FETCH_FAILED.
+var errFileURINotFound = errors.New("mcpserver: fetch file: not found")
+
+// fetchFile performs the HTTP GET a caller-supplied fileUri requires,
+// bounding the response body to maxSizeBytes (+1, so an oversized body is
+// detected rather than silently truncated) and deriving a filename/content
+// type from the response the same way a browser would: Content-Disposition
+// first, falling back to the URI's path, then Content-Type, falling back to
+// application/octet-stream.
+func fetchFile(ctx context.Context, fileURI string, maxSizeBytes int64) (filename, contentType string, data []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURI, nil)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("mcpserver: fetch file: build request: %w", err)
+	}
+
+	resp, err := fileFetchClient.Do(req)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("mcpserver: fetch file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", nil, errFileURINotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", nil, fmt.Errorf("mcpserver: fetch file: unexpected status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSizeBytes+1))
+	if err != nil {
+		return "", "", nil, fmt.Errorf("mcpserver: fetch file: read body: %w", err)
+	}
+	if int64(len(body)) > maxSizeBytes {
+		return "", "", nil, fmt.Errorf("mcpserver: fetch file: body exceeds %d-byte limit", maxSizeBytes)
+	}
+
+	contentType = resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return filenameFromResponse(resp, fileURI), contentType, body, nil
+}
+
+func filenameFromResponse(resp *http.Response, fileURI string) string {
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if _, params, err := mime.ParseMediaType(cd); err == nil && params["filename"] != "" {
+			return params["filename"]
+		}
+	}
+	if u, err := url.Parse(fileURI); err == nil {
+		if base := path.Base(u.Path); base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
+	return "file"
+}
+
+func fetchFileError(err error, logger *slog.Logger, userID, fileURI string) error {
+	if errors.Is(err, errFileURINotFound) {
+		return mcpError(codeFileNotFound, "no file found at fileUri")
+	}
+	logger.Error("upload_document: fetch fileUri failed", "userId", userID, "fileUri", fileURI, "error", err)
+	return mcpError(codeFileFetchFailed, "failed to fetch fileUri: %v", err)
 }
 
 // --- medical.reprocess_document ---

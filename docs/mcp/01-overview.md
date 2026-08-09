@@ -166,10 +166,10 @@ id
 Работа с бинарными файлами.
 
 ```
-medical.upload_file
-
 medical.download_file
 ```
+
+Загрузка файла — не отдельный Tool этой группы, а побочный эффект `medical.upload_document(fileUri)` (см. §10, `03-documents.md` §4).
 
 ---
 
@@ -290,25 +290,15 @@ medical.timeline
 
 # 10. Работа с файлами
 
-Передача больших бинарных файлов между инструментами не используется.
+Передача содержимого файла как аргумента MCP-вызова не используется — ни в одну, ни в другую сторону загрузки.
 
-Работа строится в два этапа.
-
-```
-medical.upload_file
-
-↓
-
-fileId
-```
-
-После чего:
+Вместо этого Miranda передаёт `fileUri` — адрес, по которому сервис сам скачивает файл:
 
 ```
-medical.upload_document(fileId)
+medical.upload_document(fileUri)
 ```
 
-Документ импортируется в медицинскую базу знаний.
+Сервис выполняет HTTP GET по `fileUri`, сохраняет результат как `File` и сразу же импортирует его в медицинскую базу знаний — см. `02-files.md` §2 и `03-documents.md` §4 за обоснованием (кратко: base64 в аргументах MCP-вызова ненадёжен для файлов от нескольких сотен КБ).
 
 При необходимости оригинальный файл можно получить через:
 
@@ -342,7 +332,7 @@ string, необязательный, по умолчанию равен userId
 
 Идентификатор пользователя, чьи данные требуется получить, если он отличается от `userId`. Используется, когда один член семьи спрашивает о данных другого — например, родитель спрашивает про здоровье ребёнка.
 
-Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_file`, `medical.upload_document`, `medical.reprocess_document`, `medical.delete_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
+Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.delete_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
 
 Если `subjectId` отличается от `userId`, сервис проверяет, что пользователь `subjectId` явно разрешил доступ (`shared_with` в своей конфигурации, см. `../architecture/01-overview.md` §4). Если доступ не разрешён, сервис отвечает так же, как если бы `subjectId` не существовал (`USER_NOT_FOUND`) — не раскрывая, что пользователь существует, но доступ запрещён.
 
@@ -432,9 +422,8 @@ string, необязательный, по умолчанию равен userId
 
 | Tool | Назначение |
 |------|------------|
-| `medical.upload_file` | Загрузка бинарного файла |
 | `medical.download_file` | Получение бинарного файла |
-| `medical.upload_document` | Импорт медицинского документа |
+| `medical.upload_document` | Скачивание файла по `fileUri` и импорт медицинского документа |
 | `medical.reprocess_document` | Повторная обработка документа по запросу пользователя |
 | `medical.list_documents` | Получение списка документов |
 | `medical.get_document` | Получение информации о документе |

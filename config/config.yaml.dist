@@ -30,8 +30,11 @@
 #   path: "data/medical-card.db"
 
 # files: where uploaded document binaries are stored — see internal/filestore.
+# max_size_bytes bounds how much medical.upload_document will fetch from a
+# caller-supplied fileUri (see docs/mcp/03-documents.md §4).
 # files:
 #   dir: "data/files"
+#   max_size_bytes: 52428800
 
 # llm: Gemini models used by each Pipeline/medical.ask stage — see
 # internal/config.LLMConfig's doc comment for why document_model covers both

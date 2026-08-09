@@ -64,9 +64,16 @@ type DatabaseConfig struct {
 }
 
 // FilesConfig controls where uploaded binary content is stored (see
-// internal/filestore).
+// internal/filestore) and how large a file medical.upload_document will
+// fetch from a caller-supplied fileUri (see internal/mcpserver/documents.go,
+// docs/mcp/03-documents.md §4) — the service never accepts file bytes
+// directly as an MCP argument, so this is the only per-file size bound.
 type FilesConfig struct {
 	Dir string `yaml:"dir"`
+	// MaxSizeBytes bounds a single medical.upload_document fetch. 50MB is
+	// generous for any realistic medical document/scan/photo while still
+	// bounded.
+	MaxSizeBytes int64 `yaml:"max_size_bytes"`
 }
 
 // LLMConfig configures the Gemini models used for each Pipeline/Ask stage.
@@ -135,7 +142,8 @@ func Default() Config {
 			Path: "data/medical-card.db",
 		},
 		Files: FilesConfig{
-			Dir: "data/files",
+			Dir:          "data/files",
+			MaxSizeBytes: 50 * 1024 * 1024,
 		},
 		LLM: LLMConfig{
 			APIKeyEnvs:    []string{"GEMINI_API_KEY_1"},
@@ -213,6 +221,9 @@ func (c Config) validate() error {
 	}
 	if c.Files.Dir == "" {
 		return fmt.Errorf("config: files.dir must not be empty")
+	}
+	if c.Files.MaxSizeBytes < 1 {
+		return fmt.Errorf("config: files.max_size_bytes must be at least 1")
 	}
 	if len(c.LLM.APIKeyEnvs) == 0 {
 		return fmt.Errorf("config: llm.api_key_envs must not be empty")
