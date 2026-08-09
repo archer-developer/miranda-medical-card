@@ -67,7 +67,7 @@ func run() error {
 	}
 
 	for _, path := range os.Args[1:] {
-		if err := extractOne(ctx, ocrProvider, structuredProvider, path); err != nil {
+		if err := extractOne(ctx, ocrProvider, structuredProvider, path, logger); err != nil {
 			fmt.Fprintf(os.Stderr, "--- %s: FAILED: %v\n\n", path, err)
 			continue
 		}
@@ -75,7 +75,7 @@ func run() error {
 	return nil
 }
 
-func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredProvider *gemini.Provider, path string) error {
+func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredProvider *gemini.Provider, path string, logger *slog.Logger) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
@@ -103,12 +103,12 @@ func extractOne(ctx context.Context, ocrProvider *gemini.Provider, structuredPro
 		fmt.Fprintf(os.Stderr, "--- stage 1 (OCR, %s) text (%d chars) ---\n%s\n\n", ocrModel, len(text), text)
 	}
 
-	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, text)
+	result, _, err := extraction.StructuredWithRetry(ctx, structuredProvider, text, logger)
 	if err != nil {
 		return fmt.Errorf("structured: %w", err)
 	}
 
-	findings, findingsRaw, err := extraction.InstrumentalStructuredWithRetry(ctx, structuredProvider, text, result.DocumentType == "imaging_report")
+	findings, findingsRaw, err := extraction.InstrumentalStructuredWithRetry(ctx, structuredProvider, text, result.DocumentType == "imaging_report", logger)
 	if err != nil {
 		return fmt.Errorf("instrumental structured: %w", err)
 	}

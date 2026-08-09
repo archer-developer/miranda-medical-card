@@ -114,7 +114,7 @@ func TestFixtures_InvitroCBC(t *testing.T) {
 	text := loadText(t, "invitro_cbc.txt")
 	expected := loadExpected(t, "invitro_cbc_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -127,7 +127,7 @@ func TestFixtures_HelixBiochemLipidCBC(t *testing.T) {
 	text := loadText(t, "helix_biochem_lipid_cbc.txt")
 	expected := loadExpected(t, "helix_biochem_lipid_cbc_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -147,7 +147,7 @@ func TestFixtures_LodeConsultation_CombinedSides(t *testing.T) {
 	text := loadText(t, "lode_consultation.txt")
 	expected := loadExpected(t, "lode_consultation_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -159,7 +159,7 @@ func TestFixtures_GravitaUltrasound_Clinical(t *testing.T) {
 	text := loadText(t, "gravita_ultrasound.txt")
 	expected := loadExpected(t, "gravita_ultrasound_expected.json")
 
-	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text)
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
 	require.NoError(t, err)
 
 	assertCategoryCountsMatch(t, expected, got)
@@ -180,7 +180,7 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 	// expectFindings=true unconditionally here: this fixture is already
 	// known to be an imaging report, unlike Extract's own call site which
 	// has to derive that from Stage 2a's own output first.
-	got, _, err := extraction.InstrumentalStructuredWithRetry(context.Background(), provider, text, true)
+	got, _, err := extraction.InstrumentalStructuredWithRetry(context.Background(), provider, text, true, nil)
 	require.NoError(t, err)
 
 	require.Len(t, got, len(expected.InstrumentalFindings), "instrumentalFindings count")

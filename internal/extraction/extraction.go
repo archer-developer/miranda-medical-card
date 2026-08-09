@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	llm "github.com/archer-developer/miranda-llm"
 )
@@ -485,20 +486,43 @@ func isSuspiciouslyEmpty(result Result) bool {
 // the caller (upload_document) is expected to still surface this via
 // extractedCounts for the user to notice and request
 // medical.reprocess_document if genuinely wrong.
-func StructuredWithRetry(ctx context.Context, provider StructuredProvider, text string) (Result, json.RawMessage, error) {
+//
+// A nil logger falls back to slog.Default(). Every attempt is logged at
+// Debug (see cmd/miranda-medical-card/main.go's buildLogger for how to
+// route Debug records to logs/debug.log without flooding stdout); if the
+// result is still suspiciously empty after every attempt, that's logged at
+// Warn instead, since it's the one outcome worth noticing even without
+// debug logging enabled.
+func StructuredWithRetry(ctx context.Context, provider StructuredProvider, text string, logger *slog.Logger) (Result, json.RawMessage, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	var (
-		result Result
-		raw    json.RawMessage
-		err    error
+		result     Result
+		raw        json.RawMessage
+		err        error
+		suspicious bool
 	)
-	for attempt := 0; attempt <= maxStructuredRetries; attempt++ {
+	for attempt := 1; attempt <= maxStructuredRetries+1; attempt++ {
 		result, raw, err = Structured(ctx, provider, text)
 		if err != nil {
 			return Result{}, nil, err
 		}
-		if !isSuspiciouslyEmpty(result) {
+		suspicious = isSuspiciouslyEmpty(result)
+		logger.Debug("extraction: structured attempt",
+			"attempt", attempt, "maxAttempts", maxStructuredRetries+1, "fullTextLen", len(text),
+			"documentType", result.DocumentType, "diagnoses", len(result.Diagnoses),
+			"medications", len(result.Medications), "labResults", len(result.LabResults),
+			"procedures", len(result.Procedures), "allergies", len(result.Allergies),
+			"vitalSigns", len(result.VitalSigns), "recommendations", len(result.Recommendations),
+			"suspiciouslyEmpty", suspicious)
+		if !suspicious {
 			break
 		}
+	}
+	if suspicious {
+		logger.Warn("extraction: structured result still suspiciously empty after every retry",
+			"attempts", maxStructuredRetries+1, "fullTextLen", len(text), "documentType", result.DocumentType)
 	}
 	return result, raw, nil
 }
@@ -540,8 +564,13 @@ func InstrumentalStructured(ctx context.Context, provider StructuredProvider, te
 // already known (typically from Stage 2a's DocumentType, e.g.
 // "imaging_report") to actually be an instrumental study — see Extract.
 // When expectFindings is false, this makes exactly one attempt, same as
-// calling InstrumentalStructured directly.
-func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredProvider, text string, expectFindings bool) ([]InstrumentalFinding, json.RawMessage, error) {
+// calling InstrumentalStructured directly. A nil logger falls back to
+// slog.Default(); every attempt is logged at Debug — see
+// StructuredWithRetry's doc comment for the logging rationale.
+func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredProvider, text string, expectFindings bool, logger *slog.Logger) ([]InstrumentalFinding, json.RawMessage, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	attempts := 1
 	if expectFindings {
 		attempts += maxStructuredRetries
@@ -552,11 +581,14 @@ func InstrumentalStructuredWithRetry(ctx context.Context, provider StructuredPro
 		raw      json.RawMessage
 		err      error
 	)
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		findings, raw, err = InstrumentalStructured(ctx, provider, text)
 		if err != nil {
 			return nil, nil, err
 		}
+		logger.Debug("extraction: instrumental structured attempt",
+			"attempt", attempt, "maxAttempts", attempts, "expectFindings", expectFindings,
+			"findings", len(findings))
 		if len(findings) > 0 {
 			break
 		}
@@ -579,19 +611,26 @@ type Provider interface {
 // over the same transcribed text, merged into one Result. This is the
 // function real Pipeline code should call; the individual stages are
 // exported separately for tests/tooling that want to inspect or reuse an
-// intermediate result (e.g. cmd/extract-test).
-func Extract(ctx context.Context, provider Provider, imageBase64, mimeType string) (Result, json.RawMessage, error) {
+// intermediate result (e.g. cmd/extract-test). A nil logger falls back to
+// slog.Default() and is threaded into both retrying stages — see
+// StructuredWithRetry's doc comment for what gets logged at which level.
+func Extract(ctx context.Context, provider Provider, imageBase64, mimeType string, logger *slog.Logger) (Result, json.RawMessage, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	text, err := OCR(ctx, provider, imageBase64, mimeType)
 	if err != nil {
 		return Result{}, nil, err
 	}
+	logger.Debug("extraction: ocr done", "fullTextLen", len(text))
 
-	result, _, err := StructuredWithRetry(ctx, provider, text)
+	result, _, err := StructuredWithRetry(ctx, provider, text, logger)
 	if err != nil {
 		return Result{}, nil, err
 	}
 
-	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, text, result.DocumentType == "imaging_report")
+	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, text, result.DocumentType == "imaging_report", logger)
 	if err != nil {
 		return Result{}, nil, err
 	}
@@ -601,5 +640,11 @@ func Extract(ctx context.Context, provider Provider, imageBase64, mimeType strin
 	if err != nil {
 		return Result{}, nil, fmt.Errorf("extraction: marshal merged result: %w", err)
 	}
+	logger.Debug("extraction: done",
+		"documentType", result.DocumentType, "diagnoses", len(result.Diagnoses),
+		"medications", len(result.Medications), "labResults", len(result.LabResults),
+		"instrumentalFindings", len(result.InstrumentalFindings), "procedures", len(result.Procedures),
+		"allergies", len(result.Allergies), "vitalSigns", len(result.VitalSigns),
+		"recommendations", len(result.Recommendations))
 	return result, merged, nil
 }

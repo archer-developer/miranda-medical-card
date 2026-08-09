@@ -237,6 +237,8 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		return Result{}, err
 	}
 
+	p.logger.Debug("pipeline: run start", "documentId", documentID, "userId", userID, "version", version, "fileId", file.ID, "size", file.Size)
+
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
 		return Result{}, fmt.Errorf("pipeline: run: %w", err)
 	}
@@ -246,7 +248,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		return fail(fmt.Errorf("pipeline: run: read file: %w", err))
 	}
 
-	extracted, raw, err := extraction.Extract(ctx, p.provider, base64.StdEncoding.EncodeToString(data), file.ContentType)
+	extracted, raw, err := extraction.Extract(ctx, p.provider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
 	if err != nil {
 		return fail(fmt.Errorf("pipeline: run: extract: %w", err))
 	}
@@ -262,11 +264,17 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 	normalized, normErrs := normalization.Normalize(ctx, userID, documentID, extracted, p.canonicalUnits)
 	// A bad date or unresolvable unit on one entity (see Normalize's own
 	// doc comment) is not fatal to the whole document — every
-	// successfully-normalized entity is still persisted below. normErrs
-	// isn't surfaced further yet (no logging/tracing layer exists in this
-	// package); it's discarded here deliberately rather than silently
-	// ignored by omission.
-	_ = normErrs
+	// successfully-normalized entity is still persisted below. Each error
+	// is logged (Warn, since it means one entity's date/unit was dropped
+	// silently from that field) rather than discarded.
+	for _, normErr := range normErrs {
+		p.logger.Warn("pipeline: normalize: entity field dropped", "documentId", documentID, "error", normErr)
+	}
+	p.logger.Debug("pipeline: normalized",
+		"documentId", documentID, "diagnoses", len(normalized.Diagnoses), "medications", len(normalized.Medications),
+		"labResults", len(normalized.LabResults), "instrumentalFindings", len(normalized.InstrumentalFindings),
+		"procedures", len(normalized.Procedures), "allergies", len(normalized.Allergies),
+		"vitalSigns", len(normalized.VitalSigns), "normalizeErrors", len(normErrs))
 
 	if err := p.persistCanonicalUnits(ctx, userID, normalized); err != nil {
 		return fail(fmt.Errorf("pipeline: run: persist canonical units: %w", err))
@@ -334,6 +342,8 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusReady); err != nil {
 		return Result{}, fmt.Errorf("pipeline: run: mark ready: %w", err)
 	}
+
+	p.logger.Debug("pipeline: run done", "documentId", documentID, "userId", userID, "status", storage.DocumentStatusReady)
 
 	return Result{
 		DocumentID: documentID,
