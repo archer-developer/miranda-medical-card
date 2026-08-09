@@ -452,18 +452,57 @@ const minFullTextForSuspicion = 300
 // real usage shows it's not enough (or is overkill).
 const maxStructuredRetries = 2
 
-// isSuspiciouslyEmpty reports whether result looks like the observed
-// failure mode described on maxStructuredRetries: every structured
-// category empty despite a substantial transcribed text. Deliberately
-// ignores InstrumentalFindings (populated by a separate call, see
-// InstrumentalStructured) and metadata fields (documentType/doctor/etc.) —
-// a document can legitimately have, say, no diagnoses while still having
-// lab results, so this only fires when *every* clinical category is empty
-// at once, not when any single one is.
-func isSuspiciouslyEmpty(result Result) bool {
-	if len(result.FullText) < minFullTextForSuspicion {
-		return false
+// expectedCategoriesByDocumentType maps a documentType (Schema's
+// documentType enum) to the clinical categories a document of that type is
+// actually expected to contain — used by isSuspiciouslyEmpty to check the
+// category that matters for that document instead of every category (see
+// its doc comment for why "every category" let a real failure through
+// undetected). documentType itself is always populated — it's the one
+// required field of Schema — so this is available from the very first
+// attempt, no separate classification call needed.
+//
+// Deliberately conservative: only categories a document of that type is
+// reliably expected to have at least one entry of, for a substantial
+// document. imaging_report is intentionally absent — its expected content
+// (InstrumentalFinding) isn't part of Result yet at the point
+// isSuspiciouslyEmpty runs (see Extract; it's Stage 2b, merged in after),
+// and "other" has no known shape — both fall back to the pre-existing
+// "every category empty" check.
+var expectedCategoriesByDocumentType = map[string][]string{
+	"lab_report":        {"labResults"},
+	"prescription":      {"medications"},
+	"discharge_summary": {"diagnoses", "medications", "procedures"},
+	"consultation":      {"diagnoses", "recommendations"},
+	"referral":          {"diagnoses"},
+}
+
+// isCategoryEmpty reports whether result's named clinical category (as
+// spelled in Schema/expectedCategoriesByDocumentType) has zero entries.
+func isCategoryEmpty(result Result, category string) bool {
+	switch category {
+	case "diagnoses":
+		return len(result.Diagnoses) == 0
+	case "medications":
+		return len(result.Medications) == 0
+	case "labResults":
+		return len(result.LabResults) == 0
+	case "procedures":
+		return len(result.Procedures) == 0
+	case "allergies":
+		return len(result.Allergies) == 0
+	case "vitalSigns":
+		return len(result.VitalSigns) == 0
+	case "recommendations":
+		return len(result.Recommendations) == 0
+	default:
+		return true
 	}
+}
+
+// allCategoriesEmpty is the type-agnostic fallback check: every clinical
+// category empty at once. Used directly for documentTypes not covered by
+// expectedCategoriesByDocumentType.
+func allCategoriesEmpty(result Result) bool {
 	return len(result.Diagnoses) == 0 &&
 		len(result.Medications) == 0 &&
 		len(result.LabResults) == 0 &&
@@ -471,6 +510,37 @@ func isSuspiciouslyEmpty(result Result) bool {
 		len(result.Allergies) == 0 &&
 		len(result.VitalSigns) == 0 &&
 		len(result.Recommendations) == 0
+}
+
+// isSuspiciouslyEmpty reports whether result looks like the observed
+// failure mode described on maxStructuredRetries: despite a substantial
+// transcribed text, the categories that matter for this document's type
+// came back empty.
+//
+// For a documentType with a known expected shape
+// (expectedCategoriesByDocumentType), only those categories are checked —
+// this only fires when *all* of them are empty, not when any single one
+// is. This matters because a generic field like recommendations (present
+// on nearly every document) satisfied the old "every category" check even
+// when the one category that actually defines this document type — e.g.
+// labResults on a lab_report — never got populated across every retry,
+// masking a real failure. For documentTypes with no known shape (see
+// expectedCategoriesByDocumentType's doc comment), falls back to the
+// original "every category empty" check.
+func isSuspiciouslyEmpty(result Result) bool {
+	if len(result.FullText) < minFullTextForSuspicion {
+		return false
+	}
+	categories, known := expectedCategoriesByDocumentType[result.DocumentType]
+	if !known {
+		return allCategoriesEmpty(result)
+	}
+	for _, category := range categories {
+		if !isCategoryEmpty(result, category) {
+			return false
+		}
+	}
+	return true
 }
 
 // StructuredWithRetry calls Structured, and retries (up to
@@ -509,9 +579,14 @@ func StructuredWithRetry(ctx context.Context, provider StructuredProvider, text 
 			return Result{}, nil, err
 		}
 		suspicious = isSuspiciouslyEmpty(result)
+		checkedCategories, knownType := expectedCategoriesByDocumentType[result.DocumentType]
+		if !knownType {
+			checkedCategories = []string{"(all — unknown documentType)"}
+		}
 		logger.Debug("extraction: structured attempt",
 			"attempt", attempt, "maxAttempts", maxStructuredRetries+1, "fullTextLen", len(text),
-			"documentType", result.DocumentType, "diagnoses", len(result.Diagnoses),
+			"documentType", result.DocumentType, "checkedCategories", checkedCategories,
+			"diagnoses", len(result.Diagnoses),
 			"medications", len(result.Medications), "labResults", len(result.LabResults),
 			"procedures", len(result.Procedures), "allergies", len(result.Allergies),
 			"vitalSigns", len(result.VitalSigns), "recommendations", len(result.Recommendations),

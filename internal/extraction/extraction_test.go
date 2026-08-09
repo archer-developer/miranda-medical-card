@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/archer-developer/miranda-llm/gemini"
+	"github.com/archer-developer/miranda-llm/llmtest"
 
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 )
@@ -184,4 +186,64 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, got, len(expected.InstrumentalFindings), "instrumentalFindings count")
+}
+
+// TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory
+// replays, against a scripted fake provider (no live API needed), the exact
+// production failure this test guards against: a lab_report whose 2nd
+// attempt filled in "recommendations" (a near-universal field present on
+// almost any document) while labResults — the one category that actually
+// defines a lab_report — stayed empty. Before isSuspiciouslyEmpty became
+// type-aware (see its doc comment, docs/architecture/02-processing-pipeline.md
+// §5), a non-empty recommendations alone satisfied the old "every category
+// empty" check and stopped the retry loop right there, silently losing the
+// document's lab results. It must now keep retrying until either labResults
+// is populated or attempts run out.
+func TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory(t *testing.T) {
+	text := strings.Repeat("independent lab panel results section ", 20) // > minFullTextForSuspicion
+
+	provider := llmtest.New("fake").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "lab_report"})},
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType:    "lab_report",
+			Recommendations: []string{"Результаты не являются диагнозом"},
+		})},
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType: "lab_report",
+			LabResults:   []extraction.LabResult{{Name: "ALT", Value: 28.3}},
+		})},
+	)
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	require.NoError(t, err)
+	require.Len(t, got.LabResults, 1, "must keep retrying past a recommendations-only attempt until labResults is populated")
+}
+
+// TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty
+// covers expectedCategoriesByDocumentType's fallback path: for a
+// documentType with no known expected shape (here "other"), the retry
+// decision reverts to the original "every category empty" check — a
+// non-empty recommendations is enough to stop retrying, same as before this
+// fix, since there's no more specific category to hold out for.
+func TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty(t *testing.T) {
+	text := strings.Repeat("some document text with no clear structure to it here ", 10) // > minFullTextForSuspicion
+
+	provider := llmtest.New("fake").WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "other"})},
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{
+			DocumentType:    "other",
+			Recommendations: []string{"some note"},
+		})},
+	)
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, text, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Recommendations, 1, "a non-empty recommendations should stop the retry for an unmapped documentType, same as before")
+}
+
+func mustMarshalStructured(t *testing.T, result extraction.Result) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	return data
 }
