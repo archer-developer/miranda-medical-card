@@ -45,10 +45,25 @@ func (a *Asker) Ask(ctx context.Context, userID, question string) (Result, error
 	if err != nil {
 		return Result{}, fmt.Errorf("ask: plan: %w", err)
 	}
+	if len(selections) == 0 {
+		a.logger.Debug("ask: plan selected no providers", "question", question)
+	}
+	for _, s := range selections {
+		a.logger.Debug("ask: plan selected provider",
+			"provider", s.Provider, "reason", s.Reason, "indicatorName", s.IndicatorName,
+			"structure", s.Structure, "parameter", s.Parameter, "searchQuery", s.SearchQuery)
+	}
 
 	chunks := a.collect(ctx, userID, question, selections)
 	ranked := RankChunks(chunks, a.registry, a.maxChunks)
 	builtContext := RenderContext(question, ranked)
+
+	// Full context, not just its length — this is exactly what
+	// GenerateAnswer assembles into its user message alongside question
+	// (see that function's fmt.Sprintf), so logging it here is the
+	// complete picture of what the Answer Generator sees, without needing
+	// to thread a logger into that package function too.
+	a.logger.Debug("ask: generating answer", "question", question, "chunks", len(ranked), "context", builtContext)
 
 	answer, err := GenerateAnswer(ctx, a.answerer, question, builtContext)
 	if err != nil {
@@ -94,11 +109,16 @@ func (a *Asker) collect(ctx context.Context, userID, question string, selections
 				req.Query = question
 			}
 
+			a.logger.Debug("ask: calling provider",
+				"provider", selection.Provider, "userId", userID, "query", req.Query,
+				"indicatorName", req.IndicatorName, "structure", req.Structure, "parameter", req.Parameter)
+
 			result, err := provider.Collect(providerCtx, req)
 			if err != nil {
 				a.logger.Warn("ask: provider failed", "provider", selection.Provider, "error", err)
 				return
 			}
+			a.logger.Debug("ask: provider returned", "provider", selection.Provider, "chunks", len(result))
 
 			mu.Lock()
 			chunks = append(chunks, result...)
