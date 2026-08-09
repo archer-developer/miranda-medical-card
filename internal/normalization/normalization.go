@@ -170,11 +170,14 @@ type Result struct {
 // are annotated with enough context (entity type + index + field) to find
 // the offending Extraction entry.
 //
-// resolver supplies dimensional unit normalization for LabResult/
+// canonicalUnits supplies dimensional unit normalization for LabResult/
 // InstrumentalFinding (see units.go) — pass nil to skip it entirely
 // (NormalizedValue/NormalizedUnit are left zero on every entity), e.g. for
-// callers that only care about the raw structural mapping.
-func Normalize(ctx context.Context, userID, documentID string, extracted extraction.Result, resolver CanonicalUnitResolver) (Result, []error) {
+// callers that only care about the raw structural mapping. indicatorAliases
+// supplies LabResult.IndicatorName's alias dictionary (see
+// indicator_aliases.go) — pass nil to skip it too (names are only trimmed,
+// never rewritten).
+func Normalize(ctx context.Context, userID, documentID string, extracted extraction.Result, canonicalUnits CanonicalUnitResolver, indicatorAliases IndicatorAliasResolver) (Result, []error) {
 	var errs []error
 	addErr := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(format, args...))
@@ -231,15 +234,19 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		if err != nil {
 			addErr("labResults[%d] %q: takenAt: %w", i, l.Name, err)
 		}
-		indicatorName := canonicalize(l.Name)
+		indicatorName, aliasErr := canonicalizeIndicatorName(ctx, indicatorAliases, l.Name)
+		if aliasErr != nil {
+			addErr("labResults[%d] %q: canonicalize indicator name: %w", i, l.Name, aliasErr)
+			indicatorName = strings.TrimSpace(l.Name)
+		}
 		var normValue float64
 		var normUnit string
 		// Only a quantitative result (Unit set) goes through unit
 		// normalization — a qualitative-only result (e.g. blood type) has
 		// nothing to convert, same reasoning as InstrumentalFindings below.
-		if resolver != nil && l.Unit != "" {
+		if canonicalUnits != nil && l.Unit != "" {
 			var unitErr error
-			normValue, normUnit, unitErr = normalizeUnit(ctx, resolver, userID, indicatorName, l.Value, l.Unit)
+			normValue, normUnit, unitErr = normalizeUnit(ctx, canonicalUnits, userID, indicatorName, l.Value, l.Unit)
 			if unitErr != nil {
 				addErr("labResults[%d] %q: normalize unit: %w", i, l.Name, unitErr)
 			}
@@ -282,9 +289,9 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		// structure and parameter (e.g. "Печень/правая доля КВР") since,
 		// unlike LabResult's flat indicator namespace, the same parameter
 		// name can recur across different structures with unrelated units.
-		if resolver != nil && f.Unit != "" {
+		if canonicalUnits != nil && f.Unit != "" {
 			var unitErr error
-			normValue, normUnit, unitErr = normalizeUnit(ctx, resolver, userID, structure+"/"+f.Parameter, f.Value, f.Unit)
+			normValue, normUnit, unitErr = normalizeUnit(ctx, canonicalUnits, userID, structure+"/"+f.Parameter, f.Value, f.Unit)
 			if unitErr != nil {
 				addErr("instrumentalFindings[%d] %s/%s: normalize unit: %w", i, structure, f.Parameter, unitErr)
 			}
@@ -377,6 +384,13 @@ func parseOptionalDate(s string) (*time.Time, error) {
 // own named function (rather than inlined) so the eventual real
 // implementation has one obvious place to land, and so every call site
 // that will need it is already marked.
+//
+// LabResult.IndicatorName no longer goes through this function — it has its
+// own alias-aware canonicalizeIndicatorName (see indicator_aliases.go),
+// which is this same gap solved for exactly one entity type via a small
+// hand-curated dictionary (same pattern as loinc.go). Medication.DrugName,
+// InstrumentalFinding.Structure, and Allergy.Substance are still the
+// open part of this gap.
 func canonicalize(s string) string {
 	return strings.TrimSpace(s)
 }

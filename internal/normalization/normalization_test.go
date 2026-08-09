@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -60,10 +61,36 @@ func (r *fakeResolver) recordUnits(userID string, results []normalization.LabRes
 	}
 }
 
+// fakeAliasResolver is a minimal in-memory normalization.IndicatorAliasResolver
+// seeded from normalization.IndicatorAliasSeedGroups() — the same content
+// storage.IndicatorAliasRepository seeds into the real indicator_aliases
+// table on startup, reused here so these tests exercise the dictionary via
+// the same IndicatorAliasResolver interface Normalize actually calls,
+// without needing a database.
+type fakeAliasResolver struct {
+	canonical map[string]string // lower+trim(alias) -> canonical name
+}
+
+func newFakeAliasResolver() *fakeAliasResolver {
+	r := &fakeAliasResolver{canonical: map[string]string{}}
+	for _, group := range normalization.IndicatorAliasSeedGroups() {
+		canonical := group[0]
+		for _, alias := range group {
+			r.canonical[strings.ToLower(strings.TrimSpace(alias))] = canonical
+		}
+	}
+	return r
+}
+
+func (r *fakeAliasResolver) CanonicalIndicatorName(ctx context.Context, alias string) (string, bool, error) {
+	canonical, ok := r.canonical[strings.ToLower(strings.TrimSpace(alias))]
+	return canonical, ok, nil
+}
+
 func TestNormalize_InvitroCBC(t *testing.T) {
 	extracted := loadFixture(t, "invitro_cbc_expected.json")
 
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil, nil)
 	require.Empty(t, errs, "no date-parsing issues expected on this fixture")
 
 	require.Len(t, result.LabResults, 20)
@@ -89,7 +116,7 @@ func TestNormalize_InvitroCBC(t *testing.T) {
 func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 	extracted := loadFixture(t, "helix_biochem_lipid_cbc_expected.json")
 
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.LabResults, 39)
@@ -111,7 +138,7 @@ func TestNormalize_HelixBiochemLipidCBC(t *testing.T) {
 func TestNormalize_LodeConsultation(t *testing.T) {
 	extracted := loadFixture(t, "lode_consultation_expected.json")
 
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil, nil)
 	require.Empty(t, errs)
 
 	require.Len(t, result.Diagnoses, 9)
@@ -153,7 +180,7 @@ func TestNormalize_GravitaUltrasound(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &findings))
 	extracted.InstrumentalFindings = findings.InstrumentalFindings
 
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil, nil)
 	require.Empty(t, errs, "every measuredAt in this fixture is the same valid date — any parse error here is a real bug")
 
 	require.Len(t, result.InstrumentalFindings, 76)
@@ -191,7 +218,7 @@ func TestNormalize_InvalidDateDoesNotDiscardOtherEntities(t *testing.T) {
 		},
 	}
 
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_test", extracted, nil, nil)
 	require.Len(t, errs, 1, "exactly the one bad date should be reported")
 	require.Len(t, result.LabResults, 2, "both entities must still be present — a bad date on one must not discard the other")
 	require.Nil(t, result.LabResults[0].TakenAt)
@@ -221,7 +248,7 @@ func TestNormalize_UnitNormalization_FirstSeenBecomesCanonical(t *testing.T) {
 		DocumentType: "lab_report",
 		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 14.4, Unit: "г/дл"}},
 	}
-	firstResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver)
+	firstResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver, nil)
 	require.Empty(t, errs)
 	require.Equal(t, 14.4, firstResult.LabResults[0].NormalizedValue)
 	require.Equal(t, "г/дл", firstResult.LabResults[0].NormalizedUnit, "first-ever measurement: its own unit becomes canonical")
@@ -231,7 +258,7 @@ func TestNormalize_UnitNormalization_FirstSeenBecomesCanonical(t *testing.T) {
 		DocumentType: "lab_report",
 		LabResults:   []extraction.LabResult{{Name: "Гемоглобин", Value: 150, Unit: "г/л"}},
 	}
-	secondResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver)
+	secondResult, errs := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver, nil)
 	require.Empty(t, errs)
 	require.Equal(t, "г/дл", secondResult.LabResults[0].NormalizedUnit, "converted to match the already-established canonical unit")
 	require.InDelta(t, 15.0, secondResult.LabResults[0].NormalizedValue, 0.001, "150 г/л = 15.0 г/дл")
@@ -248,13 +275,13 @@ func TestNormalize_UnitNormalization_CellCountsAreExactlyEqualNotJustProportiona
 	first := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.80, Unit: "млн/мкл"}},
 	}
-	firstResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver)
+	firstResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_1", first, resolver, nil)
 	resolver.recordUnits("user_test", firstResult.LabResults)
 
 	second := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Эритроциты", Value: 4.9, Unit: "10^12 клеток/л"}},
 	}
-	secondResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver)
+	secondResult, _ := normalization.Normalize(context.Background(), "user_test", "doc_2", second, resolver, nil)
 	require.Equal(t, "млн/мкл", secondResult.LabResults[0].NormalizedUnit)
 	require.Equal(t, 4.9, secondResult.LabResults[0].NormalizedValue, "1 10^12/л = 1 млн/мкл exactly — no scaling")
 }
@@ -266,7 +293,7 @@ func TestNormalize_UnitNormalization_UnknownUnitLeftUnset(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Some Indicator", Value: 5, Unit: "gizmos"}},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver, nil)
 	require.Empty(t, errs)
 	require.Zero(t, result.LabResults[0].NormalizedValue)
 	require.Empty(t, result.LabResults[0].NormalizedUnit, "gizmos -> widgets isn't a known conversion — must not guess")
@@ -285,7 +312,7 @@ func TestNormalize_LOINC_FallbackDictionaryAppliesWhenNoCodePrinted(t *testing.T
 			{Name: "Совершенно неизвестный показатель", Value: 1, Unit: "ед"},
 		},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, nil)
 	require.Empty(t, errs)
 
 	require.Equal(t, "718-7", result.LabResults[0].Code, "known alias should resolve via the fallback dictionary")
@@ -306,7 +333,7 @@ func TestNormalize_LOINC_PrintedCodeTakesPriorityOverDictionary(t *testing.T) {
 			{Name: "Гемоглобин (HGB)", Code: "custom-lab-code-123", CodeSystem: "local", Value: 150, Unit: "г/л"},
 		},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, nil)
 	require.Empty(t, errs)
 
 	require.Equal(t, "custom-lab-code-123", result.LabResults[0].Code)
@@ -321,11 +348,29 @@ func (erroringResolver) CanonicalUnit(ctx context.Context, userID, indicatorName
 	return "", false, errors.New("boom: canonical unit lookup unavailable")
 }
 
+// erroringAliasResolver mirrors erroringResolver for IndicatorAliasResolver.
+type erroringAliasResolver struct{}
+
+func (erroringAliasResolver) CanonicalIndicatorName(ctx context.Context, alias string) (string, bool, error) {
+	return "", false, errors.New("boom: indicator alias lookup unavailable")
+}
+
+func TestNormalize_IndicatorAlias_ResolverErrorIsReportedNotSwallowed(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Гемоглобин (HGB)", Value: 150, Unit: "г/л"}},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, erroringAliasResolver{})
+
+	require.Len(t, errs, 1, "an alias resolver failure must surface as an error, not be swallowed as 'not found'")
+	require.Equal(t, "Гемоглобин (HGB)", result.LabResults[0].IndicatorName, "must fall back to the trimmed raw name, never block the rest of the entity")
+	require.Equal(t, 150.0, result.LabResults[0].Value, "a resolver failure must not discard the entity")
+}
+
 func TestNormalize_UnitNormalization_ResolverErrorIsReportedNotSwallowed(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Гемоглобин", Value: 150, Unit: "г/л"}},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, erroringResolver{})
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, erroringResolver{}, nil)
 
 	require.Len(t, errs, 1, "a resolver failure must surface as an error, not be swallowed as 'not found'")
 	require.Zero(t, result.LabResults[0].NormalizedValue, "must not guess a normalized value when the resolver itself failed")
@@ -337,7 +382,7 @@ func TestNormalize_UnitNormalization_NilResolverLeavesNormalizedFieldsZero(t *te
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "ALT", Value: 28.3, Unit: "Ед/л"}},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, nil)
 	require.Empty(t, errs)
 	require.Zero(t, result.LabResults[0].NormalizedValue)
 	require.Empty(t, result.LabResults[0].NormalizedUnit)
@@ -356,7 +401,7 @@ func TestNormalize_QualitativeLabResult(t *testing.T) {
 	extracted := extraction.Result{
 		LabResults: []extraction.LabResult{{Name: "Группа крови", QualitativeValue: "A(II) Rh+"}},
 	}
-	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver)
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver, nil)
 	require.Empty(t, errs)
 	require.Len(t, result.LabResults, 1)
 	got := result.LabResults[0]
@@ -365,4 +410,68 @@ func TestNormalize_QualitativeLabResult(t *testing.T) {
 	require.Empty(t, got.Unit)
 	require.Zero(t, got.NormalizedValue)
 	require.Empty(t, got.NormalizedUnit)
+}
+
+// TestNormalize_IndicatorAlias_KnownVariantsCollapseToCanonicalName covers
+// the alias dictionary added in indicator_aliases.go — different labs'
+// spellings of the same test must land under one IndicatorName so
+// HistoryByIndicator/LatestByIndicator (storage.LabResultRepository) group
+// them into a single trend instead of three unrelated ones.
+func TestNormalize_IndicatorAlias_KnownVariantsCollapseToCanonicalName(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Лейкоциты (WBC)", Value: 6.1, Unit: "10^9 клеток/л"},
+			{Name: "лейкоциты (wbc)", Value: 6.5, Unit: "10^9 клеток/л"}, // case-insensitive match
+			{Name: "  Лейкоциты  ", Value: 5.9, Unit: "тыс/мкл"},         // whitespace-only variant, no alias needed
+		},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, newFakeAliasResolver())
+	require.Empty(t, errs)
+	require.Len(t, result.LabResults, 3)
+	for _, r := range result.LabResults {
+		require.Equal(t, "Лейкоциты", r.IndicatorName)
+	}
+}
+
+// TestNormalize_IndicatorAlias_MustNotConflateRelativeAndAbsoluteVariants is
+// the specific failure mode indicator_aliases.go's doc comment warns
+// against: a naive "same base word" heuristic would merge a percentage
+// result and an absolute-count result for the same cell type, silently
+// destroying the distinction between e.g. 30% and 30×10⁹/л lymphocytes.
+// This is real data shape — see indicator_aliases.go's Лимфоциты example,
+// sourced from the 2026-08-09 production audit.
+func TestNormalize_IndicatorAlias_MustNotConflateRelativeAndAbsoluteVariants(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Лимфоциты (LYMPH%)", Value: 30, Unit: "%"},
+			{Name: "Лимфоциты, %", Value: 31, Unit: "%"},
+			{Name: "Лимфоциты (LYMPH)", Value: 2.1, Unit: "10^9 клеток/л"},
+			{Name: "Лимфоциты, абс.", Value: 2.2, Unit: "тыс/мкл"},
+		},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, newFakeAliasResolver())
+	require.Empty(t, errs)
+	require.Len(t, result.LabResults, 4)
+
+	require.Equal(t, "Лимфоциты, %", result.LabResults[0].IndicatorName)
+	require.Equal(t, "Лимфоциты, %", result.LabResults[1].IndicatorName)
+	require.Equal(t, "Лимфоциты, абс.", result.LabResults[2].IndicatorName)
+	require.Equal(t, "Лимфоциты, абс.", result.LabResults[3].IndicatorName)
+}
+
+// TestNormalize_IndicatorAlias_AmbiguousNamesAreLeftUnaliased covers the
+// deliberate omissions documented in indicator_aliases.go: names that could
+// refer to different tests (e.g. serum vs. urine protein) are never merged
+// on the strength of two data points alone.
+func TestNormalize_IndicatorAlias_AmbiguousNamesAreLeftUnaliased(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Белок", Value: 70, Unit: "г/л"},
+			{Name: "Общий белок", Value: 71, Unit: "г/л"},
+		},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, newFakeAliasResolver())
+	require.Empty(t, errs)
+	require.Equal(t, "Белок", result.LabResults[0].IndicatorName)
+	require.Equal(t, "Общий белок", result.LabResults[1].IndicatorName)
 }

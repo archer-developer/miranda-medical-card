@@ -41,6 +41,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/httpserver"
 	"github.com/archer-developer/miranda-medical-card/internal/mcpserver"
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -128,6 +129,26 @@ func configFilePaths(cfgDir string, logger *slog.Logger) ([]string, error) {
 	return paths, nil
 }
 
+// seedIndicatorAliases populates the indicator_aliases table (see
+// internal/storage/indicator_alias.go) from
+// normalization.IndicatorAliasSeedGroups on every startup — cheap and
+// idempotent (SetIfAbsent never overwrites a row already there), so a
+// fresh database gets the curated dictionary immediately and an existing
+// one keeps any operator/LLM edit made directly against the table since
+// the last restart.
+func seedIndicatorAliases(ctx context.Context, store *storage.Store) error {
+	repo := storage.NewIndicatorAliasRepository(store)
+	for _, group := range normalization.IndicatorAliasSeedGroups() {
+		canonical := group[0]
+		for _, alias := range group {
+			if err := repo.SetIfAbsent(ctx, alias, canonical); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func run(cfg config.Config, logger *slog.Logger) error {
 	token := os.Getenv(cfg.AuthTokenEnv)
 	if token == "" {
@@ -145,6 +166,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		logger.Info("closing database")
 		_ = store.Close()
 	}()
+
+	if err := seedIndicatorAliases(context.Background(), store); err != nil {
+		return fmt.Errorf("main: seed indicator aliases: %w", err)
+	}
 
 	files, err := filestore.New(cfg.Files.Dir)
 	if err != nil {

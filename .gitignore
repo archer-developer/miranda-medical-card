@@ -5,6 +5,8 @@ logs/
 dist/
 go.work
 go.work.sum
+/miranda-medical-card
+/medical-dev
 
 # Real config files are environment-specific and may carry deployment
 # details; only the documented, generic config.yaml.dist template is

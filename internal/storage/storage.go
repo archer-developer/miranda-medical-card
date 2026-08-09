@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS canonical_units (
     PRIMARY KEY (user_id, indicator_name)
 );
 
+-- indicator_aliases is the runtime-editable dictionary behind
+-- normalization.IndicatorAliasResolver (see
+-- internal/normalization/indicator_aliases.go) — global, not per-user,
+-- since "Лимфоциты (LYMPH)" means the same indicator for every user. alias
+-- is stored lower+trim (see storage.normalizeAliasKey) so lookups are
+-- case-insensitive without a COLLATE NOCASE index; canonical_name is the
+-- display spelling Normalize rewrites every match to.
+CREATE TABLE IF NOT EXISTS indicator_aliases (
+    alias          TEXT PRIMARY KEY,
+    canonical_name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS extraction_records (
     id             TEXT PRIMARY KEY,
     document_id    TEXT NOT NULL,

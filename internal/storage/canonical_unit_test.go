@@ -43,6 +43,31 @@ func TestCanonicalUnitRepository_SetIfAbsent_SecondCallDoesNotOverride(t *testin
 	require.Equal(t, "г/дл", unit, "first write wins — second call must not override")
 }
 
+func TestCanonicalUnitRepository_SetOverwritesExistingValue(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewCanonicalUnitRepository(newTestStore(t))
+
+	require.NoError(t, repo.SetIfAbsent(ctx, "user1", "Лейкоциты", "тыс/мкл"))
+	require.NoError(t, repo.Set(ctx, "user1", "Лейкоциты", "10^9 клеток/л"))
+
+	unit, found, err := repo.CanonicalUnit(ctx, "user1", "Лейкоциты")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "10^9 клеток/л", unit, "Set must overwrite, unlike SetIfAbsent")
+}
+
+func TestCanonicalUnitRepository_SetOnPreviouslyUnsetIndicator(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewCanonicalUnitRepository(newTestStore(t))
+
+	require.NoError(t, repo.Set(ctx, "user1", "Лейкоциты", "тыс/мкл"))
+
+	unit, found, err := repo.CanonicalUnit(ctx, "user1", "Лейкоциты")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "тыс/мкл", unit)
+}
+
 func TestCanonicalUnitRepository_ScopedPerUser(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewCanonicalUnitRepository(newTestStore(t))

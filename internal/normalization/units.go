@@ -35,6 +35,19 @@ var unitEquivalenceGroups = []map[string]float64{
 	// file's package doc comment for the arithmetic.
 	{"10^12 клеток/л": 1, "млн/мкл": 1},
 	{"10^9 клеток/л": 1, "тыс/мкл": 1},
+
+	// Same magnitude, two labs' spelling of "milli-" for hormone assays
+	// (e.g. ТТГ/TSH): 1 мМЕ/л (mIU/L) = 1 мкМЕ/мл (µIU/mL) — both are
+	// "thousandths of an international unit per litre-scale volume", just
+	// with the milli-/micro- prefix moved from the unit to the volume.
+	// Seeded from the 2026-08-09 production audit (see
+	// indicator_aliases.go's ТТГ group), where both spellings were found
+	// for the same test.
+	{"мМЕ/л": 1, "мкМЕ/мл": 1},
+
+	// Same production audit found "мм/ч" and "мм/час" for СОЭ (ESR) —
+	// identical unit, two spellings of "per hour", not a real conversion.
+	{"мм/ч": 1, "мм/час": 1},
 }
 
 // convertUnit converts value from fromUnit to toUnit if both are known to
@@ -55,6 +68,16 @@ func convertUnit(value float64, fromUnit, toUnit string) (converted float64, ok 
 		}
 	}
 	return 0, false
+}
+
+// ConvertUnit is convertUnit exported for reuse by cmd/renormalize-labs,
+// the one-off migration tool that recomputes NormalizedValue/NormalizedUnit
+// for LabResults already persisted under pre-alias-dictionary indicator
+// names — see indicator_aliases.go's CanonicalizeIndicatorName doc comment
+// for why that tool calls directly into this package instead of
+// re-running the full pipeline.
+func ConvertUnit(value float64, fromUnit, toUnit string) (converted float64, ok bool) {
+	return convertUnit(value, fromUnit, toUnit)
 }
 
 // CanonicalUnitResolver looks up the unit a user's given indicator has

@@ -40,6 +40,14 @@ type CanonicalUnitRepository interface {
 	// callers racing to establish the canonical unit for the same
 	// indicator can't both "win" with different units.
 	SetIfAbsent(ctx context.Context, userID, indicatorName, unit string) error
+	// Set unconditionally overwrites the canonical unit for
+	// (userID, indicatorName). Unlike SetIfAbsent, this is not part of the
+	// live Pipeline's "first write wins" contract — its only caller is the
+	// one-off cmd/renormalize-labs migration tool, which needs to
+	// re-establish a canonical unit after LabResults were regrouped under a
+	// new indicator_name by the alias dictionary (indicator_aliases.go),
+	// where the old per-old-name canonical_units row is no longer correct.
+	Set(ctx context.Context, userID, indicatorName, unit string) error
 }
 
 type sqliteCanonicalUnitRepository struct {
@@ -73,6 +81,18 @@ func (r *sqliteCanonicalUnitRepository) SetIfAbsent(ctx context.Context, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: set canonical unit: %w", err)
+	}
+	return nil
+}
+
+func (r *sqliteCanonicalUnitRepository) Set(ctx context.Context, userID, indicatorName, unit string) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO canonical_units (user_id, indicator_name, unit) VALUES (?, ?, ?)
+		 ON CONFLICT(user_id, indicator_name) DO UPDATE SET unit = excluded.unit`,
+		userID, indicatorName, unit,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: overwrite canonical unit: %w", err)
 	}
 	return nil
 }
