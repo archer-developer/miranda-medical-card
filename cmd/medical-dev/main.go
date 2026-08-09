@@ -67,7 +67,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask> [flags]")
+		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles> [flags]")
 	}
 	command, args := args[0], args[1:]
 
