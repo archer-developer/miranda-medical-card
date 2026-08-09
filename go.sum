@@ -8,6 +8,8 @@ cloud.google.com/go/compute/metadata v0.5.0/go.mod h1:aHnloV2TPI38yx4s9+wAZhHykW
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/archer-developer/miranda-llm v0.0.0-20260808115241-23731a8e540b h1:41S+BmdB/V2Cb1X+8sVQIvytV7vCDkkayBJeQnYzO3E=
 github.com/archer-developer/miranda-llm v0.0.0-20260808115241-23731a8e540b/go.mod h1:vcitjTFzvDa/2PZvo3ltcEx+Kq3XuRm1L3o9JTuX7So=
+github.com/archer-developer/miranda-llm v0.0.0-20260809100021-4f2717bf1686 h1:Pkn5dDognNbOPy+6O4jWkX3PnOOA6yDNXBGC2fni2JY=
+github.com/archer-developer/miranda-llm v0.0.0-20260809100021-4f2717bf1686/go.mod h1:vcitjTFzvDa/2PZvo3ltcEx+Kq3XuRm1L3o9JTuX7So=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=

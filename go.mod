@@ -3,7 +3,7 @@ module github.com/archer-developer/miranda-medical-card
 go 1.25.0
 
 require (
-	github.com/archer-developer/miranda-llm v0.0.0-20260808115241-23731a8e540b
+	github.com/archer-developer/miranda-llm v0.0.0-20260809100021-4f2717bf1686
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/stretchr/testify v1.11.1
