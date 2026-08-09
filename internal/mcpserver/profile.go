@@ -47,10 +47,11 @@ type ProcedureSummaryOutput struct {
 }
 
 type LabResultSummaryOutput struct {
-	Name  string  `json:"name"`
-	Value float64 `json:"value"`
-	Unit  string  `json:"unit,omitempty"`
-	Date  string  `json:"date,omitempty"`
+	Name             string  `json:"name"`
+	Value            float64 `json:"value,omitempty"`
+	QualitativeValue string  `json:"qualitativeValue,omitempty"`
+	Unit             string  `json:"unit,omitempty"`
+	Date             string  `json:"date,omitempty"`
 }
 
 type VitalSignSummaryOutput struct {
@@ -120,7 +121,7 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 		out.Vaccinations[i] = ProcedureSummaryOutput{Name: pr.Name, PerformedAt: formatOptionalDate(pr.PerformedAt)}
 	}
 	for i, l := range p.LatestLabResults {
-		out.LatestLabResults[i] = LabResultSummaryOutput{Name: l.IndicatorName, Value: l.Value, Unit: l.Unit, Date: formatOptionalDate(l.TakenAt)}
+		out.LatestLabResults[i] = LabResultSummaryOutput{Name: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit, Date: formatOptionalDate(l.TakenAt)}
 	}
 	for i, v := range p.LatestVitalSigns {
 		value := fmt.Sprintf("%g %s", v.Value, v.Unit)

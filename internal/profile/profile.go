@@ -64,10 +64,11 @@ type ProcedureSummary struct {
 }
 
 type LabResultSummary struct {
-	IndicatorName string
-	Value         float64
-	Unit          string
-	TakenAt       *time.Time
+	IndicatorName    string
+	Value            float64
+	QualitativeValue string
+	Unit             string
+	TakenAt          *time.Time
 }
 
 type VitalSignSummary struct {
@@ -324,7 +325,7 @@ func toProcedureSummaries(procedures []normalization.Procedure) []ProcedureSumma
 func toLabResultSummaries(latest map[string]normalization.LabResult) []LabResultSummary {
 	result := make([]LabResultSummary, 0, len(latest))
 	for _, l := range latest {
-		result = append(result, LabResultSummary{IndicatorName: l.IndicatorName, Value: l.Value, Unit: l.Unit, TakenAt: l.TakenAt})
+		result = append(result, LabResultSummary{IndicatorName: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit, TakenAt: l.TakenAt})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].IndicatorName < result[j].IndicatorName })
 	return result

@@ -34,13 +34,13 @@ func NewLabResultRepository(s *Store) LabResultRepository {
 	return &sqliteLabResultRepository{db: s.db}
 }
 
-const labResultSelectColumns = `SELECT id, user_id, document_id, indicator_name, code, code_system, value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at`
+const labResultSelectColumns = `SELECT id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at`
 
 func (r *sqliteLabResultRepository) Add(ctx context.Context, l normalization.LabResult) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.ID, l.UserID, l.DocumentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.Unit,
+		INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.UserID, l.DocumentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
 		l.NormalizedValue, l.NormalizedUnit, l.ReferenceLow, l.ReferenceHigh, nullUnix(l.TakenAt),
 	)
 	if err != nil {
@@ -79,9 +79,9 @@ func (r *sqliteLabResultRepository) ReplaceForDocument(ctx context.Context, docu
 	}
 	for _, l := range results {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			l.ID, l.UserID, documentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.Unit,
+			INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			l.ID, l.UserID, documentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
 			l.NormalizedValue, l.NormalizedUnit, l.ReferenceLow, l.ReferenceHigh, nullUnix(l.TakenAt),
 		)
 		if err != nil {
@@ -133,7 +133,7 @@ func scanLabResults(rows *sql.Rows) ([]normalization.LabResult, error) {
 	for rows.Next() {
 		var l normalization.LabResult
 		var takenAt sql.NullInt64
-		if err := rows.Scan(&l.ID, &l.UserID, &l.DocumentID, &l.IndicatorName, &l.Code, &l.CodeSystem, &l.Value, &l.Unit,
+		if err := rows.Scan(&l.ID, &l.UserID, &l.DocumentID, &l.IndicatorName, &l.Code, &l.CodeSystem, &l.Value, &l.QualitativeValue, &l.Unit,
 			&l.NormalizedValue, &l.NormalizedUnit, &l.ReferenceLow, &l.ReferenceHigh, &takenAt); err != nil {
 			return nil, fmt.Errorf("storage: scan lab result: %w", err)
 		}

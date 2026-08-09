@@ -122,19 +122,20 @@ CREATE INDEX IF NOT EXISTS idx_medications_user_id     ON medications(user_id);
 CREATE INDEX IF NOT EXISTS idx_medications_document_id ON medications(document_id);
 
 CREATE TABLE IF NOT EXISTS lab_results (
-    id               TEXT PRIMARY KEY,
-    user_id          TEXT NOT NULL,
-    document_id      TEXT NOT NULL,
-    indicator_name   TEXT NOT NULL,
-    code             TEXT NOT NULL DEFAULT '',
-    code_system      TEXT NOT NULL DEFAULT '',
-    value            REAL NOT NULL,
-    unit             TEXT NOT NULL DEFAULT '',
-    normalized_value REAL NOT NULL DEFAULT 0,
-    normalized_unit  TEXT NOT NULL DEFAULT '',
-    reference_low    REAL NOT NULL DEFAULT 0,
-    reference_high   REAL NOT NULL DEFAULT 0,
-    taken_at         INTEGER
+    id                TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL,
+    document_id       TEXT NOT NULL,
+    indicator_name    TEXT NOT NULL,
+    code              TEXT NOT NULL DEFAULT '',
+    code_system       TEXT NOT NULL DEFAULT '',
+    value             REAL NOT NULL DEFAULT 0,
+    qualitative_value TEXT NOT NULL DEFAULT '',
+    unit              TEXT NOT NULL DEFAULT '',
+    normalized_value  REAL NOT NULL DEFAULT 0,
+    normalized_unit   TEXT NOT NULL DEFAULT '',
+    reference_low     REAL NOT NULL DEFAULT 0,
+    reference_high    REAL NOT NULL DEFAULT 0,
+    taken_at          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_lab_results_user_id            ON lab_results(user_id);
 CREATE INDEX IF NOT EXISTS idx_lab_results_document_id        ON lab_results(document_id);
@@ -299,10 +300,14 @@ CREATE INDEX IF NOT EXISTS idx_vital_signs_user_id_type ON vital_signs(user_id, 
 
 // schemaMigrations holds changes applied after schema's initial CREATE
 // TABLE statements (see miranda-diary/internal/diary/store.go for the
-// precedent this mirrors) — empty for now since every table above was
-// designed fresh, but kept as an explicit, documented extension point
-// rather than something a future change has to invent from scratch.
-var schemaMigrations []string
+// precedent this mirrors) — an already-existing table (as opposed to a
+// brand-new database, where the column is already present via schema
+// above) needs an explicit ALTER TABLE to pick up a new column; Open
+// tolerates "duplicate column name" so the same migration is safe to
+// replay against a database that already has it (including a fresh one).
+var schemaMigrations = []string{
+	`ALTER TABLE lab_results ADD COLUMN qualitative_value TEXT NOT NULL DEFAULT ''`,
+}
 
 // Store is the shared SQLite connection every entity's repository is built
 // on (see e.g. diagnosis.go's sqliteDiagnosisRepository). Open once per

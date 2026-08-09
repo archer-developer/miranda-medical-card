@@ -69,21 +69,26 @@ type Medication struct {
 // canonical unit, never a guessed value. Code/CodeSystem come either from
 // Extraction transcribing a printed code, or — far more often in
 // practice — this package's own small LOINC alias lookup (see loinc.go,
-// including its accuracy caveat) when nothing was printed.
+// including its accuracy caveat) when nothing was printed. QualitativeValue
+// mirrors InstrumentalFinding's field of the same name — a result that
+// isn't numeric at all (e.g. blood type, a positive/negative test) — see
+// that struct's doc comment; exactly one of Value/QualitativeValue is
+// normally populated, but both may be empty.
 type LabResult struct {
-	ID              string
-	UserID          string
-	DocumentID      string
-	IndicatorName   string
-	Code            string
-	CodeSystem      string
-	Value           float64
-	Unit            string
-	NormalizedValue float64
-	NormalizedUnit  string
-	ReferenceLow    float64
-	ReferenceHigh   float64
-	TakenAt         *time.Time
+	ID               string
+	UserID           string
+	DocumentID       string
+	IndicatorName    string
+	Code             string
+	CodeSystem       string
+	Value            float64
+	QualitativeValue string
+	Unit             string
+	NormalizedValue  float64
+	NormalizedUnit   string
+	ReferenceLow     float64
+	ReferenceHigh    float64
+	TakenAt          *time.Time
 }
 
 // InstrumentalFinding mirrors docs/domain/13-instrumental-finding.md §3.
@@ -229,7 +234,10 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		indicatorName := canonicalize(l.Name)
 		var normValue float64
 		var normUnit string
-		if resolver != nil {
+		// Only a quantitative result (Unit set) goes through unit
+		// normalization — a qualitative-only result (e.g. blood type) has
+		// nothing to convert, same reasoning as InstrumentalFindings below.
+		if resolver != nil && l.Unit != "" {
 			var unitErr error
 			normValue, normUnit, unitErr = normalizeUnit(ctx, resolver, userID, indicatorName, l.Value, l.Unit)
 			if unitErr != nil {
@@ -243,19 +251,20 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 			}
 		}
 		result.LabResults = append(result.LabResults, LabResult{
-			ID:              fmt.Sprintf("lab_%s_%d", documentID, i),
-			UserID:          userID,
-			DocumentID:      documentID,
-			IndicatorName:   indicatorName,
-			Code:            code,
-			CodeSystem:      codeSystem,
-			Value:           l.Value,
-			Unit:            l.Unit,
-			NormalizedValue: normValue,
-			NormalizedUnit:  normUnit,
-			ReferenceLow:    l.ReferenceLow,
-			ReferenceHigh:   l.ReferenceHigh,
-			TakenAt:         takenAt,
+			ID:               fmt.Sprintf("lab_%s_%d", documentID, i),
+			UserID:           userID,
+			DocumentID:       documentID,
+			IndicatorName:    indicatorName,
+			Code:             code,
+			CodeSystem:       codeSystem,
+			Value:            l.Value,
+			QualitativeValue: l.QualitativeValue,
+			Unit:             l.Unit,
+			NormalizedValue:  normValue,
+			NormalizedUnit:   normUnit,
+			ReferenceLow:     l.ReferenceLow,
+			ReferenceHigh:    l.ReferenceHigh,
+			TakenAt:          takenAt,
 		})
 	}
 

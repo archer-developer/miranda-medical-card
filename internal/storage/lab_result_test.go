@@ -38,6 +38,23 @@ func TestLabResultRepository_AddAndList(t *testing.T) {
 	require.Equal(t, "2026-03-14", got[0].TakenAt.Format("2006-01-02"))
 }
 
+func TestLabResultRepository_AddAndList_QualitativeValue(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewLabResultRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{
+		ID: "lab_1", UserID: "user1", DocumentID: "doc1",
+		IndicatorName: "Группа крови", QualitativeValue: "A(II) Rh+",
+		TakenAt: mustDate("2026-03-14"),
+	}))
+
+	got, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "A(II) Rh+", got[0].QualitativeValue)
+	require.Zero(t, got[0].Value, "a qualitative-only result must round-trip with Value left at zero, not some other sentinel")
+}
+
 func TestLabResultRepository_HistoryByIndicator_OrderedOldestFirst(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewLabResultRepository(newTestStore(t))

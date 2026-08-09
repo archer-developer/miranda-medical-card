@@ -63,6 +63,7 @@ Rules:
 - If the text contains no instances of a given category (e.g. no medications mentioned), return an empty array for that field, not null.
 - You must attempt to populate every category the text actually contains data for, no matter how many entries there are — e.g. a lab report with 40 result rows must produce 40 entries in "labResults", not a subset and not an empty array. Omitting an individual field within one entry because you're unsure of it is fine; omitting the entire entry, or the entire array, when the text clearly contains the data is not.
 - "labResults" is for laboratory (blood/urine/etc.) test panels only. Measurements and observations from imaging or instrumental studies (ultrasound, MRI, CT, X-ray, ECG, echo-KG) are handled by a separate extraction pass — ignore them here even if the text contains them.
+- A lab result is not always numeric: use "value"+"unit" for a quantitative result, "qualitativeValue" for a non-numeric one (e.g. blood type, a positive/negative/detected/not-detected test result, a text finding) — never force a non-numeric result into "value", and never omit the entry just because it has no numeric value.
 - If you are not confident you can read a value correctly, omit that specific field rather than guessing.`
 
 // InstrumentalPrompt is Stage 2b's instruction — a separate, narrowly
@@ -156,16 +157,17 @@ func Schema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"name":          map[string]any{"type": "string", "description": "Indicator name as printed, e.g. ALT, LDL."},
-						"code":          map[string]any{"type": "string", "description": "Lab test code, if printed (e.g. LOINC)."},
-						"codeSystem":    map[string]any{"type": "string", "description": "e.g. loinc — only if a code is present."},
-						"value":         map[string]any{"type": "number"},
-						"unit":          map[string]any{"type": "string"},
-						"referenceLow":  map[string]any{"type": "number"},
-						"referenceHigh": map[string]any{"type": "number"},
-						"takenAt":       dateProp,
+						"name":             map[string]any{"type": "string", "description": "Indicator name as printed, e.g. ALT, LDL."},
+						"code":             map[string]any{"type": "string", "description": "Lab test code, if printed (e.g. LOINC)."},
+						"codeSystem":       map[string]any{"type": "string", "description": "e.g. loinc — only if a code is present."},
+						"value":            map[string]any{"type": "number", "description": "Numeric value, if the result is quantitative."},
+						"qualitativeValue": map[string]any{"type": "string", "description": "Descriptive or categorical value when the result is not numeric, e.g. blood type ('A(II) Rh+'), a positive/negative test result, a text finding."},
+						"unit":             map[string]any{"type": "string"},
+						"referenceLow":     map[string]any{"type": "number"},
+						"referenceHigh":    map[string]any{"type": "number"},
+						"takenAt":          dateProp,
 					},
-					"required": []string{"name", "value"},
+					"required": []string{"name"},
 				},
 			},
 			"procedures": map[string]any{
@@ -305,14 +307,15 @@ type Medication struct {
 }
 
 type LabResult struct {
-	Name          string  `json:"name"`
-	Code          string  `json:"code,omitempty"`
-	CodeSystem    string  `json:"codeSystem,omitempty"`
-	Value         float64 `json:"value"`
-	Unit          string  `json:"unit,omitempty"`
-	ReferenceLow  float64 `json:"referenceLow,omitempty"`
-	ReferenceHigh float64 `json:"referenceHigh,omitempty"`
-	TakenAt       string  `json:"takenAt,omitempty"`
+	Name             string  `json:"name"`
+	Code             string  `json:"code,omitempty"`
+	CodeSystem       string  `json:"codeSystem,omitempty"`
+	Value            float64 `json:"value,omitempty"`
+	QualitativeValue string  `json:"qualitativeValue,omitempty"`
+	Unit             string  `json:"unit,omitempty"`
+	ReferenceLow     float64 `json:"referenceLow,omitempty"`
+	ReferenceHigh    float64 `json:"referenceHigh,omitempty"`
+	TakenAt          string  `json:"takenAt,omitempty"`
 }
 
 // InstrumentalFinding mirrors docs/domain/13-instrumental-finding.md — a

@@ -60,6 +60,21 @@ func TestLabProvider_FiltersByIndicatorName(t *testing.T) {
 	require.Contains(t, chunks[0].Content, "ALT")
 }
 
+func TestLabProvider_QualitativeValueFormattedAsText(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{
+		ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "Группа крови",
+		QualitativeValue: "A(II) Rh+", TakenAt: mustDate("2025-01-01"),
+	}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Equal(t, "Группа крови: A(II) Rh+ (2025-01-01).", chunks[0].Content, "must not fall through to numeric %%g formatting for a qualitative-only result")
+}
+
 func TestInstrumentalFindingProvider_RequiresBothStructureAndParameter(t *testing.T) {
 	s := newTestStore(t)
 	repo := storage.NewInstrumentalFindingRepository(s)

@@ -223,13 +223,18 @@ func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]Know
 	}
 	chunks := make([]KnowledgeChunk, len(results))
 	for i, r := range results {
-		value, unit := r.Value, r.Unit
-		if r.NormalizedUnit != "" {
-			value, unit = r.NormalizedValue, r.NormalizedUnit
-		}
-		content := fmt.Sprintf("%s: %g %s (%s).", r.IndicatorName, value, unit, formatDate(r.TakenAt))
-		if r.ReferenceLow != 0 || r.ReferenceHigh != 0 {
-			content += fmt.Sprintf(" Норма: %g–%g.", r.ReferenceLow, r.ReferenceHigh)
+		var content string
+		if r.QualitativeValue != "" {
+			content = fmt.Sprintf("%s: %s (%s).", r.IndicatorName, r.QualitativeValue, formatDate(r.TakenAt))
+		} else {
+			value, unit := r.Value, r.Unit
+			if r.NormalizedUnit != "" {
+				value, unit = r.NormalizedValue, r.NormalizedUnit
+			}
+			content = fmt.Sprintf("%s: %g %s (%s).", r.IndicatorName, value, unit, formatDate(r.TakenAt))
+			if r.ReferenceLow != 0 || r.ReferenceHigh != 0 {
+				content += fmt.Sprintf(" Норма: %g–%g.", r.ReferenceLow, r.ReferenceHigh)
+			}
 		}
 		chunks[i] = KnowledgeChunk{Source: "lab_results", Title: r.IndicatorName, Content: content, Confidence: 1.0, DocumentID: r.DocumentID}
 	}

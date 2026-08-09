@@ -343,3 +343,26 @@ func TestNormalize_UnitNormalization_NilResolverLeavesNormalizedFieldsZero(t *te
 	require.Empty(t, result.LabResults[0].NormalizedUnit)
 	require.Equal(t, 28.3, result.LabResults[0].Value, "the raw value must be unaffected by resolver being nil")
 }
+
+// TestNormalize_QualitativeLabResult covers a lab result with no numeric
+// value at all — e.g. blood type — which extraction.LabResult.Value/Unit
+// leaves at their zero values and populates QualitativeValue instead (see
+// docs/domain/09-lab-result-and-vital-sign.md §4). Normalize must carry
+// QualitativeValue through and must not attempt unit normalization (no
+// Unit to convert), even with a resolver present that would otherwise be
+// called.
+func TestNormalize_QualitativeLabResult(t *testing.T) {
+	resolver := newFakeResolver()
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{{Name: "Группа крови", QualitativeValue: "A(II) Rh+"}},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, resolver)
+	require.Empty(t, errs)
+	require.Len(t, result.LabResults, 1)
+	got := result.LabResults[0]
+	require.Equal(t, "A(II) Rh+", got.QualitativeValue)
+	require.Zero(t, got.Value)
+	require.Empty(t, got.Unit)
+	require.Zero(t, got.NormalizedValue)
+	require.Empty(t, got.NormalizedUnit)
+}
