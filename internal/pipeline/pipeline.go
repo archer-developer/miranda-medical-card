@@ -121,6 +121,7 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 	procedures := storage.NewProcedureRepository(s)
 	allergies := storage.NewAllergyRepository(s)
 	vitalSigns := storage.NewVitalSignRepository(s)
+	documentRepo := storage.NewDocumentRepository(s)
 
 	return &Pipeline{
 		provider:           provider,
@@ -128,7 +129,7 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 		files:              files,
 
 		fileRepo:         storage.NewFileRepository(s),
-		documentRepo:     storage.NewDocumentRepository(s),
+		documentRepo:     documentRepo,
 		extractionRepo:   storage.NewExtractionRepository(s),
 		canonicalUnits:   storage.NewCanonicalUnitRepository(s),
 		indicatorAliases: storage.NewIndicatorAliasRepository(s),
@@ -143,7 +144,7 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 
 		timelineRepo:   storage.NewTimelineRepository(s),
 		profileStore:   profile.NewStore(storage.NewProfileRepository(s)),
-		profileBuilder: profile.NewBuilder(medications, diagnoses, procedures, allergies, labResults, vitalSigns),
+		profileBuilder: profile.NewBuilder(medications, diagnoses, procedures, allergies, labResults, vitalSigns, documentRepo),
 
 		selfReportedEvents: storage.NewSelfReportedEventRepository(s),
 		medicationIntakes:  storage.NewMedicationIntakeRepository(s),

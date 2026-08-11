@@ -33,7 +33,7 @@ func TestBuilder_EmptyForUserWithNoData(t *testing.T) {
 	s := newTestStore(t)
 	b := profile.NewBuilder(
 		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
-		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 
 	p, err := b.Build(ctx, "user1")
@@ -59,7 +59,7 @@ func TestBuilder_MedicationResolver_LaterDocumentWins(t *testing.T) {
 
 	b := profile.NewBuilder(
 		meds, storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
-		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -77,7 +77,7 @@ func TestBuilder_MedicationResolver_StillActiveIncluded(t *testing.T) {
 
 	b := profile.NewBuilder(
 		meds, storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
-		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -105,7 +105,7 @@ func TestBuilder_DiagnosisResolver_GroupsByCodeAndSplitsChronic(t *testing.T) {
 
 	b := profile.NewBuilder(
 		storage.NewMedicationRepository(s), dx, storage.NewProcedureRepository(s),
-		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestBuilder_AllergiesDeduped(t *testing.T) {
 
 	b := profile.NewBuilder(
 		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
-		allergies, storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		allergies, storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestBuilder_VaccinationsAllIncludedNotDeduped(t *testing.T) {
 
 	b := profile.NewBuilder(
 		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), procedures,
-		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -158,7 +158,7 @@ func TestBuilder_LatestLabResultsAndVitalSigns(t *testing.T) {
 
 	b := profile.NewBuilder(
 		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
-		storage.NewAllergyRepository(s), labs, vitals,
+		storage.NewAllergyRepository(s), labs, vitals, storage.NewDocumentRepository(s),
 	)
 	p, err := b.Build(ctx, "user1")
 	require.NoError(t, err)
@@ -166,6 +166,35 @@ func TestBuilder_LatestLabResultsAndVitalSigns(t *testing.T) {
 	require.Equal(t, 54.7, p.LatestLabResults[0].Value)
 	require.Len(t, p.LatestVitalSigns, 1)
 	require.Equal(t, 80.0, p.LatestVitalSigns[0].Value)
+}
+
+func TestBuilder_LatestLabResultsCarryDistinguishingDocumentTitle(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	documents := storage.NewDocumentRepository(s)
+	bloodDoc, err := documents.Add(ctx, storage.MedicalDocument{ID: "doc1", UserID: "user1", Title: "Общий анализ крови"})
+	require.NoError(t, err)
+	urineDoc, err := documents.Add(ctx, storage.MedicalDocument{ID: "doc2", UserID: "user1", Title: "Общий анализ мочи"})
+	require.NoError(t, err)
+
+	labs := storage.NewLabResultRepository(s)
+	require.NoError(t, labs.Add(ctx, normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: bloodDoc.ID, IndicatorName: "Белок", Value: 72, Unit: "г/л", TakenAt: mustDate("2026-05-08")}))
+	require.NoError(t, labs.Add(ctx, normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: urineDoc.ID, IndicatorName: "Белок в моче", Value: 0, Unit: "г/л", TakenAt: mustDate("2026-05-08")}))
+
+	b := profile.NewBuilder(
+		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), storage.NewProcedureRepository(s),
+		storage.NewAllergyRepository(s), labs, storage.NewVitalSignRepository(s), documents,
+	)
+	p, err := b.Build(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, p.LatestLabResults, 2)
+
+	titles := make(map[string]string)
+	for _, l := range p.LatestLabResults {
+		titles[l.IndicatorName] = l.DocumentTitle
+	}
+	require.Equal(t, "Общий анализ крови", titles["Белок"], "a lab result's DocumentTitle must identify which panel it came from, so two same-shaped indicators from different document types aren't indistinguishable downstream")
+	require.Equal(t, "Общий анализ мочи", titles["Белок в моче"])
 }
 
 func TestStore_ReplaceThenGetRoundTrips(t *testing.T) {

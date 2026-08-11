@@ -15,6 +15,7 @@ package profile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -63,21 +64,33 @@ type ProcedureSummary struct {
 	PerformedAt *time.Time
 }
 
+// LabResultSummary's DocumentTitle is the source MedicalDocument's Title
+// (e.g. "Общий анализ крови", "Общий анализ мочи — Инвитро") — without it,
+// two same-named indicators from different panel types (protein in a blood
+// panel vs. a urinalysis, say) render identically in a Profile chunk with
+// no way to tell them apart. Empty when the source document has none (an
+// older document predating docs/domain/03-files-and-documents.md's
+// studyTitle field, or the fixed documentType label alone) — never
+// fabricated.
 type LabResultSummary struct {
 	IndicatorName    string
 	Value            float64
 	QualitativeValue string
 	Unit             string
 	TakenAt          *time.Time
+	DocumentTitle    string
 }
 
+// VitalSignSummary.DocumentTitle mirrors LabResultSummary.DocumentTitle —
+// same reasoning, same source.
 type VitalSignSummary struct {
-	Type       string
-	Systolic   float64
-	Diastolic  float64
-	Value      float64
-	Unit       string
-	MeasuredAt *time.Time
+	Type          string
+	Systolic      float64
+	Diastolic     float64
+	Value         float64
+	Unit          string
+	MeasuredAt    *time.Time
+	DocumentTitle string
 }
 
 // MedicationRepository is the narrow slice of storage.MedicationRepository
@@ -108,6 +121,14 @@ type VitalSignRepository interface {
 	LatestByType(ctx context.Context, userID string) (map[string]normalization.VitalSign, error)
 }
 
+// DocumentRepository is the narrow slice of storage.DocumentRepository
+// Builder needs — just enough to resolve a LabResult/VitalSign's
+// DocumentID into its source document's Title for
+// LabResultSummary.DocumentTitle/VitalSignSummary.DocumentTitle.
+type DocumentRepository interface {
+	Get(ctx context.Context, id, userID string) (storage.MedicalDocument, error)
+}
+
 // Builder builds a Profile by reading every repository for one user. now is
 // injected (rather than calling time.Now() internally) so tests get a
 // deterministic RebuiltAt.
@@ -118,6 +139,7 @@ type Builder struct {
 	allergies   AllergyRepository
 	labResults  LabResultRepository
 	vitalSigns  VitalSignRepository
+	documents   DocumentRepository
 	now         func() time.Time
 }
 
@@ -129,11 +151,13 @@ func NewBuilder(
 	allergies AllergyRepository,
 	labResults LabResultRepository,
 	vitalSigns VitalSignRepository,
+	documents DocumentRepository,
 ) *Builder {
 	return &Builder{
 		medications: medications, diagnoses: diagnoses, procedures: procedures,
 		allergies: allergies, labResults: labResults, vitalSigns: vitalSigns,
-		now: func() time.Time { return time.Now().UTC() },
+		documents: documents,
+		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -171,6 +195,15 @@ func (b *Builder) Build(ctx context.Context, userID string) (Profile, error) {
 	activeDiagnoses, chronic := resolveActiveDiagnoses(diagnoses)
 	activeMedications := resolveActiveMedications(meds)
 
+	labSummaries, err := b.toLabResultSummaries(ctx, userID, latestLabs)
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile: resolve lab result source documents: %w", err)
+	}
+	vitalSummaries, err := b.toVitalSignSummaries(ctx, userID, latestVitals)
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile: resolve vital sign source documents: %w", err)
+	}
+
 	return Profile{
 		UserID:            userID,
 		ActiveDiagnoses:   activeDiagnoses,
@@ -178,8 +211,8 @@ func (b *Builder) Build(ctx context.Context, userID string) (Profile, error) {
 		ActiveMedications: activeMedications,
 		Allergies:         dedupAllergies(allergies),
 		Vaccinations:      toProcedureSummaries(vaccinations),
-		LatestLabResults:  toLabResultSummaries(latestLabs),
-		LatestVitalSigns:  toVitalSignSummaries(latestVitals),
+		LatestLabResults:  labSummaries,
+		LatestVitalSigns:  vitalSummaries,
 		RebuiltAt:         b.now(),
 	}, nil
 }
@@ -322,13 +355,47 @@ func toProcedureSummaries(procedures []normalization.Procedure) []ProcedureSumma
 	return result
 }
 
-func toLabResultSummaries(latest map[string]normalization.LabResult) []LabResultSummary {
+func (b *Builder) toLabResultSummaries(ctx context.Context, userID string, latest map[string]normalization.LabResult) ([]LabResultSummary, error) {
+	titles := make(map[string]string)
 	result := make([]LabResultSummary, 0, len(latest))
 	for _, l := range latest {
-		result = append(result, LabResultSummary{IndicatorName: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit, TakenAt: l.TakenAt})
+		title, err := b.documentTitle(ctx, userID, l.DocumentID, titles)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, LabResultSummary{
+			IndicatorName: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue,
+			Unit: l.Unit, TakenAt: l.TakenAt, DocumentTitle: title,
+		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].IndicatorName < result[j].IndicatorName })
-	return result
+	return result, nil
+}
+
+// documentTitle resolves documentID to its source MedicalDocument's Title,
+// caching within one Build call — LatestByIndicator/LatestByType can return
+// several entries pointing at the same document (e.g. every indicator on
+// one blood panel), and each shouldn't re-fetch it. A document that's
+// vanished (or documentID being empty, e.g. in an old test fixture) yields
+// "" rather than an error — a missing title is a rendering gap, not reason
+// to fail the whole Profile rebuild.
+func (b *Builder) documentTitle(ctx context.Context, userID, documentID string, cache map[string]string) (string, error) {
+	if documentID == "" {
+		return "", nil
+	}
+	if title, ok := cache[documentID]; ok {
+		return title, nil
+	}
+	doc, err := b.documents.Get(ctx, documentID, userID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			cache[documentID] = ""
+			return "", nil
+		}
+		return "", fmt.Errorf("profile: get document %s: %w", documentID, err)
+	}
+	cache[documentID] = doc.Title
+	return doc.Title, nil
 }
 
 // Store wraps storage.ProfileRepository to work with typed Profile values —
@@ -374,11 +441,19 @@ func (s *Store) Replace(ctx context.Context, p Profile) error {
 	return nil
 }
 
-func toVitalSignSummaries(latest map[string]normalization.VitalSign) []VitalSignSummary {
+func (b *Builder) toVitalSignSummaries(ctx context.Context, userID string, latest map[string]normalization.VitalSign) ([]VitalSignSummary, error) {
+	titles := make(map[string]string)
 	result := make([]VitalSignSummary, 0, len(latest))
 	for _, v := range latest {
-		result = append(result, VitalSignSummary{Type: v.Type, Systolic: v.Systolic, Diastolic: v.Diastolic, Value: v.Value, Unit: v.Unit, MeasuredAt: v.MeasuredAt})
+		title, err := b.documentTitle(ctx, userID, v.DocumentID, titles)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, VitalSignSummary{
+			Type: v.Type, Systolic: v.Systolic, Diastolic: v.Diastolic,
+			Value: v.Value, Unit: v.Unit, MeasuredAt: v.MeasuredAt, DocumentTitle: title,
+		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Type < result[j].Type })
-	return result
+	return result, nil
 }

@@ -137,6 +137,7 @@ func run(args []string) error {
 		storage.NewAllergyRepository(store),
 		labResults,
 		storage.NewVitalSignRepository(store),
+		storage.NewDocumentRepository(store),
 	)
 	profileStore := profile.NewStore(storage.NewProfileRepository(store))
 

@@ -363,6 +363,9 @@ func (p *ProfileProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]
 				line += fmt.Sprintf("%g %s", l.Value, l.Unit)
 			}
 			line += fmt.Sprintf(" (%s)", formatDate(l.TakenAt))
+			if l.DocumentTitle != "" {
+				line += fmt.Sprintf(" [%s]", l.DocumentTitle)
+			}
 			lines = append(lines, line)
 		}
 		chunks = append(chunks, KnowledgeChunk{Source: "profile", Title: "Последние результаты анализов", Content: joinLines("Последние результаты анализов:", lines), Confidence: 1.0})
@@ -381,6 +384,9 @@ func (p *ProfileProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]
 				line = fmt.Sprintf("%s: %g %s", label, v.Value, v.Unit)
 			}
 			line += fmt.Sprintf(" (%s)", formatDate(v.MeasuredAt))
+			if v.DocumentTitle != "" {
+				line += fmt.Sprintf(" [%s]", v.DocumentTitle)
+			}
 			lines = append(lines, line)
 		}
 		chunks = append(chunks, KnowledgeChunk{Source: "profile", Title: "Последние жизненные показатели", Content: joinLines("Последние жизненные показатели:", lines), Confidence: 1.0})

@@ -159,6 +159,24 @@ func TestProfileProvider_IncludesLatestLabResultsAndVitalSigns(t *testing.T) {
 	require.Contains(t, vitalsChunk.Content, "Давление: 120/80 мм рт.ст. (2026-05-08)")
 }
 
+func TestProfileProvider_LabResultDocumentTitleDisambiguatesSameNamedIndicators(t *testing.T) {
+	s := newTestStore(t)
+	profileStore := profile.NewStore(storage.NewProfileRepository(s))
+	require.NoError(t, profileStore.Replace(context.Background(), profile.Profile{
+		UserID: "user1",
+		LatestLabResults: []profile.LabResultSummary{
+			{IndicatorName: "Белок", Value: 72, Unit: "г/л", TakenAt: mustDate("2026-05-08"), DocumentTitle: "Общий анализ крови"},
+		},
+		RebuiltAt: time.Now(),
+	}))
+
+	provider := ask.NewProfileProvider(profileStore)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Contains(t, chunks[0].Content, "[Общий анализ крови]", "without the source document named, a blood-panel 'Белок' reads identically to a urinalysis 'Белок' and is misleading")
+}
+
 func TestProfileProvider_NoProfileYetReturnsNoChunks(t *testing.T) {
 	s := newTestStore(t)
 	provider := ask.NewProfileProvider(profile.NewStore(storage.NewProfileRepository(s)))
