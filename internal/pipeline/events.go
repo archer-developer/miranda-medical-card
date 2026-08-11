@@ -36,7 +36,7 @@ type LoggedMedicationIntake struct {
 // Unlike UploadDocument, a Structured Extraction failure here is never
 // fatal: docs/mcp/07-events.md §3 is explicit that the user's rawText must
 // never be lost just because automatic structuring didn't work (there's no
-// download_file equivalent to fall back to for a self-reported note, unlike
+// fileUri equivalent to fall back to for a self-reported note, unlike
 // a document). So the event always reaches status READY; category/
 // description simply stay empty when extraction fails.
 func (p *Pipeline) LogEvent(ctx context.Context, userID, text string, occurredAt *time.Time) (LogEventResult, error) {

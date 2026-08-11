@@ -16,6 +16,17 @@
 # http_addr: ":8791"
 # auth_token_env: "MEDICAL_CARD_MCP_TOKEN"
 
+# public_base_url: the externally reachable http(s) origin (scheme + host +
+# port, no trailing slash) Miranda uses to reach this service — e.g. an SSH
+# tunnel endpoint or a local network address, whatever the real deployment
+# topology is. Used to build the fileUri medical.get_document returns for a
+# document's original file (docs/mcp/02-files.md §5) — Miranda fetches it
+# with a plain HTTP GET against GET /files/{fileId}, bearer-auth-gated the
+# same way as /mcp. Defaults to the loopback address matching
+# http_addr/tls.hosts' own defaults; override for any real deployment
+# reachable over anything but localhost.
+# public_base_url: "https://miranda.local:8791"
+
 # tls: on by default. The server generates and reuses its own self-signed
 # certificate at cert_file/key_file on first start (see
 # internal/tlscert.EnsureSelfSigned) rather than requiring a CA-issued one —

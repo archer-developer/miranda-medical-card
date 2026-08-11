@@ -13,14 +13,14 @@ import (
 func registerAskTool(server *mcp.Server, asker *ask.Asker, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.ask",
-		Description: "Отвечает на медицинский вопрос пользователя на естественном языке, используя всю доступную медицинскую историю: Timeline, лекарства, диагнозы, анализы, документы. Главный инструмент сервиса для вопросов, требующих анализа, поиска причин или сопоставления данных из нескольких источников — для простого снимка текущего состояния используйте medical.profile, для хронологии событий — medical.timeline.",
+		Description: "Answers the user's medical question in natural language, using the full available medical history: Timeline, medications, diagnoses, lab results, documents. The service's main tool for questions that require analysis, root-cause search, or cross-referencing data from multiple sources — use medical.profile for a plain snapshot of current state, medical.timeline for a chronology of events.",
 	}, askHandler(asker, gate, logger))
 }
 
 type AskInput struct {
-	UserID    string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	SubjectID string `json:"subjectId,omitempty" jsonschema:"О чьих данных вопрос, если не о своих."`
-	Question  string `json:"question" jsonschema:"Вопрос пользователя на естественном языке."`
+	UserID    string `json:"userId" jsonschema:"User identifier."`
+	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose data the question is about, if not the caller's own."`
+	Question  string `json:"question" jsonschema:"The user's question in natural language."`
 }
 
 type AskSourceOutput struct {

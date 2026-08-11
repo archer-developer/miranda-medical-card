@@ -50,6 +50,16 @@ type FileRepository interface {
 	// indistinguishable to the caller, so this can't be used to enumerate
 	// other users' file ids.
 	Get(ctx context.Context, id, userID string) (File, error)
+	// GetByID returns the File with the given id, regardless of owner.
+	// Unlike Get, this performs no per-user ownership check — it exists for
+	// the HTTP file download endpoint (see internal/mcpserver.
+	// NewFileDownloadHandler), which relies on the bearer token guarding
+	// the whole endpoint for trust, the same full-trust model already
+	// documented for medical.upload_document's fileUri fetch (docs/mcp/
+	// 01-overview.md §5). Ownership/sharing was already checked once, when
+	// the fileUri was minted inside an authenticated medical.get_document
+	// call.
+	GetByID(ctx context.Context, id string) (File, error)
 	// FindBySHA256 looks up an existing File for (userID, sha256) — the
 	// dedup check callers run before Add. Returns ErrNotFound if none
 	// exists yet.
@@ -88,6 +98,11 @@ func (r *sqliteFileRepository) Add(ctx context.Context, f File) (File, error) {
 
 func (r *sqliteFileRepository) Get(ctx context.Context, id, userID string) (File, error) {
 	row := r.db.QueryRowContext(ctx, fileSelectColumns+` FROM files WHERE id = ? AND user_id = ?`, id, userID)
+	return scanFile(row)
+}
+
+func (r *sqliteFileRepository) GetByID(ctx context.Context, id string) (File, error) {
+	row := r.db.QueryRowContext(ctx, fileSelectColumns+` FROM files WHERE id = ?`, id)
 	return scanFile(row)
 }
 

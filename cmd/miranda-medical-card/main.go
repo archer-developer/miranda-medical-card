@@ -229,9 +229,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}
 
-	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, logger)
+	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, logger)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
-	handler := httpserver.New(mcpHandler, token)
+	fileHandler := mcpserver.NewFileDownloadHandler(pl, logger)
+	handler := httpserver.New(mcpHandler, fileHandler, token)
 	httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
 
 	logger.Info("medical-card ready",
@@ -244,6 +245,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"plannerEscalationConfigured", plannerEscalationProvider != nil,
 		"answerEscalationConfigured", answerEscalationProvider != nil,
 		"embeddingModel", cfg.Embedding.Model,
+		"publicBaseURL", cfg.PublicBaseURL,
 		"addr", cfg.HTTPAddr,
 		"tls", cfg.TLS.Enabled,
 		"users", len(cfg.Users),

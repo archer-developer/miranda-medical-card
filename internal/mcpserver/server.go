@@ -29,8 +29,15 @@ const (
 
 // New builds the MCP server with every tool registered. maxFileSizeBytes
 // bounds how much medical.upload_document (see documents.go) will read from
-// a caller-supplied fileUri. A nil logger falls back to slog.Default().
-func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, maxFileSizeBytes int64, logger *slog.Logger) *mcp.Server {
+// a caller-supplied fileUri. publicBaseURL is the externally reachable
+// origin medical.get_document uses to build a document's fileUri (see
+// documents.go's fileURI, config.Config.PublicBaseURL) — the plain HTTP GET
+// /files/{fileId} handler that fileUri resolves against
+// (NewFileDownloadHandler) is mounted separately by httpserver.New, not
+// registered on this *mcp.Server; medical.download_file (files.go) remains
+// the MCP-native way to fetch a file with ownership/shared_with re-checked
+// on every call. A nil logger falls back to slog.Default().
+func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, maxFileSizeBytes int64, publicBaseURL string, logger *slog.Logger) *mcp.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,7 +46,7 @@ func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, max
 	server := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
 
 	registerFileTools(server, pl, gate, logger)
-	registerDocumentTools(server, pl, gate, maxFileSizeBytes, logger)
+	registerDocumentTools(server, pl, gate, maxFileSizeBytes, publicBaseURL, logger)
 	registerEventTools(server, pl, gate, logger)
 	registerAskTool(server, asker, gate, logger)
 	registerProfileTool(server, pl, gate, logger)

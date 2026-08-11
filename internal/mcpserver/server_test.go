@@ -2,9 +2,13 @@ package mcpserver_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +24,11 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
+
+// testPublicBaseURL stands in for config.Config.PublicBaseURL — the origin
+// medical.get_document's fileUri is built against (see documents.go's
+// fileURI helper).
+const testPublicBaseURL = "https://medical-card.test:8791"
 
 // newTestSession wires a real Pipeline + Asker (both backed by an in-memory
 // SQLite Store and fake LLM/embedder) behind mcpserver.New, connects an
@@ -45,7 +54,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 	)
 	asker := ask.NewAsker(provider, nil, provider, nil, registry, 5*time.Second, 20, nil)
 
-	server := mcpserver.New(pl, asker, users, 50*1024*1024, nil)
+	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, nil)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -144,6 +153,133 @@ func TestServer_UploadDocumentFetchesFileURI(t *testing.T) {
 	}](t, listResult)
 	require.Len(t, listOut.Documents, 1)
 	require.Equal(t, docOut.DocumentID, listOut.Documents[0].DocumentID)
+}
+
+// TestServer_GetDocumentReturnsFileURI exercises the replacement for
+// medical.download_file (see docs/mcp/02-files.md §5): medical.get_document
+// must embed an absolute fileUri built from PublicBaseURL, and that URI
+// must actually resolve — via NewFileDownloadHandler, mounted the same way
+// httpserver.New mounts it in production — to the exact bytes originally
+// uploaded.
+func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Общий анализ крови. Дата: 2026-03-12."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+
+	s, err := storage.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	fs, err := filestore.New(t.TempDir())
+	require.NoError(t, err)
+	pl := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	registry := ask.NewRegistry(ask.NewTimelineProvider(storage.NewTimelineRepository(s)))
+	asker := ask.NewAsker(provider, nil, provider, nil, registry, 5*time.Second, 20, nil)
+
+	server := mcpserver.New(pl, asker, []config.UserConfig{{ID: "alex"}}, 50*1024*1024, testPublicBaseURL, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	session, err := client.Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	const originalBytes = "pdf bytes"
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="cbc.pdf"`)
+		_, _ = w.Write([]byte(originalBytes))
+	}))
+	t.Cleanup(fileServer.Close)
+
+	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
+	require.False(t, docResult.IsError, "%v", docResult.Content)
+	docOut := decodeStructured[struct {
+		DocumentID string `json:"documentId"`
+	}](t, docResult)
+
+	getResult := callTool(t, session, "medical.get_document", map[string]any{"userId": "alex", "documentId": docOut.DocumentID})
+	require.False(t, getResult.IsError, "%v", getResult.Content)
+	getOut := decodeStructured[struct {
+		FileURI string `json:"fileUri"`
+	}](t, getResult)
+	require.True(t, strings.HasPrefix(getOut.FileURI, testPublicBaseURL+"/files/"), "fileUri %q must be rooted at PublicBaseURL", getOut.FileURI)
+
+	// The URI must resolve through the exact handler production mounts —
+	// mirrors httpserver.New's "GET /files/{fileId}" route.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /files/{fileId}", mcpserver.NewFileDownloadHandler(pl, nil))
+	downloadServer := httptest.NewServer(mux)
+	t.Cleanup(downloadServer.Close)
+
+	relativePath := strings.TrimPrefix(getOut.FileURI, testPublicBaseURL)
+	resp, err := http.Get(downloadServer.URL + relativePath)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, originalBytes, string(body))
+	require.Equal(t, "application/pdf", resp.Header.Get("Content-Type"))
+	require.Equal(t, strconv.Itoa(len(originalBytes)), resp.Header.Get("Content-Length"), "Content-Length must match the bytes actually written, not DB metadata")
+	require.Equal(t, `attachment; filename="cbc.pdf"; filename*=UTF-8''cbc.pdf`, resp.Header.Get("Content-Disposition"))
+}
+
+// TestServer_DownloadFileEnforcesOwnershipOnEveryCall is the reason
+// medical.download_file was kept alongside fileUri: unlike fileUri (whose
+// access check happens once, at the moment get_document mints it),
+// medical.download_file re-validates ownership/shared_with on every call —
+// this proves that a user with no relation to the document is rejected
+// even though the fileId itself is valid.
+func TestServer_DownloadFileEnforcesOwnershipOnEveryCall(t *testing.T) {
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Общий анализ крови. Дата: 2026-03-12."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}, {ID: "stranger"}})
+
+	const originalBytes = "pdf bytes"
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="анализ крови.pdf"`)
+		_, _ = w.Write([]byte(originalBytes))
+	}))
+	t.Cleanup(fileServer.Close)
+
+	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
+	require.False(t, docResult.IsError, "%v", docResult.Content)
+	docOut := decodeStructured[struct {
+		DocumentID string `json:"documentId"`
+	}](t, docResult)
+
+	getResult := callTool(t, session, "medical.get_document", map[string]any{"userId": "alex", "documentId": docOut.DocumentID})
+	require.False(t, getResult.IsError, "%v", getResult.Content)
+	getOut := decodeStructured[struct {
+		FileURI string `json:"fileUri"`
+	}](t, getResult)
+	fileID := strings.TrimPrefix(getOut.FileURI, testPublicBaseURL+"/files/")
+	require.NotEmpty(t, fileID)
+
+	ownResult := callTool(t, session, "medical.download_file", map[string]any{"userId": "alex", "fileId": fileID})
+	require.False(t, ownResult.IsError, "%v", ownResult.Content)
+	ownOut := decodeStructured[struct {
+		Filename string `json:"filename"`
+		Data     string `json:"data"`
+	}](t, ownResult)
+	require.Equal(t, "анализ крови.pdf", ownOut.Filename)
+	decoded, err := base64.StdEncoding.DecodeString(ownOut.Data)
+	require.NoError(t, err)
+	require.Equal(t, originalBytes, string(decoded))
+
+	deniedResult := callTool(t, session, "medical.download_file", map[string]any{"userId": "stranger", "fileId": fileID})
+	require.True(t, deniedResult.IsError)
+	require.Contains(t, deniedResult.Content[0].(*mcp.TextContent).Text, "FILE_NOT_FOUND")
 }
 
 func TestServer_UploadDocument_InvalidFileURIRejected(t *testing.T) {

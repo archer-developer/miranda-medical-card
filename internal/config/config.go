@@ -36,16 +36,28 @@ type UserConfig struct {
 
 // Config is the root of the service's configuration tree.
 type Config struct {
-	HTTPAddr     string          `yaml:"http_addr"`
-	AuthTokenEnv string          `yaml:"auth_token_env"`
-	TLS          TLSConfig       `yaml:"tls"`
-	Database     DatabaseConfig  `yaml:"database"`
-	Files        FilesConfig     `yaml:"files"`
-	LLM          LLMConfig       `yaml:"llm"`
-	Embedding    EmbeddingConfig `yaml:"embedding"`
-	Search       SearchConfig    `yaml:"search"`
-	Users        []UserConfig    `yaml:"users"`
-	Logging      LoggingConfig   `yaml:"logging"`
+	HTTPAddr     string `yaml:"http_addr"`
+	AuthTokenEnv string `yaml:"auth_token_env"`
+	// PublicBaseURL is the externally reachable http(s) origin (scheme +
+	// host + port, no trailing slash) Miranda uses to reach this service —
+	// e.g. through an SSH tunnel or the local network, whatever the actual
+	// deployment topology is. medical.get_document uses it to build the
+	// absolute fileUri it returns for a document's original file
+	// (docs/mcp/02-files.md §5), which Miranda then fetches with a plain
+	// HTTP GET against GET /files/{fileId}, bearer-auth-gated the same way
+	// as /mcp. Defaults to the loopback address matching HTTPAddr/TLS.Hosts'
+	// own defaults — real deployments reachable over anything but localhost
+	// (the common case) need to override this to whatever address/tunnel
+	// Miranda actually uses to reach /mcp already.
+	PublicBaseURL string          `yaml:"public_base_url"`
+	TLS           TLSConfig       `yaml:"tls"`
+	Database      DatabaseConfig  `yaml:"database"`
+	Files         FilesConfig     `yaml:"files"`
+	LLM           LLMConfig       `yaml:"llm"`
+	Embedding     EmbeddingConfig `yaml:"embedding"`
+	Search        SearchConfig    `yaml:"search"`
+	Users         []UserConfig    `yaml:"users"`
+	Logging       LoggingConfig   `yaml:"logging"`
 }
 
 // TLSConfig controls whether the HTTP server listens with TLS — same
@@ -179,8 +191,9 @@ type LoggingConfig struct {
 // service — except Users, which has no default (see validate()).
 func Default() Config {
 	return Config{
-		HTTPAddr:     ":8791",
-		AuthTokenEnv: "MEDICAL_CARD_MCP_TOKEN",
+		HTTPAddr:      ":8791",
+		AuthTokenEnv:  "MEDICAL_CARD_MCP_TOKEN",
+		PublicBaseURL: "https://127.0.0.1:8791",
 		TLS: TLSConfig{
 			Enabled:  true,
 			CertFile: "data/tls/cert.pem",
@@ -269,6 +282,9 @@ func (c Config) validate() error {
 	}
 	if c.AuthTokenEnv == "" {
 		return fmt.Errorf("config: auth_token_env must not be empty")
+	}
+	if !strings.HasPrefix(c.PublicBaseURL, "http://") && !strings.HasPrefix(c.PublicBaseURL, "https://") {
+		return fmt.Errorf("config: public_base_url must be a non-empty http(s) URL, got %q", c.PublicBaseURL)
 	}
 	if c.TLS.Enabled {
 		if c.TLS.CertFile == "" {

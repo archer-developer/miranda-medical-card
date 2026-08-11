@@ -27,26 +27,26 @@ const fileFetchTimeout = 30 * time.Second
 
 var fileFetchClient = &http.Client{Timeout: fileFetchTimeout}
 
-func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, logger *slog.Logger) {
+func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, publicBaseURL string, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.upload_document",
-		Description: "Скачивает файл по fileUri (HTTP GET, без содержимого файла в аргументах вызова) и импортирует его в медицинскую базу знаний: OCR, извлечение медицинских сущностей, Timeline, Medical Profile, поисковые индексы. Синхронный — возвращает результат только после завершения всей обработки. Ответ включает extractedCounts (число сущностей каждого типа); если оно выглядит подозрительно маленьким для содержательного документа, вызовите medical.reprocess_document.",
+		Description: "Downloads a file from fileUri (HTTP GET, no file content in the call arguments) and imports it into the medical knowledge base: OCR, medical entity extraction, Timeline, Medical Profile, search indexes. Synchronous — returns only after processing completes. The response includes extractedCounts (number of entities of each type); if it looks suspiciously small for a substantial document, call medical.reprocess_document.",
 	}, uploadDocumentHandler(pl, gate, maxFileSizeBytes, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.reprocess_document",
-		Description: "Заново прогоняет уже импортированный документ через Pipeline по тому же файлу (без повторной загрузки) — для случая, когда результат upload_document выглядит неполным (см. extractedCounts в его ответе).",
+		Description: "Reruns an already-imported document through the Pipeline using the same file (no re-upload) — for when upload_document's result looks incomplete (see extractedCounts in its response).",
 	}, reprocessDocumentHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.list_documents",
-		Description: "Возвращает список медицинских документов пользователя (без содержимого), отсортированный по дате медицинского события, а не по времени загрузки.",
+		Description: "Returns the user's medical documents (no content), sorted by the medical event date, not the upload time.",
 	}, listDocumentsHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.get_document",
-		Description: "Возвращает метаданные конкретного медицинского документа (без содержимого). Для оригинального файла используйте medical.download_file, для анализа содержимого — medical.ask.",
-	}, getDocumentHandler(pl, gate, logger))
+		Description: "Returns metadata for a specific medical document (no content), including fileUri — a direct HTTP link to the original file (plain GET, same bearer token as /mcp). Use medical.ask to analyze the content.",
+	}, getDocumentHandler(pl, gate, publicBaseURL, logger))
 }
 
 // --- shared response shape for upload_document/reprocess_document ---
@@ -73,8 +73,8 @@ func toExtractedCountsOutput(c pipeline.ExtractedCounts) ExtractedCountsOutput {
 // --- medical.upload_document ---
 
 type UploadDocumentInput struct {
-	UserID  string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	FileURI string `json:"fileUri" jsonschema:"URI, по которому сервис самостоятельно скачивает содержимое файла (HTTP GET)."`
+	UserID  string `json:"userId" jsonschema:"User identifier."`
+	FileURI string `json:"fileUri" jsonschema:"URI the service downloads the file's content from itself (HTTP GET)."`
 }
 
 type UploadDocumentOutput struct {
@@ -137,8 +137,9 @@ func uploadDocumentError(err error, logger *slog.Logger, userID, fileID string) 
 
 // errFileURINotFound is fetchFile's sentinel for a 404 response — kept
 // distinct from other fetch failures so fetchFileError can report it as
-// FILE_NOT_FOUND (the same code medical.download_file uses for "doesn't
-// exist"), rather than the more general FILE_FETCH_FAILED.
+// FILE_NOT_FOUND (the same code GET /files/{fileId} returns for "doesn't
+// exist" — see NewFileDownloadHandler), rather than the more general
+// FILE_FETCH_FAILED.
 var errFileURINotFound = errors.New("mcpserver: fetch file: not found")
 
 // fetchFile performs the HTTP GET a caller-supplied fileUri requires,
@@ -206,8 +207,8 @@ func fetchFileError(err error, logger *slog.Logger, userID, fileURI string) erro
 // --- medical.reprocess_document ---
 
 type ReprocessDocumentInput struct {
-	UserID     string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	DocumentID string `json:"documentId" jsonschema:"Идентификатор документа."`
+	UserID     string `json:"userId" jsonschema:"User identifier."`
+	DocumentID string `json:"documentId" jsonschema:"Document identifier."`
 }
 
 type ReprocessDocumentOutput = UploadDocumentOutput
@@ -239,8 +240,8 @@ func reprocessDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slo
 // --- medical.list_documents ---
 
 type ListDocumentsInput struct {
-	UserID    string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	SubjectID string `json:"subjectId,omitempty" jsonschema:"Чьи документы получить, если не свои."`
+	UserID    string `json:"userId" jsonschema:"User identifier."`
+	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose documents to fetch, if not the caller's own."`
 }
 
 type DocumentListItem struct {
@@ -303,8 +304,8 @@ func sortDocumentsByDate(items []DocumentListItem) {
 // --- medical.get_document ---
 
 type GetDocumentInput struct {
-	UserID     string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	DocumentID string `json:"documentId" jsonschema:"Идентификатор документа."`
+	UserID     string `json:"userId" jsonschema:"User identifier."`
+	DocumentID string `json:"documentId" jsonschema:"Document identifier."`
 }
 
 type GetDocumentOutput struct {
@@ -313,10 +314,14 @@ type GetDocumentOutput struct {
 	DocumentType string `json:"documentType,omitempty"`
 	DocumentDate string `json:"documentDate,omitempty"`
 	UploadedAt   string `json:"uploadedAt"`
-	FileID       string `json:"fileId"`
+	// FileURI is an absolute URL to the document's original file, served by
+	// GET /files/{fileId} (see files.go's NewFileDownloadHandler/fileURI) —
+	// Miranda fetches it directly with a plain HTTP GET, no MCP tool call
+	// involved (docs/mcp/02-files.md §5).
+	FileURI string `json:"fileUri"`
 }
 
-func getDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[GetDocumentInput, GetDocumentOutput] {
+func getDocumentHandler(pl *pipeline.Pipeline, gate *userGate, publicBaseURL string, logger *slog.Logger) mcp.ToolHandlerFor[GetDocumentInput, GetDocumentOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in GetDocumentInput) (*mcp.CallToolResult, GetDocumentOutput, error) {
 		if err := gate.requireUser(in.UserID); err != nil {
 			return nil, GetDocumentOutput{}, err
@@ -345,7 +350,7 @@ func getDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logg
 			return nil, GetDocumentOutput{}, mcpError(codeDocumentNotFound, "document not found")
 		}
 
-		out := GetDocumentOutput{DocumentID: doc.ID, Title: doc.Title, DocumentType: doc.DocumentType, UploadedAt: doc.UploadedAt.Format("2006-01-02T15:04:05Z07:00"), FileID: doc.FileID}
+		out := GetDocumentOutput{DocumentID: doc.ID, Title: doc.Title, DocumentType: doc.DocumentType, UploadedAt: doc.UploadedAt.Format("2006-01-02T15:04:05Z07:00"), FileURI: fileURI(publicBaseURL, doc.FileID)}
 		if doc.DocumentDate != nil {
 			out.DocumentDate = doc.DocumentDate.Format("2006-01-02")
 		}

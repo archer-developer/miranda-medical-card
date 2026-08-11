@@ -14,13 +14,13 @@ import (
 func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Возвращает агрегированное текущее состояние здоровья: действующие диагнозы, хронические заболевания, текущие лекарства, аллергии, прививки, последние анализы и показатели. Не выполняет анализ — только данные.",
+		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, latest lab results and vital signs. Does not perform analysis — data only.",
 	}, profileHandler(pl, gate, logger))
 }
 
 type ProfileInput struct {
-	UserID    string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	SubjectID string `json:"subjectId,omitempty" jsonschema:"Чей профиль получить, если не свой."`
+	UserID    string `json:"userId" jsonschema:"User identifier."`
+	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose profile to fetch, if not the caller's own."`
 }
 
 type DiagnosisSummaryOutput struct {

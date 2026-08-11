@@ -20,10 +20,35 @@ import (
 // principle docs/cli/medical.md §3 states explicitly for the CLI ("CLI не
 // обращается к Repository напрямую").
 
-// DownloadFile implements docs/mcp/02-files.md §5: returns a previously
-// uploaded file's metadata and content, unmodified.
+// DownloadFile implements docs/mcp/02-files.md §5's medical.download_file:
+// returns a previously uploaded file's metadata and content, unmodified,
+// re-checking that fileID belongs to userID on every call (via
+// fileRepo.Get, not GetByID) — unlike DownloadFileByID below, this is the
+// path that still enforces ownership/shared_with per request, so a
+// shared_with revocation takes effect immediately instead of only at the
+// moment a fileUri was minted.
 func (p *Pipeline) DownloadFile(ctx context.Context, userID, fileID string) (storage.File, []byte, error) {
 	file, err := p.fileRepo.Get(ctx, fileID, userID)
+	if err != nil {
+		return storage.File{}, nil, err
+	}
+	data, err := p.files.Read(file.StoragePath)
+	if err != nil {
+		return storage.File{}, nil, fmt.Errorf("pipeline: download file: %w", err)
+	}
+	return file, data, nil
+}
+
+// DownloadFileByID implements the GET /files/{fileId} endpoint (see
+// internal/mcpserver.NewFileDownloadHandler): returns a previously uploaded
+// file's metadata and content, unmodified, looked up by fileId alone, with
+// no per-request ownership check — the URI this backs is only ever handed
+// out once, inside an authenticated medical.get_document call. Callers
+// that need ownership/shared_with re-checked on every fetch (e.g. after a
+// share was revoked) should use DownloadFile via medical.download_file
+// instead.
+func (p *Pipeline) DownloadFileByID(ctx context.Context, fileID string) (storage.File, []byte, error) {
+	file, err := p.fileRepo.GetByID(ctx, fileID)
 	if err != nil {
 		return storage.File{}, nil, err
 	}

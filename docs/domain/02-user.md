@@ -51,7 +51,7 @@ User не хранится в SQLite.
 
 ## Что разрешает
 
-Пользователь `B`, присутствующий в `A.sharedWith`, может получить данные `A` через MCP Tools, поддерживающие параметр `subjectId` (`medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`) и через Tools, работающие с конкретным ресурсом (`medical.download_file`, `medical.get_document`) — см. `../mcp/01-overview.md` §11.
+Пользователь `B`, присутствующий в `A.sharedWith`, может получить данные `A` через MCP Tools, поддерживающие параметр `subjectId` (`medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`) и через Tools, работающие с конкретным ресурсом (`medical.download_file`, `medical.get_document`, включая оригинальный файл по `fileUri` из его ответа) — см. `../mcp/01-overview.md` §11.
 
 ## Что не разрешает
 

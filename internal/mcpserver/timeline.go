@@ -15,17 +15,17 @@ import (
 func registerTimelineTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.timeline",
-		Description: "Возвращает хронологическую последовательность медицинских событий: анализы, консультации, диагнозы, назначения, операции, вакцинации, самостоятельно зафиксированные события. Не выполняет анализ — только данные, в отличие от medical.ask.",
+		Description: "Returns the chronological sequence of medical events: lab results, consultations, diagnoses, prescriptions, procedures, vaccinations, self-reported events. Does not perform analysis — data only, unlike medical.ask.",
 	}, timelineHandler(pl, gate, logger))
 }
 
 type TimelineInput struct {
-	UserID    string   `json:"userId" jsonschema:"Идентификатор пользователя."`
-	SubjectID string   `json:"subjectId,omitempty" jsonschema:"Чью историю получить, если не свою."`
-	From      string   `json:"from,omitempty" jsonschema:"Начало периода (YYYY-MM-DD)."`
-	To        string   `json:"to,omitempty" jsonschema:"Конец периода (YYYY-MM-DD)."`
-	Types     []string `json:"types,omitempty" jsonschema:"Фильтр по типам событий."`
-	Limit     int      `json:"limit,omitempty" jsonschema:"Максимальное количество событий."`
+	UserID    string   `json:"userId" jsonschema:"User identifier."`
+	SubjectID string   `json:"subjectId,omitempty" jsonschema:"Whose history to fetch, if not the caller's own."`
+	From      string   `json:"from,omitempty" jsonschema:"Start of the period (YYYY-MM-DD)."`
+	To        string   `json:"to,omitempty" jsonschema:"End of the period (YYYY-MM-DD)."`
+	Types     []string `json:"types,omitempty" jsonschema:"Filter by event types."`
+	Limit     int      `json:"limit,omitempty" jsonschema:"Maximum number of events."`
 }
 
 type TimelineEventOutput struct {

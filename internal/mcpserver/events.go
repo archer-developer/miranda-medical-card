@@ -15,21 +15,21 @@ import (
 func registerEventTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.log_event",
-		Description: "Фиксирует медицинский факт, о котором пользователь сообщил напрямую в диалоге, без исходного документа (например 'приступ головной боли, принял ибупрофен'). Передавайте текст ровно так, как его произнёс пользователь, не пытаясь самостоятельно разбирать его на составляющие — категоризация и извлечение лекарства/дозы выполняются сервисом.",
+		Description: "Records a medical fact the user reported directly in conversation, with no source document (e.g. 'headache, took ibuprofen'). Pass the text exactly as the user said it, without trying to parse it into parts yourself — categorization and medication/dose extraction are done by the service.",
 	}, logEventHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.delete_event",
-		Description: "Удаляет самостоятельно зафиксированное событие (и связанные с ним записи в Timeline). Идемпотентен: повторный вызов и вызов для чужого/несуществующего eventId одинаково возвращают {\"deleted\": false}, без ошибки.",
+		Description: "Deletes a self-reported event (and its associated Timeline entries). Idempotent: calling it again, or for someone else's/a nonexistent eventId, both return {\"deleted\": false} rather than an error.",
 	}, deleteEventHandler(pl, gate, logger))
 }
 
 // --- medical.log_event ---
 
 type LogEventInput struct {
-	UserID     string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	Text       string `json:"text" jsonschema:"Текст события на естественном языке, как его сообщил пользователь."`
-	OccurredAt string `json:"occurredAt,omitempty" jsonschema:"Момент, когда событие произошло (ISO 8601). По умолчанию — момент вызова."`
+	UserID     string `json:"userId" jsonschema:"User identifier."`
+	Text       string `json:"text" jsonschema:"The event's text in natural language, exactly as the user reported it."`
+	OccurredAt string `json:"occurredAt,omitempty" jsonschema:"When the event happened (ISO 8601). Defaults to the time of the call."`
 }
 
 type MedicationIntakeOutput struct {
@@ -85,8 +85,8 @@ func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 // --- medical.delete_event ---
 
 type DeleteEventInput struct {
-	UserID  string `json:"userId" jsonschema:"Идентификатор пользователя."`
-	EventID string `json:"eventId" jsonschema:"Идентификатор события."`
+	UserID  string `json:"userId" jsonschema:"User identifier."`
+	EventID string `json:"eventId" jsonschema:"Event identifier."`
 }
 
 type DeleteEventOutput struct {
