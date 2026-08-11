@@ -85,6 +85,28 @@ func decodeStructured[T any](t *testing.T, result *mcp.CallToolResult) T {
 	return out
 }
 
+// requireContentMirrorsStructured guards against
+// docs/adr/002-structured-profile-response.md's class of bug: Miranda's
+// Gemini relay only reads a tool result's Content, never StructuredContent
+// (confirmed from a live Miranda log where list_documents/get_document
+// results arrived as a lossy one-line summary, hiding every documentId and
+// fileUri from the model). Every tool except medical.ask and
+// medical.download_file (see files_test.go for that deliberate exception)
+// must leave Content nil so the SDK serializes the exact same JSON as
+// StructuredContent into it — this asserts that invariant end-to-end.
+func requireContentMirrorsStructured[T any](t *testing.T, result *mcp.CallToolResult) T {
+	t.Helper()
+	require.Len(t, result.Content, 1)
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+
+	var fromText T
+	require.NoError(t, json.Unmarshal([]byte(textContent.Text), &fromText), "Content must be the full structured JSON, not a hand-written summary")
+	structured := decodeStructured[T](t, result)
+	require.Equal(t, structured, fromText, "Content and StructuredContent must carry exactly the same data")
+	return structured
+}
+
 func TestServer_ListsAllRegisteredTools(t *testing.T) {
 	session := newTestSession(t, llmtest.New("fake"), []config.UserConfig{{ID: "alex"}})
 
@@ -136,7 +158,7 @@ func TestServer_UploadDocumentFetchesFileURI(t *testing.T) {
 
 	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
 	require.False(t, docResult.IsError, "%v", docResult.Content)
-	docOut := decodeStructured[struct {
+	docOut := requireContentMirrorsStructured[struct {
 		DocumentID      string `json:"documentId"`
 		Status          string `json:"status"`
 		ExtractedCounts struct {
@@ -148,7 +170,7 @@ func TestServer_UploadDocumentFetchesFileURI(t *testing.T) {
 
 	listResult := callTool(t, session, "medical.list_documents", map[string]any{"userId": "alex"})
 	require.False(t, listResult.IsError)
-	listOut := decodeStructured[struct {
+	listOut := requireContentMirrorsStructured[struct {
 		Documents []struct{ DocumentID string } `json:"documents"`
 	}](t, listResult)
 	require.Len(t, listOut.Documents, 1)
@@ -198,13 +220,13 @@ func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
 
 	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
 	require.False(t, docResult.IsError, "%v", docResult.Content)
-	docOut := decodeStructured[struct {
+	docOut := requireContentMirrorsStructured[struct {
 		DocumentID string `json:"documentId"`
 	}](t, docResult)
 
 	getResult := callTool(t, session, "medical.get_document", map[string]any{"userId": "alex", "documentId": docOut.DocumentID})
 	require.False(t, getResult.IsError, "%v", getResult.Content)
-	getOut := decodeStructured[struct {
+	getOut := requireContentMirrorsStructured[struct {
 		FileURI string `json:"fileUri"`
 	}](t, getResult)
 	require.True(t, strings.HasPrefix(getOut.FileURI, testPublicBaseURL+"/files/"), "fileUri %q must be rooted at PublicBaseURL", getOut.FileURI)
@@ -277,6 +299,17 @@ func TestServer_DownloadFileEnforcesOwnershipOnEveryCall(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, originalBytes, string(decoded))
 
+	// Deliberate exception to requireContentMirrorsStructured (see
+	// files.go's downloadFileHandler): unlike every other tool, Content
+	// here must NOT mirror StructuredContent, because StructuredContent
+	// carries the full base64 file body — auto-serializing that into
+	// Content would dump potentially megabytes of base64 into Miranda's
+	// LLM context, which only reads Content.
+	require.Len(t, ownResult.Content, 1)
+	ownText, ok := ownResult.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.NotContains(t, ownText.Text, ownOut.Data, "Content must never carry the base64 file body")
+
 	deniedResult := callTool(t, session, "medical.download_file", map[string]any{"userId": "stranger", "fileId": fileID})
 	require.True(t, deniedResult.IsError)
 	require.Contains(t, deniedResult.Content[0].(*mcp.TextContent).Text, "FILE_NOT_FOUND")
@@ -311,17 +344,39 @@ func TestServer_LogEventThenDeleteEvent(t *testing.T) {
 
 	logResult := callTool(t, session, "medical.log_event", map[string]any{"userId": "alex", "text": "Болит голова"})
 	require.False(t, logResult.IsError, "%v", logResult.Content)
-	logOut := decodeStructured[struct {
-		EventID string `json:"eventId"`
+	logOut := requireContentMirrorsStructured[struct {
+		EventID  string `json:"eventId"`
+		Category string `json:"category"`
 	}](t, logResult)
 	require.NotEmpty(t, logOut.EventID)
+	require.Equal(t, "symptom", logOut.Category, "Content must carry category, not just a bare eventId summary")
 
 	deleteResult := callTool(t, session, "medical.delete_event", map[string]any{"userId": "alex", "eventId": logOut.EventID})
 	require.False(t, deleteResult.IsError)
-	deleteOut := decodeStructured[struct {
+	deleteOut := requireContentMirrorsStructured[struct {
 		Deleted bool `json:"deleted"`
 	}](t, deleteResult)
 	require.True(t, deleteOut.Deleted)
+}
+
+func TestServer_TimelineContentMirrorsStructuredContent(t *testing.T) {
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"category":"symptom","description":"Головная боль"}`),
+	})
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+
+	logResult := callTool(t, session, "medical.log_event", map[string]any{"userId": "alex", "text": "Болит голова"})
+	require.False(t, logResult.IsError, "%v", logResult.Content)
+
+	result := callTool(t, session, "medical.timeline", map[string]any{"userId": "alex"})
+	require.False(t, result.IsError, "%v", result.Content)
+	out := requireContentMirrorsStructured[struct {
+		Events []struct {
+			EventID string `json:"eventId"`
+			Title   string `json:"title"`
+		} `json:"events"`
+	}](t, result)
+	require.NotEmpty(t, out.Events, "Content must carry the actual events, not just a count")
 }
 
 func TestServer_SharedWithGrantsSubjectIDReadAccess(t *testing.T) {

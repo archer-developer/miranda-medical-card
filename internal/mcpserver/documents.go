@@ -119,7 +119,13 @@ func uploadDocumentHandler(pl *pipeline.Pipeline, gate *userGate, maxFileSizeByt
 
 		logger.Info("upload_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status)
 		out := UploadDocumentOutput{DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary, ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts)}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.Summary}}}, out, nil
+		// Content deliberately left nil: the MCP SDK then serializes the
+		// full, schema-validated out as the Content text (see
+		// modelcontextprotocol/go-sdk's toolForErr) instead of a hand-built
+		// summary that would drop documentId/extractedCounts — the same
+		// fix applied to medical.profile, see
+		// docs/adr/002-structured-profile-response.md.
+		return nil, out, nil
 	}
 }
 
@@ -233,7 +239,8 @@ func reprocessDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slo
 
 		logger.Info("reprocess_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status)
 		out := ReprocessDocumentOutput{DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary, ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts)}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.Summary}}}, out, nil
+		// See upload_document's handler above for why Content is left nil.
+		return nil, out, nil
 	}
 }
 
@@ -286,8 +293,11 @@ func listDocumentsHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Lo
 		sortDocumentsByDate(items)
 
 		logger.Info("list_documents", "userId", in.UserID, "subjectId", subjectID, "count", len(items))
-		text := fmt.Sprintf("%d document(s).", len(items))
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, ListDocumentsOutput{Documents: items}, nil
+		// Content deliberately left nil — see upload_document's handler for
+		// why. A hand-built "N document(s)." summary previously hid every
+		// documentId from Miranda, since it only reads Content, not
+		// StructuredContent (docs/adr/002-structured-profile-response.md).
+		return nil, ListDocumentsOutput{Documents: items}, nil
 	}
 }
 
@@ -355,6 +365,10 @@ func getDocumentHandler(pl *pipeline.Pipeline, gate *userGate, publicBaseURL str
 			out.DocumentDate = doc.DocumentDate.Format("2006-01-02")
 		}
 		logger.Info("get_document", "userId", in.UserID, "documentId", in.DocumentID)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.Title}}}, out, nil
+		// Content deliberately left nil — see upload_document's handler for
+		// why. A hand-built Content containing only Title previously hid
+		// fileUri from Miranda entirely, since it only reads Content, not
+		// StructuredContent (docs/adr/002-structured-profile-response.md).
+		return nil, out, nil
 	}
 }

@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -79,7 +78,12 @@ func timelineHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 		}
 
 		logger.Info("timeline", "userId", in.UserID, "subjectId", subjectID, "count", len(items))
-		text := fmt.Sprintf("%d event(s).", len(items))
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, TimelineOutput{Events: items}, nil
+		// Content deliberately left nil so the MCP SDK serializes the full
+		// events array as Content instead of a hand-built "N event(s)."
+		// summary that would hide eventId/documentId from Miranda, which
+		// only reads Content, not StructuredContent — see
+		// documents.go's listDocumentsHandler and
+		// docs/adr/002-structured-profile-response.md.
+		return nil, TimelineOutput{Events: items}, nil
 	}
 }

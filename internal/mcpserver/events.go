@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -77,8 +76,13 @@ func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 			}
 		}
 		logger.Info("log_event", "userId", in.UserID, "eventId", out.EventID, "category", out.Category)
-		text := fmt.Sprintf("Logged. eventId: %s", out.EventID)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
+		// Content deliberately left nil so the MCP SDK serializes the full
+		// out (category, medicationIntake, timelineEventIds) as Content
+		// instead of a hand-built "Logged. eventId: ..." summary that would
+		// hide everything else from Miranda, which only reads Content, not
+		// StructuredContent — see documents.go's listDocumentsHandler and
+		// docs/adr/002-structured-profile-response.md.
+		return nil, out, nil
 	}
 }
 
@@ -110,10 +114,7 @@ func deleteEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logg
 
 		logger.Info("delete_event", "userId", in.UserID, "eventId", in.EventID, "deleted", deleted)
 		out := DeleteEventOutput{Deleted: deleted}
-		text := "Not found."
-		if deleted {
-			text = "Deleted."
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
+		// Content deliberately left nil — see logEventHandler above.
+		return nil, out, nil
 	}
 }
