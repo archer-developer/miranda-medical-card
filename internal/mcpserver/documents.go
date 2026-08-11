@@ -30,22 +30,22 @@ var fileFetchClient = &http.Client{Timeout: fileFetchTimeout}
 func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.upload_document",
-		Description: "Скачивает файл по fileUri и импортирует его в медицинскую базу знаний: OCR, извлечение медицинских сущностей, Timeline, Medical Profile, поисковые индексы. См. docs/mcp/03-documents.md §4.",
+		Description: "Скачивает файл по fileUri (HTTP GET, без содержимого файла в аргументах вызова) и импортирует его в медицинскую базу знаний: OCR, извлечение медицинских сущностей, Timeline, Medical Profile, поисковые индексы. Синхронный — возвращает результат только после завершения всей обработки. Ответ включает extractedCounts (число сущностей каждого типа); если оно выглядит подозрительно маленьким для содержательного документа, вызовите medical.reprocess_document.",
 	}, uploadDocumentHandler(pl, gate, maxFileSizeBytes, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.reprocess_document",
-		Description: "Заново прогоняет уже импортированный документ через Pipeline по тому же файлу — для случая, когда результат upload_document выглядит неполным. См. docs/mcp/03-documents.md §6.",
+		Description: "Заново прогоняет уже импортированный документ через Pipeline по тому же файлу (без повторной загрузки) — для случая, когда результат upload_document выглядит неполным (см. extractedCounts в его ответе).",
 	}, reprocessDocumentHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.list_documents",
-		Description: "Возвращает список медицинских документов пользователя (без содержимого). См. docs/mcp/03-documents.md §7.",
+		Description: "Возвращает список медицинских документов пользователя (без содержимого), отсортированный по дате медицинского события, а не по времени загрузки.",
 	}, listDocumentsHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.get_document",
-		Description: "Возвращает метаданные конкретного медицинского документа. См. docs/mcp/03-documents.md §8.",
+		Description: "Возвращает метаданные конкретного медицинского документа (без содержимого). Для оригинального файла используйте medical.download_file, для анализа содержимого — medical.ask.",
 	}, getDocumentHandler(pl, gate, logger))
 }
 

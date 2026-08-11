@@ -15,12 +15,12 @@ import (
 func registerEventTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.log_event",
-		Description: "Фиксирует медицинский факт, о котором пользователь сообщил напрямую в диалоге, без исходного документа (например 'приступ головной боли, принял ибупрофен'). См. docs/mcp/07-events.md §3.",
+		Description: "Фиксирует медицинский факт, о котором пользователь сообщил напрямую в диалоге, без исходного документа (например 'приступ головной боли, принял ибупрофен'). Передавайте текст ровно так, как его произнёс пользователь, не пытаясь самостоятельно разбирать его на составляющие — категоризация и извлечение лекарства/дозы выполняются сервисом.",
 	}, logEventHandler(pl, gate, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.delete_event",
-		Description: "Удаляет самостоятельно зафиксированное событие. Идемпотентен. См. docs/mcp/07-events.md §4.",
+		Description: "Удаляет самостоятельно зафиксированное событие (и связанные с ним записи в Timeline). Идемпотентен: повторный вызов и вызов для чужого/несуществующего eventId одинаково возвращают {\"deleted\": false}, без ошибки.",
 	}, deleteEventHandler(pl, gate, logger))
 }
 

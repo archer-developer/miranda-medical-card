@@ -23,7 +23,7 @@ import (
 func registerFileTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.download_file",
-		Description: "Возвращает ранее загруженный файл в исходном виде. См. docs/mcp/02-files.md §5.",
+		Description: "Возвращает ранее загруженный файл в исходном, неизменённом виде (данные — base64).",
 	}, downloadFileHandler(pl, gate, logger))
 }
 

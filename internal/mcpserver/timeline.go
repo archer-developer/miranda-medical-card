@@ -15,7 +15,7 @@ import (
 func registerTimelineTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.timeline",
-		Description: "Возвращает хронологическую последовательность медицинских событий: анализы, консультации, диагнозы, назначения, операции, вакцинации, самостоятельно зафиксированные события. Не выполняет анализ. См. docs/mcp/06-timeline.md.",
+		Description: "Возвращает хронологическую последовательность медицинских событий: анализы, консультации, диагнозы, назначения, операции, вакцинации, самостоятельно зафиксированные события. Не выполняет анализ — только данные, в отличие от medical.ask.",
 	}, timelineHandler(pl, gate, logger))
 }
 
