@@ -14,7 +14,7 @@ import (
 func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Возвращает агрегированное текущее состояние здоровья: действующие диагнозы, хронические заболевания, текущие лекарства, аллергии, прививки, последние анализы и показатели. Не выполняет анализ — только данные. См. docs/mcp/05-profile.md.",
+		Description: "Возвращает агрегированное текущее состояние здоровья: действующие диагнозы, хронические заболевания, текущие лекарства, аллергии, прививки, последние анализы и показатели. Не выполняет анализ — только данные.",
 	}, profileHandler(pl, gate, logger))
 }
 
@@ -46,18 +46,28 @@ type ProcedureSummaryOutput struct {
 	PerformedAt string `json:"performedAt,omitempty"`
 }
 
+// LabResultSummaryOutput.DocumentSource names the source document type/title
+// (e.g. "Общий анализ крови" vs "Общий анализ мочи") a reading came from —
+// without it, two differently-sourced indicators sharing a name (protein in
+// a blood panel vs. a urinalysis) are indistinguishable to a caller, which
+// has caused Miranda to mis-group profile data (see
+// docs/adr/002-structured-profile-response.md).
 type LabResultSummaryOutput struct {
 	Name             string  `json:"name"`
 	Value            float64 `json:"value,omitempty"`
 	QualitativeValue string  `json:"qualitativeValue,omitempty"`
 	Unit             string  `json:"unit,omitempty"`
 	Date             string  `json:"date,omitempty"`
+	DocumentSource   string  `json:"documentSource,omitempty"`
 }
 
+// VitalSignSummaryOutput.DocumentSource mirrors
+// LabResultSummaryOutput.DocumentSource — same reasoning, same source.
 type VitalSignSummaryOutput struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-	Date  string `json:"date,omitempty"`
+	Name           string `json:"name"`
+	Value          string `json:"value"`
+	Date           string `json:"date,omitempty"`
+	DocumentSource string `json:"documentSource,omitempty"`
 }
 
 // ProfileOutput mirrors docs/mcp/05-profile.md §5.
@@ -86,8 +96,18 @@ func profileHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) 
 
 		out := toProfileOutput(built)
 		logger.Info("profile", "userId", in.UserID, "subjectId", subjectID)
-		text := fmt.Sprintf("%d active diagnoses, %d active medications, %d allergies.", len(out.ActiveDiagnoses), len(out.ActiveMedications), len(out.Allergies))
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
+		// Deliberately no hand-built Content here (unlike other handlers in
+		// this package that write a short human summary) — see
+		// docs/adr/002-structured-profile-response.md: a caller reading
+		// medical.profile to build something like a PDF needs every
+		// section (allergies, labs, vitals, ...), and a lossy one-line
+		// count of just 3 of the 7 sections was silently starving that
+		// caller of the rest. Leaving Content nil makes the SDK fall back
+		// to serializing the full, schema-validated `out` as the Content
+		// text (see modelcontextprotocol/go-sdk's toolForErr) — the same
+		// value already returned as StructuredContent, so the two can
+		// never drift apart.
+		return nil, out, nil
 	}
 }
 
@@ -121,14 +141,17 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 		out.Vaccinations[i] = ProcedureSummaryOutput{Name: pr.Name, PerformedAt: formatOptionalDate(pr.PerformedAt)}
 	}
 	for i, l := range p.LatestLabResults {
-		out.LatestLabResults[i] = LabResultSummaryOutput{Name: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit, Date: formatOptionalDate(l.TakenAt)}
+		out.LatestLabResults[i] = LabResultSummaryOutput{
+			Name: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit,
+			Date: formatOptionalDate(l.TakenAt), DocumentSource: l.DocumentTitle,
+		}
 	}
 	for i, v := range p.LatestVitalSigns {
 		value := fmt.Sprintf("%g %s", v.Value, v.Unit)
 		if v.Type == "blood_pressure" {
 			value = fmt.Sprintf("%g/%g", v.Systolic, v.Diastolic)
 		}
-		out.LatestVitalSigns[i] = VitalSignSummaryOutput{Name: v.Type, Value: value, Date: formatOptionalDate(v.MeasuredAt)}
+		out.LatestVitalSigns[i] = VitalSignSummaryOutput{Name: v.Type, Value: value, Date: formatOptionalDate(v.MeasuredAt), DocumentSource: v.DocumentTitle}
 	}
 	return out
 }
