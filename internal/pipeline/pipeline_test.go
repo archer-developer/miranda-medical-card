@@ -297,6 +297,44 @@ func TestBackfillStudyTitle_NoStudyTitleInReplayIsNotAnError(t *testing.T) {
 	require.Empty(t, newTitle)
 }
 
+// TestReindexDocumentFTS_DropsLabReportRawTextButKeepsSummary simulates a
+// document imported before documentTypesWithoutFreeTextContent existed
+// (pipeline.go) — its FTS entry still has raw OCR boilerplate indexed —
+// and checks ReindexDocumentFTS brings it in line purely from already-
+// persisted data, no LLM call involved.
+func TestReindexDocumentFTS_DropsLabReportRawTextButKeepsSummary(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	docs := storage.NewDocumentRepository(s)
+	fts := storage.NewFTSRepository(s)
+
+	doc, err := docs.Add(ctx, storage.MedicalDocument{
+		ID: "doc1", UserID: "user1", Status: storage.DocumentStatusReady, DocumentType: "lab_report",
+		Title:          "Лабораторное исследование",
+		RecognizedText: "Референсные значения по [рекомендации] ВОЗ, 2011 см.комм БОЙЛЕРПЛЕЙТСЛОВО.",
+		Summary:        "Лабораторное исследование.",
+	})
+	require.NoError(t, err)
+	// Simulate the pre-fix indexed content: raw text + Summary, as run()
+	// built it before documentTypesWithoutFreeTextContent existed.
+	require.NoError(t, fts.IndexDocument(ctx, "user1", doc.ID, doc.Title, doc.RecognizedText+"\n"+doc.Summary))
+
+	byRawText, err := fts.SearchDocuments(ctx, "user1", "БОЙЛЕРПЛЕЙТСЛОВО", 10)
+	require.NoError(t, err)
+	require.Len(t, byRawText, 1, "pre-fix state: the boilerplate must still be indexed")
+
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	require.NoError(t, p.ReindexDocumentFTS(ctx, "user1", doc.ID))
+
+	byRawText, err = fts.SearchDocuments(ctx, "user1", "БОЙЛЕРПЛЕЙТСЛОВО", 10)
+	require.NoError(t, err)
+	require.Empty(t, byRawText, "after reindexing, the raw OCR boilerplate must no longer be indexed")
+
+	bySummary, err := fts.SearchDocuments(ctx, "user1", "Лабораторное", 10)
+	require.NoError(t, err)
+	require.Len(t, bySummary, 1, "Summary must still be indexed after reindexing")
+}
+
 func TestUploadDocument_SecondCallSameFileReturnsAlreadyImported(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)

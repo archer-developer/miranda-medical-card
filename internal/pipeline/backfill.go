@@ -70,3 +70,30 @@ func (p *Pipeline) BackfillStudyTitle(ctx context.Context, userID, documentID st
 	}
 	return true, title, nil
 }
+
+// ReindexDocumentFTS is another one-off migration operation (see
+// BackfillStudyTitle's doc comment above for why this lives here rather
+// than as an MCP tool): rebuilds documentID's FTS index entry from data
+// already persisted — no OCR, no Structured re-extraction, no LLM call at
+// all — for a document imported before documentTypesWithoutFreeTextContent
+// existed (see that var's doc comment in pipeline.go), whose FTS index may
+// still include a lab_report/prescription's raw OCR boilerplate. doc.Summary
+// already carries any real recommendations Extraction found for the
+// document (see buildSummary), so dropping RecognizedText from the
+// reindexed text for these two types loses nothing but the noise that
+// caused a real false-positive FTS match (see documentTypesWithoutFreeTextContent).
+func (p *Pipeline) ReindexDocumentFTS(ctx context.Context, userID, documentID string) error {
+	doc, err := p.documentRepo.Get(ctx, documentID, userID)
+	if err != nil {
+		return fmt.Errorf("pipeline: reindex document fts: %w", err)
+	}
+
+	ftsContent := doc.Summary
+	if !documentTypesWithoutFreeTextContent[doc.DocumentType] {
+		ftsContent = doc.RecognizedText + "\n" + doc.Summary
+	}
+	if err := p.fts.IndexDocument(ctx, userID, documentID, doc.Title, ftsContent); err != nil {
+		return fmt.Errorf("pipeline: reindex document fts: %w", err)
+	}
+	return nil
+}

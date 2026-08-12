@@ -9,12 +9,12 @@
 // commands directly useful for inspecting a running deployment's data, plus
 // pipeline for re-running Processing Pipeline against an already-imported
 // document with full Debug-level tracing to stderr — docs/cli/medical_dev.md
-// §12), backfill-titles — not part of that doc (it's a one-off data
-// migration, not a standing diagnostic command), see
-// pipeline.Pipeline.BackfillStudyTitle's doc comment — and llm-trace (see
-// llm_trace.go), also not part of that doc: a reader for logs/llm.log
-// (only ever produced when logging.level: debug — see
-// cmd/miranda-medical-card/main.go's buildLLMTraceWriter) rather than
+// §12), backfill-titles and reindex-fts — not part of that doc (both are
+// one-off data migrations, not standing diagnostic commands), see
+// pipeline.Pipeline.BackfillStudyTitle's and .ReindexDocumentFTS's own doc
+// comments — and llm-trace (see llm_trace.go), also not part of that doc: a
+// reader for logs/llm.log (only ever produced when logging.level: debug —
+// see cmd/miranda-medical-card/main.go's buildLLMTraceWriter) rather than
 // anything Application-Service-shaped.
 // Not implemented: planner, provider, search, prompt, llm (see
 // docs/cli/medical_dev.md §5-8, §13) — each would need its own
@@ -35,6 +35,7 @@
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
 //	medical-dev backfill-titles --user alex [--provider gemini-agent]
+//	medical-dev reindex-fts --user alex
 //	medical-dev llm-trace [--file logs/llm.log] [--conversation ID | --latest]
 package main
 
@@ -74,7 +75,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles|llm-trace> [flags]")
+		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles|reindex-fts|llm-trace> [flags]")
 	}
 	command, args := args[0], args[1:]
 
@@ -110,8 +111,10 @@ func run(args []string) error {
 		return runPipeline(args, cfg, store)
 	case "backfill-titles":
 		return runBackfillTitles(args, cfg, store)
+	case "reindex-fts":
+		return runReindexFTS(args, cfg, store)
 	default:
-		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, backfill-titles, or llm-trace", command)
+		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, backfill-titles, reindex-fts, or llm-trace", command)
 	}
 }
 
@@ -483,6 +486,50 @@ func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) e
 			continue
 		}
 		fmt.Printf("%s: %q -> %q\n", doc.ID, doc.Title, newTitle)
+	}
+	return nil
+}
+
+// --- reindex-fts ---
+
+// runReindexFTS drives pipeline.Pipeline.ReindexDocumentFTS (see its own
+// doc comment) over every READY document a user has, to bring documents
+// imported before documentTypesWithoutFreeTextContent existed (pipeline.go)
+// in line with it — no LLM calls, no re-OCR, just a plain rebuild from
+// what's already stored. Unlike backfill-titles, needs no --provider
+// override: ReindexDocumentFTS never touches an LLM provider at all, so
+// newPipeline's default llm.document_provider is never even called.
+func runReindexFTS(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("reindex-fts", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	ctx := context.Background()
+	pl, err := newPipeline(cfg, store)
+	if err != nil {
+		return err
+	}
+
+	docs, err := pl.ListDocuments(ctx, *user)
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range docs {
+		if doc.Status != storage.DocumentStatusReady {
+			fmt.Printf("%s: skipped (status=%s)\n", doc.ID, doc.Status)
+			continue
+		}
+		if err := pl.ReindexDocumentFTS(ctx, *user, doc.ID); err != nil {
+			fmt.Printf("%s: error: %v\n", doc.ID, err)
+			continue
+		}
+		fmt.Printf("%s: reindexed (documentType=%s)\n", doc.ID, doc.DocumentType)
 	}
 	return nil
 }
