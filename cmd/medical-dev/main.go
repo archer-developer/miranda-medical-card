@@ -9,9 +9,13 @@
 // commands directly useful for inspecting a running deployment's data, plus
 // pipeline for re-running Processing Pipeline against an already-imported
 // document with full Debug-level tracing to stderr — docs/cli/medical_dev.md
-// §12), and backfill-titles — not part of that doc (it's a one-off data
+// §12), backfill-titles — not part of that doc (it's a one-off data
 // migration, not a standing diagnostic command), see
-// pipeline.Pipeline.BackfillStudyTitle's doc comment.
+// pipeline.Pipeline.BackfillStudyTitle's doc comment — and llm-trace (see
+// llm_trace.go), also not part of that doc: a reader for logs/llm.log
+// (only ever produced when logging.level: debug — see
+// cmd/miranda-medical-card/main.go's buildLLMTraceWriter) rather than
+// anything Application-Service-shaped.
 // Not implemented: planner, provider, search, prompt, llm (see
 // docs/cli/medical_dev.md §5-8, §13) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
@@ -31,6 +35,7 @@
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
 //	medical-dev backfill-titles --user alex [--provider gemini-agent]
+//	medical-dev llm-trace [--file logs/llm.log] [--conversation ID | --latest]
 package main
 
 import (
@@ -69,9 +74,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles> [flags]")
+		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles|llm-trace> [flags]")
 	}
 	command, args := args[0], args[1:]
+
+	// llm-trace only reads logs/llm.log — it dispatches before config/db
+	// setup below since it needs neither (see llm_trace.go).
+	if command == "llm-trace" {
+		return runLLMTrace(args)
+	}
 
 	_ = envfile.Load(".env")
 	cfg, err := loadConfig()
@@ -100,7 +111,7 @@ func run(args []string) error {
 	case "backfill-titles":
 		return runBackfillTitles(args, cfg, store)
 	default:
-		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, or backfill-titles", command)
+		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, backfill-titles, or llm-trace", command)
 	}
 }
 
