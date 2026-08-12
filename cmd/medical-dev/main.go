@@ -14,7 +14,10 @@
 // pipeline.Pipeline.BackfillStudyTitle's and .ReindexDocumentFTS's own doc
 // comments — and llm-trace (see llm_trace.go), also not part of that doc: a
 // reader for logs/llm.log (only ever produced when logging.level: debug —
-// see cmd/miranda-medical-card/main.go's buildLLMTraceWriter) rather than
+// written by cmd/miranda-medical-card/main.go's buildLLMTraceWriter for a
+// real medical.ask MCP call, and identically by this file's own
+// openLLMTraceWriter for `medical-dev ask`, so the same log and the same
+// llm-trace command cover a question asked either way) rather than
 // anything Application-Service-shaped.
 // Not implemented: planner, provider, search, prompt, llm (see
 // docs/cli/medical_dev.md §5-8, §13) — each would need its own
@@ -44,6 +47,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -54,6 +58,7 @@ import (
 	"github.com/archer-developer/miranda-llm/anthropic"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
+	"github.com/archer-developer/miranda-llm/llmtrace"
 	"github.com/archer-developer/miranda-llm/openaicompat"
 	"github.com/archer-developer/miranda-llm/router"
 
@@ -536,6 +541,36 @@ func runReindexFTS(args []string, cfg config.Config, store *storage.Store) error
 
 // --- ask ---
 
+// llmLogPath is where openLLMTraceWriter (below) and llm-trace's own
+// default --file both look — the same relative path
+// cmd/miranda-medical-card/main.go's buildLLMTraceWriter writes to, so a
+// medical-dev ask call traces into the exact same file a real medical.ask
+// MCP call would, on whichever host's config/logging.yaml has
+// logging.level: debug.
+const llmLogPath = "logs/llm.log"
+
+// openLLMTraceWriter mirrors cmd/miranda-medical-card/main.go's
+// buildLLMTraceWriter — same gate (only when logging.level: debug), same
+// path, same append-mode open — so medical-dev ask traces uniformly with
+// the real service instead of being a second, untraceable code path for
+// the exact same medical.ask call (see internal/ask.Asker.Ask; runAsk below
+// builds the identical Registry/Asker, just against a CLI-supplied
+// question instead of an MCP request). Returns (nil, nil), not an error,
+// when debug logging is off, so the caller simply skips wiring a tracer.
+func openLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
+	if cfg.Level != "debug" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(llmLogPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create llm log dir: %w", err)
+	}
+	w, err := os.OpenFile(llmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open llm log %s: %w", llmLogPath, err)
+	}
+	return w, nil
+}
+
 func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("ask", flag.ExitOnError)
 	user := fs.String("user", "", "user id")
@@ -561,6 +596,14 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	askRouter, err := buildAskRouter(providers, cfg.LLM.Providers, cfg.LLM.AgentProvider)
 	if err != nil {
 		return err
+	}
+	llmLogWriter, err := openLLMTraceWriter(cfg.Logging)
+	if err != nil {
+		return err
+	}
+	if llmLogWriter != nil {
+		defer func() { _ = llmLogWriter.Close() }()
+		askRouter.SetTracer(llmtrace.New(llmLogWriter))
 	}
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)

@@ -46,7 +46,7 @@ var blockSplitRe = regexp.MustCompile(`(?m)^=== `)
 
 func runLLMTrace(args []string) error {
 	fs := flag.NewFlagSet("llm-trace", flag.ExitOnError)
-	file := fs.String("file", "logs/llm.log", "path to the LLM trace log")
+	file := fs.String("file", llmLogPath, "path to the LLM trace log")
 	conversation := fs.String("conversation", "", "show every turn of this conversation id")
 	latest := fs.Bool("latest", false, "show every turn of the most recently started conversation")
 	if err := fs.Parse(args); err != nil {
