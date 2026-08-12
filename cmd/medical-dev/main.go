@@ -32,6 +32,7 @@
 //
 // Usage:
 //
+//	medical-dev              # or `medical-dev help` — full command list with examples (help.go)
 //	medical-dev profile --user alex
 //	medical-dev timeline --user alex [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--type TYPE]
 //	medical-dev document <documentId> --user alex
@@ -80,14 +81,23 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: medical-dev <profile|timeline|document|ask|pipeline|backfill-titles|reindex-fts|llm-trace> [flags]")
+		printHelp()
+		return nil
 	}
 	command, args := args[0], args[1:]
 
-	// llm-trace only reads logs/llm.log — it dispatches before config/db
-	// setup below since it needs neither (see llm_trace.go).
+	// help/-h/--help and llm-trace both dispatch before config/db setup
+	// below since neither needs it — help reads nothing at all, and
+	// llm-trace only reads logs/llm.log (see llm_trace.go).
+	if command == "help" || command == "-h" || command == "--help" {
+		printHelp()
+		return nil
+	}
 	if command == "llm-trace" {
 		return runLLMTrace(args)
+	}
+	if !isKnownCommand(command) {
+		return fmt.Errorf("unknown command %q — run 'medical-dev help' for the full list", command)
 	}
 
 	_ = envfile.Load(".env")
@@ -119,7 +129,7 @@ func run(args []string) error {
 	case "reindex-fts":
 		return runReindexFTS(args, cfg, store)
 	default:
-		return fmt.Errorf("unknown command %q — expected profile, timeline, document, ask, pipeline, backfill-titles, reindex-fts, or llm-trace", command)
+		return fmt.Errorf("unknown command %q — run 'medical-dev help' for the full list", command)
 	}
 }
 
