@@ -86,6 +86,13 @@ LatestByType(userId string) (map[string]VitalSign, error)        // исполь
 HistoryByIndicator(userId, indicatorName string) ([]LabResult, error) // используется Lab Provider, см. ../architecture/04-search.md §7
 ```
 
+`ListByUser`/`ListByDocument`/`HistoryByIndicator` все возвращают результат в одном и том же порядке —
+сначала самые новые (`taken_at DESC`, недатированные записи — последними), намеренно согласованно между
+собой: Lab Provider (`../architecture/04-search.md` §7) обрезает результат по `limit`, полагаясь на то,
+что "последние N" реально означает последние N, а не какие попало N. Lab Provider также умеет сузить
+запрос по диапазону дат (`from`/`to`) или по `documentId` конкретного документа — оба фильтра
+применяются поверх уже отсортированного списка, не в самой репозиторной сортировке.
+
 ---
 
 # 7. Нормализация единиц измерения
