@@ -530,7 +530,7 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),
 		ask.NewInstrumentalFindingProvider(storage.NewInstrumentalFindingRepository(store)),
 		ask.NewProcedureProvider(storage.NewProcedureRepository(store)),
-		ask.NewDocumentProvider(storage.NewFTSRepository(store)),
+		ask.NewDocumentProvider(storage.NewFTSRepository(store), storage.NewDocumentRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
 	sessionStore := ask.NewSessionStore(storage.NewAskSessionRepository(store))

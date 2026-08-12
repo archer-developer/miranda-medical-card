@@ -79,7 +79,21 @@ func toolParameters(providerName string) map[string]any {
 				"description": `The measured parameter (e.g. "объём", "эхогенность").`,
 			},
 		}, []string{"structure", "parameter"})
-	case "documents", "embeddings":
+	case "documents":
+		return objectSchema(map[string]any{
+			"searchQuery": map[string]any{
+				"type":        "string",
+				"description": "A short, focused search phrase capturing what to look for — not the entire question verbatim.",
+			},
+			"documentId": map[string]any{
+				"type": "string",
+				"description": "Fetch one specific document's full summary (not a truncated search snippet) by an " +
+					"id this or another call (documents/timeline/lab_results/...) already returned for it. Takes " +
+					"priority over searchQuery.",
+			},
+			"limit": limitProperty(),
+		}, nil)
+	case "embeddings":
 		return objectSchema(map[string]any{
 			"searchQuery": map[string]any{
 				"type":        "string",

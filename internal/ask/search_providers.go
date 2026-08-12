@@ -2,6 +2,7 @@ package ask
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/archer-developer/miranda-llm/embedding"
@@ -16,23 +17,31 @@ import (
 // text not captured by any structured entity (subjective complaints,
 // doctor's free-form remarks), searched via FTS5 rather than re-reading
 // every document.
-type DocumentProvider struct{ fts storage.FTSRepository }
+type DocumentProvider struct {
+	fts       storage.FTSRepository
+	documents storage.DocumentRepository
+}
 
-func NewDocumentProvider(fts storage.FTSRepository) *DocumentProvider {
-	return &DocumentProvider{fts: fts}
+func NewDocumentProvider(fts storage.FTSRepository, documents storage.DocumentRepository) *DocumentProvider {
+	return &DocumentProvider{fts: fts, documents: documents}
 }
 
 func (p *DocumentProvider) Metadata() ProviderMetadata {
 	return ProviderMetadata{
 		Name: "documents",
 		Description: "Полнотекстовый поиск по распознанному тексту документов, их кратким описаниям и рекомендациям " +
-			"врачей — то, что не превратилось в структурированные данные (жалобы, свободные комментарии врача). " +
-			"Укажите searchQuery — несколько ключевых слов по-русски. Используйте, когда вопрос про содержание " +
-			"конкретного документа или упоминание чего-то в свободном тексте.",
+			"врачей — то, что не превратилось в структурированные данные (жалобы, свободные комментарии врача, " +
+			"рекомендации по питанию/образу жизни). Укажите searchQuery — несколько ключевых слов по-русски; " +
+			"результат покажет только короткий фрагмент вокруг совпадения вместе с id документа. Чтобы получить " +
+			"полное summary этого документа целиком (включая полный список рекомендаций, не обрывок), вызовите " +
+			"documents ещё раз с documentId — этим самым id.",
 	}
 }
 
 func (p *DocumentProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
+	if req.DocumentID != "" {
+		return p.collectByDocumentID(ctx, req)
+	}
 	if req.Query == "" {
 		return nil, nil
 	}
@@ -48,6 +57,28 @@ func (p *DocumentProvider) Collect(ctx context.Context, req KnowledgeRequest) ([
 		}
 	}
 	return chunks, nil
+}
+
+// collectByDocumentID returns doc.Summary in full — unlike SearchDocuments'
+// FTS snippet (a short window around a keyword match, see fts.go), Summary
+// is the whole mechanically-assembled fact list (docs/domain/03-files-and-
+// documents.md §3), including every recommendation, not just the ones
+// close enough to a search term to land in a 40-token snippet. documents.Get
+// is already scoped to (id, userID) in SQL (see storage.DocumentRepository),
+// so a hallucinated or cross-household id just resolves to "not found"
+// rather than leaking another user's document.
+func (p *DocumentProvider) collectByDocumentID(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
+	doc, err := p.documents.Get(ctx, req.DocumentID, req.UserID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ask: document provider: get %s: %w", req.DocumentID, err)
+	}
+	return []KnowledgeChunk{{
+		Source: "documents", Title: doc.Title, Content: doc.Summary,
+		Confidence: 1.0, DocumentID: doc.ID,
+	}}, nil
 }
 
 // --- Embeddings (semantic search) ---

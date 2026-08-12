@@ -68,7 +68,7 @@ func TestToolDefsForRegistry_InstrumentalFindingsRequiresBothStructureAndParamet
 		"instrumental_findings must reject a call missing either field, at the schema level")
 }
 
-func TestToolDefsForRegistry_DocumentsAndEmbeddingsRequireSearchQuery(t *testing.T) {
+func TestToolDefsForRegistry_EmbeddingsRequiresSearchQuery(t *testing.T) {
 	registry := registryOfAllProviders()
 	fake := &recordingChatProvider{text: "no lookup needed"}
 	sessions := ask.NewSessionStore(nil)
@@ -77,11 +77,32 @@ func TestToolDefsForRegistry_DocumentsAndEmbeddingsRequireSearchQuery(t *testing
 	_, err := asker.Ask(context.Background(), "alex", "alex", "", "irrelevant question")
 	require.NoError(t, err)
 
-	for _, name := range []string{"documents", "embeddings"} {
-		tool := toolByName(t, fake.lastReq.Tools, name)
-		required, _ := tool.Parameters["required"].([]string)
-		require.Equal(t, []string{"searchQuery"}, required, "%s must require searchQuery", name)
-	}
+	tool := toolByName(t, fake.lastReq.Tools, "embeddings")
+	required, _ := tool.Parameters["required"].([]string)
+	require.Equal(t, []string{"searchQuery"}, required, "embeddings has no other way to look anything up, so searchQuery must stay required")
+}
+
+// TestToolDefsForRegistry_DocumentsHasNoRequiredFields mirrors
+// TestToolDefsForRegistry_EmbeddingsRequiresSearchQuery's assertion for
+// documents, split out because the two providers deliberately diverge here:
+// documents gained a documentId lookup (see DocumentProvider.Collect) that
+// makes sense on its own, without searchQuery — unlike embeddings, which is
+// always query-driven.
+func TestToolDefsForRegistry_DocumentsHasNoRequiredFields(t *testing.T) {
+	registry := registryOfAllProviders()
+	fake := &recordingChatProvider{text: "no lookup needed"}
+	sessions := ask.NewSessionStore(nil)
+	asker := ask.NewAsker(fake, registry, sessions, testProviderTimeout, 20, 8, nil)
+
+	_, err := asker.Ask(context.Background(), "alex", "alex", "", "irrelevant question")
+	require.NoError(t, err)
+
+	tool := toolByName(t, fake.lastReq.Tools, "documents")
+	_, hasRequired := tool.Parameters["required"]
+	require.False(t, hasRequired, "documentId alone must be enough to call documents, so searchQuery can't be required")
+	props, _ := tool.Parameters["properties"].(map[string]any)
+	require.Contains(t, props, "documentId")
+	require.Contains(t, props, "searchQuery")
 }
 
 func TestToolDefsForRegistry_NoParameterProvidersHaveNoRequiredFields(t *testing.T) {

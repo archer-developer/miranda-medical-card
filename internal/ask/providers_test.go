@@ -248,7 +248,7 @@ func TestDocumentProvider_SearchesFTS(t *testing.T) {
 	fts := storage.NewFTSRepository(s)
 	require.NoError(t, fts.IndexDocument(context.Background(), "user1", "doc1", "Выписка", "жалобы на бессонницу"))
 
-	provider := ask.NewDocumentProvider(fts)
+	provider := ask.NewDocumentProvider(fts, storage.NewDocumentRepository(s))
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", Query: "бессонниц"})
 	require.NoError(t, err)
 	require.Len(t, chunks, 1)
@@ -257,8 +257,40 @@ func TestDocumentProvider_SearchesFTS(t *testing.T) {
 
 func TestDocumentProvider_EmptyQueryReturnsNothing(t *testing.T) {
 	s := newTestStore(t)
-	provider := ask.NewDocumentProvider(storage.NewFTSRepository(s))
+	provider := ask.NewDocumentProvider(storage.NewFTSRepository(s), storage.NewDocumentRepository(s))
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
 	require.NoError(t, err)
+	require.Empty(t, chunks)
+}
+
+func TestDocumentProvider_FetchesFullSummaryByDocumentID(t *testing.T) {
+	s := newTestStore(t)
+	docs := storage.NewDocumentRepository(s)
+	_, err := docs.Add(context.Background(), storage.MedicalDocument{
+		ID: "doc1", UserID: "user1", Status: storage.DocumentStatusReady, Title: "Анализ крови",
+		Summary: "Клинический анализ крови. Рекомендации: снизить потребление соли; повторить анализ через месяц.",
+	})
+	require.NoError(t, err)
+
+	provider := ask.NewDocumentProvider(storage.NewFTSRepository(s), docs)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "doc1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Contains(t, chunks[0].Content, "снизить потребление соли", "must return the full Summary, not a truncated FTS snippet")
+	require.Equal(t, "doc1", chunks[0].DocumentID)
+}
+
+func TestDocumentProvider_UnknownOrForeignDocumentIDReturnsNothing(t *testing.T) {
+	s := newTestStore(t)
+	docs := storage.NewDocumentRepository(s)
+	_, err := docs.Add(context.Background(), storage.MedicalDocument{
+		ID: "doc1", UserID: "other-user", Status: storage.DocumentStatusReady, Title: "Чужой документ",
+		Summary: "Не должно быть видно.",
+	})
+	require.NoError(t, err)
+
+	provider := ask.NewDocumentProvider(storage.NewFTSRepository(s), docs)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "doc1"})
+	require.NoError(t, err, "an unknown or another user's document id must resolve to no results, not an error")
 	require.Empty(t, chunks)
 }

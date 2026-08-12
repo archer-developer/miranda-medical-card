@@ -84,7 +84,7 @@ func (r *sqliteFTSRepository) RemoveDocument(ctx context.Context, documentID str
 
 func (r *sqliteFTSRepository) SearchDocuments(ctx context.Context, userID, query string, limit int) ([]DocumentFTSResult, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT document_id, title, snippet(document_fts, 3, '[', ']', '...', 12), bm25(document_fts)
+		SELECT document_id, title, snippet(document_fts, 3, '[', ']', '...', 40), bm25(document_fts)
 		FROM document_fts WHERE document_fts MATCH ? AND user_id = ? ORDER BY bm25(document_fts) LIMIT ?`,
 		ftsQuery(query), userID, limit,
 	)
