@@ -23,12 +23,18 @@
 // docs/cli/medical_dev.md §5-8, §13) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
 // or a single Provider's raw output, independent of a full Ask) that
-// internal/ask doesn't expose today. Also not implemented: the separate,
-// undocumented-in-detail `medical` administrative CLI (docs/cli/medical.md
-// §4's documents/embeddings/timeline/database/maintenance/doctor/users/
-// statistics categories) — those category docs (02-documents.md etc.)
-// don't exist yet in docs/cli/, so there's no concrete spec to implement
-// against.
+// internal/ask doesn't expose today.
+//
+// docs/cli/medical.md (a separate, broader "medical" administrative CLI —
+// documents/embeddings/timeline/database/maintenance/doctor/users/
+// statistics categories, none of which this binary is) was deleted
+// 2026-08-13: it never had an implementation, its own category docs
+// (02-documents.md etc.) never existed either, and everything it aspired to
+// cover for actual day-to-day diagnostic use is already this binary's job —
+// a second, broader admin CLI would just duplicate it. If a real need for
+// destructive/administrative operations (not diagnostic reads or the
+// narrow one-off migrations above) shows up later, it belongs as a new
+// medical-dev command, not a revived separate binary.
 //
 // Usage:
 //

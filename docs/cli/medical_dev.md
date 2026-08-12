@@ -6,13 +6,13 @@
 >
 > **Версия:** 1.0
 >
-> **Команда:** `medical dev`
+> **Команда:** `medical-dev`
 
 ---
 
 # 1. Назначение
 
-`medical dev` — это набор инструментов для разработки, тестирования и отладки Medical Service.
+`medical-dev` — это набор инструментов для разработки, тестирования и отладки Medical Service.
 
 Команды данного раздела предназначены исключительно для разработчика сервиса и не используются Miranda.
 
@@ -22,7 +22,7 @@
 
 # 2. Основные принципы
 
-Команды `medical dev` должны:
+Команды `medical-dev` должны:
 
 - максимально подробно отображать внутреннюю работу сервиса;
 - использовать те же Application Services, что и MCP API;
@@ -37,13 +37,13 @@
 # 3. Общая структура
 
 ```text
-medical dev <command> [options]
+medical-dev <command> [options]
 ```
 
 Например:
 
 ```bash
-medical dev ask --user alex "Почему врач отменил статины?"
+medical-dev ask --user alex "Почему врач отменил статины?"
 ```
 
 ---
@@ -55,7 +55,7 @@ medical dev ask --user alex "Почему врач отменил статины
 ## Пример
 
 ```bash
-medical dev ask \
+medical-dev ask \
     --user alex \
     "Почему врач отменил статины?"
 ```
@@ -148,7 +148,7 @@ Answer
 ## Пример
 
 ```bash
-medical dev planner \
+medical-dev planner \
     --user alex \
     "Что происходило прошлой зимой?"
 ```
@@ -178,7 +178,7 @@ Temporal question
 ## Пример
 
 ```bash
-medical dev provider timeline \
+medical-dev provider timeline \
     --user alex \
     --question "Когда впервые повысился ALT?"
 ```
@@ -186,7 +186,7 @@ medical dev provider timeline \
 или
 
 ```bash
-medical dev provider medications \
+medical-dev provider medications \
     --user alex
 ```
 
@@ -203,7 +203,7 @@ medical dev provider medications \
 ## Пример
 
 ```bash
-medical dev search \
+medical-dev search \
     --user alex \
     "статины"
 ```
@@ -243,7 +243,7 @@ Merged Results
 ## Пример
 
 ```bash
-medical dev prompt \
+medical-dev prompt \
     --user alex \
     "Какие лекарства я сейчас принимаю?"
 ```
@@ -264,7 +264,7 @@ medical dev prompt \
 ## Пример
 
 ```bash
-medical dev profile --user alex
+medical-dev profile --user alex
 ```
 
 Используется при разработке Profile Providers и диагностике агрегированных данных.
@@ -278,7 +278,7 @@ medical dev profile --user alex
 ## Пример
 
 ```bash
-medical dev timeline --user alex
+medical-dev timeline --user alex
 ```
 
 Дополнительно могут поддерживаться фильтры:
@@ -300,7 +300,7 @@ medical dev timeline --user alex
 ## Пример
 
 ```bash
-medical dev document doc_01J8...
+medical-dev document doc_01J8...
 ```
 
 Вывод может включать:
@@ -323,7 +323,7 @@ medical dev document doc_01J8...
 ## Пример
 
 ```bash
-medical dev pipeline doc_01J8...
+medical-dev pipeline doc_01J8...
 ```
 
 ## Пример вывода
@@ -363,7 +363,7 @@ Finished
 ## Пример
 
 ```bash
-medical dev llm
+medical-dev llm
 ```
 
 ## Пример вывода
@@ -412,13 +412,13 @@ OpenAI Compatible
 Например:
 
 ```bash
-medical dev ask --json ...
+medical-dev ask --json ...
 ```
 
 или
 
 ```bash
-medical dev timeline --yaml
+medical-dev timeline --yaml
 ```
 
 ---
@@ -442,7 +442,7 @@ medical dev timeline --yaml
 
 # 16. Архитектурные принципы
 
-Команды `medical dev` не должны содержать собственной бизнес-логики.
+Команды `medical-dev` не должны содержать собственной бизнес-логики.
 
 Они являются инструментами диагностики и используют те же Application Services, что и MCP API.
 
@@ -452,16 +452,16 @@ medical dev timeline --yaml
 
 # 17. Будущие расширения
 
-В дальнейшем раздел `medical dev` может быть дополнен новыми командами.
+В дальнейшем раздел `medical-dev` может быть дополнен новыми командами.
 
 Например:
 
-- `medical dev embeddings`
-- `medical dev providers`
-- `medical dev chunks`
-- `medical dev context`
-- `medical dev ocr`
-- `medical dev benchmark`
-- `medical dev explain`
+- `medical-dev embeddings`
+- `medical-dev providers`
+- `medical-dev chunks`
+- `medical-dev context`
+- `medical-dev ocr`
+- `medical-dev benchmark`
+- `medical-dev explain`
 
 Все новые команды должны соответствовать общей философии: помогать разработчику понять внутреннюю работу сервиса, не изменяя его архитектуру и публичный MCP API.
