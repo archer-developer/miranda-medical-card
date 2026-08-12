@@ -187,8 +187,6 @@ medical.reprocess_document
 medical.list_documents
 
 medical.get_document
-
-medical.delete_document
 ```
 
 ---
@@ -334,11 +332,11 @@ string, необязательный, по умолчанию равен userId
 
 Идентификатор пользователя, чьи данные требуется получить, если он отличается от `userId`. Используется, когда один член семьи спрашивает о данных другого — например, родитель спрашивает про здоровье ребёнка.
 
-Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.delete_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
+Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.log_event`, `medical.delete_event` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
 
 Если `subjectId` отличается от `userId`, сервис проверяет, что пользователь `subjectId` явно разрешил доступ (`shared_with` в своей конфигурации, см. `../architecture/01-overview.md` §4). Если доступ не разрешён, сервис отвечает так же, как если бы `subjectId` не существовал (`USER_NOT_FOUND`) — не раскрывая, что пользователь существует, но доступ запрещён.
 
-Для Tools, работающих с конкретным ресурсом по идентификатору (`fileId`, `documentId` — `medical.download_file`, `medical.get_document`, `medical.delete_document`), отдельный параметр `subjectId` не нужен: сервис определяет владельца ресурса самостоятельно и разрешает доступ, если `userId` совпадает с владельцем либо владелец включил `userId` в свой `shared_with` (только для чтения — `download_file`/`get_document`; `delete_document` всегда требует точного совпадения владельца независимо от `shared_with`). При отказе в доступе Tool ведёт себя так же, как при отсутствии ресурса — см. `02-files.md` и `03-documents.md`.
+Для Tools, работающих с конкретным ресурсом по идентификатору (`fileId`, `documentId` — `medical.download_file`, `medical.get_document`), отдельный параметр `subjectId` не нужен: сервис определяет владельца ресурса самостоятельно и разрешает доступ, если `userId` совпадает с владельцем либо владелец включил `userId` в свой `shared_with` (доступ только для чтения). При отказе в доступе Tool ведёт себя так же, как при отсутствии ресурса — см. `02-files.md` и `03-documents.md`.
 
 Получение оригинального файла по `fileUri` (см. §10, `02-files.md` §5.1) — единственное исключение из этой схемы: эта проверка не проходит заново на каждый `GET`, а выполняется один раз, при вызове `medical.get_document`, который выдал URI; сам HTTP-эндпойнт `GET /files/{fileId}` полагается только на bearer-токен, общий с `/mcp`. `medical.download_file` (§5.2), в отличие от него, проверяет доступ на каждый вызов, как и все прочие Tools в этом разделе.
 
@@ -431,7 +429,6 @@ string, необязательный, по умолчанию равен userId
 | `medical.reprocess_document` | Повторная обработка документа по запросу пользователя |
 | `medical.list_documents` | Получение списка документов |
 | `medical.get_document` | Получение информации о документе |
-| `medical.delete_document` | Удаление документа |
 | `medical.log_event` | Фиксация самостоятельно сообщённого медицинского события |
 | `medical.delete_event` | Удаление самостоятельно зафиксированного события |
 | `medical.ask` | Ответ на медицинский вопрос |
