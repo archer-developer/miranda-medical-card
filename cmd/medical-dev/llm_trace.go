@@ -222,9 +222,62 @@ func printUntagged(blocks []traceBlock, tail int) error {
 		return fmt.Errorf("no untagged blocks found")
 	}
 
-	fmt.Printf("Untagged (stateless) — last %d block(s), provider=%s\n\n", len(turns), turns[len(turns)-1].Provider)
-	printTurns(turns)
+	groups := groupByConversationStart(turns)
+	fmt.Printf("Untagged (stateless) — last %d block(s) across %d question(s), provider=%s\n\n", len(turns), len(groups), turns[len(turns)-1].Provider)
+	for i, g := range groups {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("--- question at %s ---\n", g[0].Time.Format("15:04:05"))
+		printTurns(g)
+	}
 	return nil
+}
+
+// groupByConversationStart splits turns (oldest-first, all untagged) back
+// into the separate stateless conversations they actually were — with no
+// conversation id to group by, tailUntagged's flat list otherwise runs two
+// unrelated questions together with no boundary between them (found this
+// immediately after wiring --untagged: a second medical-dev ask call's
+// first turn printed with no "question:" line and continued the previous
+// call's numbering, since printTurns only treats index 0 of the *whole*
+// slice as a conversation's first turn). isFirstTurn detects the boundary:
+// a request with exactly one content/message entry is a conversation
+// literally starting there, no matter which provider shape it's in. A tail
+// that begins mid-conversation (its own true first turn fell outside
+// tail) still gets its own group — just one whose first line won't say
+// "question:", since isFirstTurn correctly reports false for it.
+func groupByConversationStart(turns []traceBlock) [][]traceBlock {
+	var groups [][]traceBlock
+	for _, b := range turns {
+		if len(groups) == 0 || isFirstTurn(b) {
+			groups = append(groups, nil)
+		}
+		last := len(groups) - 1
+		groups[last] = append(groups[last], b)
+	}
+	return groups
+}
+
+// isFirstTurn reports whether b's request is a conversation's very first
+// turn — exactly one content/message entry (just the question, no
+// accumulated tool-call history yet) — regardless of provider shape. The
+// same signal describeIncoming's isFirst parameter relies on
+// (describeIncomingGemini/describeIncomingAnthropic), pulled out standalone
+// here since groupByConversationStart needs to test it without already
+// knowing which turn is first.
+func isFirstTurn(b traceBlock) bool {
+	var req geminiRequest
+	if json.Unmarshal([]byte(b.Request), &req) == nil && len(req.Contents) > 0 {
+		return len(req.Contents) == 1
+	}
+	var generic struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if json.Unmarshal([]byte(b.Request), &generic) == nil && len(generic.Messages) > 0 {
+		return len(generic.Messages) == 1
+	}
+	return false
 }
 
 // tailUntagged returns the most recent tail (or fewer) untagged blocks,

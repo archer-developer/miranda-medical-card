@@ -230,6 +230,58 @@ func TestTailUntagged_FiltersTaggedAndCapsToRecentN(t *testing.T) {
 	require.Equal(t, "2026-08-12T19:57:53Z", capped[1].Time.Format(time.RFC3339))
 }
 
+// TestGroupByConversationStart_SplitsTwoBackToBackStatelessQuestions
+// reproduces exactly what --untagged saw right after being added: two
+// separate medical-dev ask calls close together in time, both untagged,
+// concatenated by tailUntagged into one flat slice — groupByConversationStart
+// must split them back apart at each single-content request, not treat the
+// second question's first turn as a continuation of the first question's
+// last one.
+func TestGroupByConversationStart_SplitsTwoBackToBackStatelessQuestions(t *testing.T) {
+	log := `=== 2026-08-12T19:57:51Z provider=gemini-agent ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Первый вопрос"}]}]}
+--- response ---
+{"text":"","tool_calls":[{"ID":"c1","Name":"lab_results","Arguments":"{}"}]}
+
+=== 2026-08-12T19:57:53Z provider=gemini-agent ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Первый вопрос"}]},{"role":"model","parts":[{"functionCall":{"name":"lab_results","args":{}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lab_results","response":{"result":"..."}}}]}]}
+--- response ---
+{"text":"Ответ на первый вопрос.","tool_calls":null}
+
+=== 2026-08-12T20:01:30Z provider=gemini-agent ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Второй вопрос"}]}]}
+--- response ---
+{"text":"","tool_calls":[{"ID":"c2","Name":"timeline","Arguments":"{}"}]}
+
+=== 2026-08-12T20:01:32Z provider=gemini-agent ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Второй вопрос"}]},{"role":"model","parts":[{"functionCall":{"name":"timeline","args":{}}}]},{"role":"user","parts":[{"functionResponse":{"name":"timeline","response":{"result":"..."}}}]}]}
+--- response ---
+{"text":"Ответ на второй вопрос.","tool_calls":null}
+
+`
+	path := writeTrace(t, log)
+	blocks, err := parseTraceFile(path)
+	require.NoError(t, err)
+	require.Len(t, blocks, 4)
+
+	turns := tailUntagged(blocks, 20)
+	require.Len(t, turns, 4)
+
+	groups := groupByConversationStart(turns)
+	require.Len(t, groups, 2, "must split into exactly two questions")
+	require.Len(t, groups[0], 2)
+	require.Len(t, groups[1], 2)
+
+	require.True(t, isFirstTurn(groups[0][0]))
+	require.False(t, isFirstTurn(groups[0][1]))
+	require.True(t, isFirstTurn(groups[1][0]), "the second question's first turn must be detected as a new boundary, not a continuation")
+	require.False(t, isFirstTurn(groups[1][1]))
+}
+
 func TestTruncate_RespectsRuneBoundaries(t *testing.T) {
 	s := truncate("Показатели: холестерин, мочевина, креатинин", 15)
 	require.LessOrEqual(t, len([]rune(s)), 16) // 15 + the ellipsis rune
