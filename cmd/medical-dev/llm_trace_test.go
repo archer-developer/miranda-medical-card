@@ -39,7 +39,8 @@ func TestParseTraceFile_GeminiShape(t *testing.T) {
 
 	in, ok := describeIncoming(blocks[0], true)
 	require.True(t, ok)
-	require.Contains(t, in, "Какие анализы за июль?")
+	require.Len(t, in, 1)
+	require.Contains(t, in[0], "Какие анализы за июль?")
 
 	out := describeOutgoing(blocks[0])
 	require.Len(t, out, 1)
@@ -48,8 +49,9 @@ func TestParseTraceFile_GeminiShape(t *testing.T) {
 
 	in2, ok := describeIncoming(blocks[1], false)
 	require.True(t, ok)
-	require.Contains(t, in2, "lab_results ->")
-	require.Contains(t, in2, "АЛТ: 63")
+	require.Len(t, in2, 1)
+	require.Contains(t, in2[0], "lab_results ->")
+	require.Contains(t, in2[0], "АЛТ: 63")
 
 	out2 := describeOutgoing(blocks[1])
 	require.Len(t, out2, 1)
@@ -57,6 +59,44 @@ func TestParseTraceFile_GeminiShape(t *testing.T) {
 
 	require.False(t, endsOnToolCallWithNoAnswer(blocks[1]), "a final text answer must not be flagged as a cut-off conversation")
 	require.True(t, endsOnToolCallWithNoAnswer(blocks[0]), "a tool call with no text must be flagged as a cut-off conversation")
+}
+
+// TestParseTraceFile_GeminiParallelToolCalls reproduces the shape a real
+// medical.ask turn actually produced on the server: the model called two
+// tools at once (profile + lab_results), and Gemini's own request-building
+// puts each functionResponse in its own trailing "user" content entry —
+// looking only at the last content entry (the original bug here) silently
+// dropped the first tool's result from the table.
+func TestParseTraceFile_GeminiParallelToolCalls(t *testing.T) {
+	log := `=== 2026-08-12T19:08:01Z provider=gemini-agent conversation=session_parallel ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Рекомендации по питанию?"}]}]}
+--- response ---
+{"text":"","tool_calls":[{"ID":"c1","Name":"profile","Arguments":"{}"},{"ID":"c2","Name":"lab_results","Arguments":"{\"limit\":50}"}]}
+
+=== 2026-08-12T19:08:05Z provider=gemini-agent conversation=session_parallel ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Рекомендации по питанию?"}]},{"role":"model","parts":[{"functionCall":{"name":"profile","args":{}}},{"functionCall":{"name":"lab_results","args":{"limit":50}}}]},{"role":"user","parts":[{"functionResponse":{"name":"profile","response":{"result":"Возраст 40, аллергии: нет."}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lab_results","response":{"result":"АЛТ: 63 (2026-07-24)."}}}]}]}
+--- response ---
+{"text":"Судя по профилю и анализам...","tool_calls":null}
+
+`
+	path := writeTrace(t, log)
+
+	blocks, err := parseTraceFile(path)
+	require.NoError(t, err)
+	require.Len(t, blocks, 2)
+
+	out := describeOutgoing(blocks[0])
+	require.Len(t, out, 2, "both parallel tool calls must be listed, not just one")
+
+	in2, ok := describeIncoming(blocks[1], false)
+	require.True(t, ok)
+	require.Len(t, in2, 2, "both tool results must be listed, not just the last content entry")
+	require.Contains(t, in2[0], "profile ->")
+	require.Contains(t, in2[0], "Возраст 40")
+	require.Contains(t, in2[1], "lab_results ->")
+	require.Contains(t, in2[1], "АЛТ: 63")
 }
 
 func TestParseTraceFile_AnthropicShape(t *testing.T) {
@@ -87,8 +127,9 @@ func TestParseTraceFile_AnthropicShape(t *testing.T) {
 
 	in2, ok := describeIncoming(blocks[1], false)
 	require.True(t, ok)
-	require.Contains(t, in2, "tool result ->")
-	require.Contains(t, in2, "Холестерин: 5.2")
+	require.Len(t, in2, 1)
+	require.Contains(t, in2[0], "tool result ->")
+	require.Contains(t, in2[0], "Холестерин: 5.2")
 
 	out2 := describeOutgoing(blocks[1])
 	require.Len(t, out2, 1)

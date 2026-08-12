@@ -198,10 +198,14 @@ func printConversationDetail(blocks []traceBlock, conversationID string) error {
 
 	for i, b := range turns {
 		ts := b.Time.Format("15:04:05")
-		if in, ok := describeIncoming(b, i == 0); ok && in != "" {
-			fmt.Printf("%2d %s  <- %s\n", i+1, ts, in)
-		} else {
+		in, _ := describeIncoming(b, i == 0)
+		if len(in) == 0 {
 			fmt.Printf("%2d %s\n", i+1, ts)
+		} else {
+			fmt.Printf("%2d %s  <- %s\n", i+1, ts, in[0])
+			for _, extra := range in[1:] {
+				fmt.Printf("      <- %s\n", extra)
+			}
 		}
 		if b.ErrorText != "" {
 			fmt.Printf("      !! ERROR: %s\n", truncate(b.ErrorText, 300))
@@ -265,14 +269,18 @@ func anthropicBlockText(block map[string]any, key string) (string, bool) {
 
 // --- shared decoding ---
 
-// describeIncoming summarizes the newest item this block's request adds to
-// the conversation — the original question (first block only) or the
-// previous turn's tool result. ok is false when the request doesn't match
-// any recognized shape, so the caller can fall back to a plain turn number.
-func describeIncoming(b traceBlock, isFirst bool) (string, bool) {
+// describeIncoming summarizes every item this block's request adds to the
+// conversation since the previous turn — the original question (first
+// block only), or one entry per tool result a parallel multi-tool-call turn
+// produced (a single turn commonly calls more than one tool at once — e.g.
+// profile+lab_results together — and each gets its own result; showing
+// only the last would silently drop every result but one). ok is false when
+// the request doesn't match any recognized shape, so the caller can fall
+// back to a plain turn number.
+func describeIncoming(b traceBlock, isFirst bool) ([]string, bool) {
 	var req geminiRequest
 	if json.Unmarshal([]byte(b.Request), &req) == nil && len(req.Contents) > 0 {
-		return describeIncomingGemini(req.Contents[len(req.Contents)-1], isFirst), true
+		return describeIncomingGemini(req.Contents, isFirst), true
 	}
 
 	var generic struct {
@@ -282,22 +290,66 @@ func describeIncoming(b traceBlock, isFirst bool) (string, bool) {
 		return describeIncomingAnthropic(generic.Messages[len(generic.Messages)-1], isFirst), true
 	}
 
-	return "", false
+	return nil, false
 }
 
-func describeIncomingGemini(last geminiContent, isFirst bool) string {
-	for _, p := range last.Parts {
-		if p.FunctionResponse != nil {
-			return fmt.Sprintf("%s -> %s", p.FunctionResponse.Name, truncate(fmt.Sprint(p.FunctionResponse.Response["result"]), 220))
+// describeIncomingGemini handles the first block (a single "user"/text
+// content — the question) and every later block, where a parallel
+// multi-tool-call turn adds one whole "user"/functionResponse content entry
+// per tool called (see gemini.Provider's own request-building — unlike
+// Anthropic, which bundles multiple tool_results into one message, see
+// describeIncomingAnthropic) rather than multiple parts on a single entry.
+// Walking backward from the end and collecting every consecutive
+// all-functionResponse entry covers exactly that, however many tools the
+// previous turn called.
+func describeIncomingGemini(contents []geminiContent, isFirst bool) []string {
+	if len(contents) == 0 {
+		return nil
+	}
+	if isFirst {
+		for _, p := range contents[len(contents)-1].Parts {
+			if p.Text != "" {
+				return []string{"question: " + truncate(p.Text, 220)}
+			}
 		}
-		if p.Text != "" && isFirst {
-			return "question: " + truncate(p.Text, 220)
+		return nil
+	}
+
+	var reversed []string
+	for i := len(contents) - 1; i >= 0; i-- {
+		parts := contents[i].Parts
+		if len(parts) == 0 {
+			break
+		}
+		allResponses := true
+		for _, p := range parts {
+			if p.FunctionResponse == nil {
+				allResponses = false
+				break
+			}
+		}
+		if !allResponses {
+			break
+		}
+		for _, p := range parts {
+			reversed = append(reversed, fmt.Sprintf("%s -> %s", p.FunctionResponse.Name, truncate(fmt.Sprint(p.FunctionResponse.Response["result"]), 220)))
 		}
 	}
-	return ""
+	// Collected walking backward (most recent tool call's result first);
+	// reverse to match call order.
+	for l, r := 0, len(reversed)-1; l < r; l, r = l+1, r-1 {
+		reversed[l], reversed[r] = reversed[r], reversed[l]
+	}
+	return reversed
 }
 
-func describeIncomingAnthropic(last map[string]any, isFirst bool) string {
+// describeIncomingAnthropic handles Anthropic's own bundling: a
+// multi-tool-call turn's results all land as separate tool_result blocks
+// within the one following user message (unlike Gemini — see
+// describeIncomingGemini), so collecting every matching block in that
+// single message already covers a parallel turn.
+func describeIncomingAnthropic(last map[string]any, isFirst bool) []string {
+	var out []string
 	content, _ := last["content"].([]any)
 	for _, item := range content {
 		block, ok := item.(map[string]any)
@@ -307,21 +359,23 @@ func describeIncomingAnthropic(last map[string]any, isFirst bool) string {
 		switch block["type"] {
 		case "tool_result":
 			text, _ := anthropicBlockText(block, "content")
-			return fmt.Sprintf("tool result -> %s", truncate(text, 220))
+			out = append(out, "tool result -> "+truncate(text, 220))
 		case "text":
 			if isFirst {
 				if text, ok := anthropicBlockText(block, "text"); ok {
-					return "question: " + truncate(text, 220)
+					out = append(out, "question: "+truncate(text, 220))
 				}
 			}
 		}
 	}
 	// A plain-string content (no blocks) is valid Anthropic API shape too,
 	// used for simple single-turn text.
-	if text, ok := last["content"].(string); ok && isFirst {
-		return "question: " + truncate(text, 220)
+	if len(out) == 0 {
+		if text, ok := last["content"].(string); ok && isFirst {
+			out = append(out, "question: "+truncate(text, 220))
+		}
 	}
-	return ""
+	return out
 }
 
 // describeOutgoing lists what the model did this turn — one entry per tool
