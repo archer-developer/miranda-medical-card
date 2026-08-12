@@ -55,19 +55,21 @@ func TestLabResultRepository_AddAndList_QualitativeValue(t *testing.T) {
 	require.Zero(t, got[0].Value, "a qualitative-only result must round-trip with Value left at zero, not some other sentinel")
 }
 
-func TestLabResultRepository_HistoryByIndicator_OrderedOldestFirst(t *testing.T) {
+func TestLabResultRepository_HistoryByIndicator_OrderedMostRecentFirst(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewLabResultRepository(newTestStore(t))
 
 	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_1", UserID: "user1", DocumentID: "doc1", IndicatorName: "Гемоглобин", Value: 150, TakenAt: mustDate("2026-03-14")}))
 	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_2", UserID: "user1", DocumentID: "doc2", IndicatorName: "Гемоглобин", Value: 144, TakenAt: mustDate("2025-05-08")}))
 	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_3", UserID: "user1", DocumentID: "doc3", IndicatorName: "АЛТ", Value: 28, TakenAt: mustDate("2026-01-01")}))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "lab_4", UserID: "user1", DocumentID: "doc4", IndicatorName: "Гемоглобин", Value: 148}))
 
 	history, err := repo.HistoryByIndicator(ctx, "user1", "Гемоглобин")
 	require.NoError(t, err)
-	require.Len(t, history, 2)
-	require.Equal(t, 144.0, history[0].Value, "oldest (2025-05-08) first")
-	require.Equal(t, 150.0, history[1].Value)
+	require.Len(t, history, 3)
+	require.Equal(t, 150.0, history[0].Value, "most recent (2026-03-14) first — must match ListByUser/ListByDocument's own order, since LabProvider.Collect's Limit truncation assumes every branch agrees on this")
+	require.Equal(t, 144.0, history[1].Value)
+	require.Equal(t, 148.0, history[2].Value, "undated (nil TakenAt) result sorts last, same as labResultOrderBy's SQL-side nil-last rule")
 }
 
 func TestLabResultRepository_HistoryByIndicator_SubstringMatchIsCaseInsensitiveAndUnicodeAware(t *testing.T) {

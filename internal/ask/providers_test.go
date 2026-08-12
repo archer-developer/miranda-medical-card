@@ -90,6 +90,28 @@ func TestLabProvider_OrdersMostRecentFirstAndHonorsLimit(t *testing.T) {
 	require.Contains(t, chunks[1].Content, "2025-06-01")
 }
 
+// TestLabProvider_IndicatorNameWithLimitReturnsMostRecent is the regression
+// test for a real bug: HistoryByIndicator (the code path this hits, since
+// IndicatorName is set) used to re-sort its results oldest-first, so
+// "history of ALT, most recent 2" silently returned the *oldest* 2 instead.
+// The sibling test above only exercises the no-IndicatorName ListByUser
+// path, which was never broken — this one specifically covers the branch
+// that was.
+func TestLabProvider_IndicatorNameWithLimitReturnsMostRecent(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 1, TakenAt: mustDate("2025-01-01")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 2, TakenAt: mustDate("2026-01-01")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l3", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 3, TakenAt: mustDate("2025-06-01")}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", IndicatorName: "ALT", Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	require.Contains(t, chunks[0].Content, "2026-01-01", "most recent result must come first")
+	require.Contains(t, chunks[1].Content, "2025-06-01", "must be the 2nd-most-recent, not the oldest")
+}
+
 func TestLabProvider_FiltersByDateRange(t *testing.T) {
 	s := newTestStore(t)
 	repo := storage.NewLabResultRepository(s)

@@ -22,7 +22,10 @@ type LabResultRepository interface {
 	// used by ProfileBuilder (see docs/domain/05-medical-profile.md §3).
 	LatestByIndicator(ctx context.Context, userID string) (map[string]normalization.LabResult, error)
 	// HistoryByIndicator returns every LabResult userID has whose indicator
-	// name matches query, oldest first — used by Lab Provider (see
+	// name matches query, most recent first (same order as ListByUser/
+	// ListByDocument — see labResultOrderBy's doc comment for why
+	// LabProvider.Collect's Limit truncation depends on every branch
+	// agreeing on this) — used by Lab Provider (see
 	// docs/architecture/04-search.md §7) to answer trend questions. A row
 	// matches if indicator_name contains query (case-insensitive substring,
 	// not exact-match — LabResult.IndicatorName is already canonicalized at
@@ -161,15 +164,24 @@ func (r *sqliteLabResultRepository) HistoryByIndicator(ctx context.Context, user
 			result = append(result, l)
 		}
 	}
+	// all is already most-recent-first (ListByUser's own ORDER BY), and a
+	// plain filter preserves that relative order on its own — this
+	// re-sort only exists because matchingCanonicalNames' alias matches get
+	// appended in whatever order indicator_aliases rows happen to scan in,
+	// which could otherwise interleave with the indicator-name matches out
+	// of date order. Must sort most-recent-first, not oldest-first: this
+	// was the actual bug LabProvider.Collect's Limit truncation hit (see
+	// its own comment) — sorted the other way, "give me the last N results
+	// for this indicator" silently returned the *oldest* N instead.
 	sort.SliceStable(result, func(i, j int) bool {
 		ti, tj := result[i].TakenAt, result[j].TakenAt
 		if ti == nil {
-			return tj != nil
-		}
-		if tj == nil {
 			return false
 		}
-		return ti.Before(*tj)
+		if tj == nil {
+			return true
+		}
+		return ti.After(*tj)
 	})
 	return result, nil
 }
