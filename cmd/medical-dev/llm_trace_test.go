@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -180,6 +181,53 @@ func TestLatestConversation_IgnoresUntaggedBlocks(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, blocks, 3)
 	require.Equal(t, "session_newer", latestConversation(blocks))
+}
+
+// TestTailUntagged_FiltersTaggedAndCapsToRecentN covers the stateless-ask
+// case: a real medical.ask call with no sessionId (the default for a
+// one-off question) and every medical-dev ask call never get a
+// conversation id at all, unlike a Miranda session — so llm-trace has to
+// fall back to "the tail of whatever's untagged" rather than filtering by
+// id, and must not let a tagged conversation's blocks leak in.
+func TestTailUntagged_FiltersTaggedAndCapsToRecentN(t *testing.T) {
+	log := `=== 2026-08-12T18:00:00Z provider=gemini-document ===
+--- request ---
+{}
+--- response ---
+{}
+
+=== 2026-08-12T18:05:00Z provider=gemini-agent conversation=session_tagged ===
+--- request ---
+{}
+--- response ---
+{}
+
+=== 2026-08-12T19:57:51Z provider=gemini-agent ===
+--- request ---
+{}
+--- response ---
+{}
+
+=== 2026-08-12T19:57:53Z provider=gemini-agent ===
+--- request ---
+{}
+--- response ---
+{}
+
+`
+	path := writeTrace(t, log)
+	blocks, err := parseTraceFile(path)
+	require.NoError(t, err)
+	require.Len(t, blocks, 4)
+
+	tail := tailUntagged(blocks, 20)
+	require.Len(t, tail, 3, "must include both untagged medical-dev-ask-shaped blocks and the untagged document-pipeline block, but not the tagged session")
+	require.True(t, tail[0].Time.Before(tail[1].Time), "must stay oldest-first")
+
+	capped := tailUntagged(blocks, 2)
+	require.Len(t, capped, 2, "must cap to the most recent N")
+	require.Equal(t, "2026-08-12T19:57:51Z", capped[0].Time.Format(time.RFC3339))
+	require.Equal(t, "2026-08-12T19:57:53Z", capped[1].Time.Format(time.RFC3339))
 }
 
 func TestTruncate_RespectsRuneBoundaries(t *testing.T) {

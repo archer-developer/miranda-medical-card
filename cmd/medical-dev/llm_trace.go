@@ -23,10 +23,11 @@ import (
 )
 
 // traceBlock is one llmtrace.Logger.Trace block, parsed. Conversation is
-// empty for calls with no llmtrace.WithConversationID in scope — the
-// Document Pipeline's Structured/Chat calls never tag one, only the Agent
-// Loop's do (see internal/ask/agent_loop.go), so an empty Conversation
-// reliably means "not a medical.ask turn".
+// empty for calls with no llmtrace.WithConversationID in scope — every
+// Document Pipeline Structured/Chat call, and also every *stateless*
+// medical.ask call (see internal/ask/agent_loop.go: WithConversationID only
+// wraps ctx when a sessionId was given), which is the default for a
+// one-off question and every medical-dev ask call (see printUntagged).
 type traceBlock struct {
 	Time         time.Time
 	Provider     string
@@ -49,6 +50,7 @@ func runLLMTrace(args []string) error {
 	file := fs.String("file", llmLogPath, "path to the LLM trace log")
 	conversation := fs.String("conversation", "", "show every turn of this conversation id")
 	latest := fs.Bool("latest", false, "show every turn of the most recently started conversation")
+	untagged := fs.Bool("untagged", false, "show the most recent untagged (stateless-session) turns — see printUntagged")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -56,6 +58,11 @@ func runLLMTrace(args []string) error {
 	blocks, err := parseTraceFile(*file)
 	if err != nil {
 		return err
+	}
+
+	if *untagged {
+		const untaggedTail = 20
+		return printUntagged(blocks, untaggedTail)
 	}
 
 	if *latest {
@@ -177,7 +184,7 @@ func printConversationSummary(blocks []traceBlock) {
 		}
 	}
 	if untagged > 0 {
-		fmt.Printf("\n(%d block(s) with no conversation id — Document Pipeline calls, not shown here)\n", untagged)
+		fmt.Printf("\n(%d untagged block(s) — Document Pipeline calls and/or stateless medical.ask questions (no sessionId); pass --untagged to see them)\n", untagged)
 	}
 	fmt.Println("\nPass --conversation <id> or --latest for the turn-by-turn table.")
 }
@@ -195,7 +202,54 @@ func printConversationDetail(blocks []traceBlock, conversationID string) error {
 	sort.Slice(turns, func(i, j int) bool { return turns[i].Time.Before(turns[j].Time) })
 
 	fmt.Printf("Conversation %s — %d turn(s), provider=%s\n\n", conversationID, len(turns), turns[0].Provider)
+	printTurns(turns)
+	return nil
+}
 
+// printUntagged shows the most recent untagged blocks — every call with no
+// llmtrace.WithConversationID in scope, which is every Document Pipeline
+// Structured/Chat call and every *stateless* medical.ask call (no
+// sessionId; see internal/ask/agent_loop.go — WithConversationID only
+// wraps ctx when SessionStore actually has a session to key it by).
+// Stateless is the default for a one-off question — most real medical.ask
+// traffic through Miranda without a sessionId, and every medical-dev ask
+// call, lands here — so unlike printConversationDetail there's no id to
+// filter by; this just prints the tail of the log's untagged blocks in
+// order, which is normally exactly one recent question's turns.
+func printUntagged(blocks []traceBlock, tail int) error {
+	turns := tailUntagged(blocks, tail)
+	if len(turns) == 0 {
+		return fmt.Errorf("no untagged blocks found")
+	}
+
+	fmt.Printf("Untagged (stateless) — last %d block(s), provider=%s\n\n", len(turns), turns[len(turns)-1].Provider)
+	printTurns(turns)
+	return nil
+}
+
+// tailUntagged returns the most recent tail (or fewer) untagged blocks,
+// oldest first — split out from printUntagged so the filter+sort+tail
+// logic is testable without capturing stdout.
+func tailUntagged(blocks []traceBlock, tail int) []traceBlock {
+	var turns []traceBlock
+	for _, b := range blocks {
+		if b.Conversation == "" {
+			turns = append(turns, b)
+		}
+	}
+	sort.Slice(turns, func(i, j int) bool { return turns[i].Time.Before(turns[j].Time) })
+	if len(turns) > tail {
+		turns = turns[len(turns)-tail:]
+	}
+	return turns
+}
+
+// printTurns renders turns (already sorted oldest-first) as the shared
+// per-turn table both printConversationDetail and printUntagged use — one
+// numbered line per turn with what it received, an indented line per tool
+// call or error it produced, and a closing note if the last turn looks cut
+// off (a tool call with no final answer).
+func printTurns(turns []traceBlock) {
 	for i, b := range turns {
 		ts := b.Time.Format("15:04:05")
 		in, _ := describeIncoming(b, i == 0)
@@ -220,7 +274,6 @@ func printConversationDetail(blocks []traceBlock, conversationID string) error {
 	if last.ErrorText == "" && endsOnToolCallWithNoAnswer(last) {
 		fmt.Println("\nNote: conversation ends on a tool call with no final answer — likely hit the agent loop's iteration cap or the request was cut off before finishing.")
 	}
-	return nil
 }
 
 // --- Gemini trace shape (gemini.Provider.trace) — the only provider
