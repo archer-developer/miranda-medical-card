@@ -624,7 +624,12 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
 	sessionStore := ask.NewSessionStore(storage.NewAskSessionRepository(store))
-	asker := ask.NewAsker(askRouter, registry, sessionStore, 20*time.Second, 20, 8, logger)
+	// 20s/20/16 mirror cmd/miranda-medical-card/main.go's
+	// askProviderTimeout/askMaxChunks/askMaxToolIterations — kept in sync by
+	// hand (no shared package for three literals) so a question behaves
+	// identically asked either way, which is exactly what makes comparing
+	// a medical-dev ask run against a real medical.ask trace meaningful.
+	asker := ask.NewAsker(askRouter, registry, sessionStore, 20*time.Second, 20, 16, logger)
 
 	fmt.Println("Question")
 	fmt.Println(strings.Repeat("-", 40))

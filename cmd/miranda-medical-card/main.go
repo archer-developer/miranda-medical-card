@@ -73,12 +73,22 @@ const (
 	// (docs/architecture/04-search.md §3, "Минимизировать объём контекста").
 	askMaxChunks = 20
 	// askMaxToolIterations bounds the agent loop's tool-call round trips
-	// per medical.ask call (see internal/ask.Asker.Ask) — lower than
-	// miranda's own agent loop's 15, since this loop only ever calls
-	// read-only Knowledge Providers (no chained side-effecting steps), so a
-	// realistic worst case is a handful of distinct calls plus parameter
-	// refinement.
-	askMaxToolIterations = 8
+	// per medical.ask call (see internal/ask.Asker.Ask). Was 8 (mirroring
+	// miranda's own agent loop's 15, on the assumption that read-only
+	// Knowledge Provider calls need less headroom than miranda's chained
+	// side-effecting steps) until real production traces (see
+	// `medical-dev llm-trace`) showed a well-behaved question routinely
+	// taking 5-7 turns on its own — e.g. locating a lab panel via timeline,
+	// then pulling it via lab_results' documentId, then a couple of
+	// indicator-specific follow-ups — leaving too little margin before a
+	// merely slow question, not a stuck one, hit the cap. 16 is deliberately
+	// still a hard ceiling, not a fix for a loop that doesn't converge on
+	// its own — see this repo's git log around internal/ask/providers.go,
+	// search_providers.go, and prompt.go for the actual bugs that turned
+	// out to be the real cause of past cap-outs (missing documentId/date
+	// filters, an FTS false-positive, an over-strict answer-rules prompt),
+	// none of which "just needed more iterations."
+	askMaxToolIterations = 16
 )
 
 func main() {
