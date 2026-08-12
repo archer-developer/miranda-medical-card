@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -266,7 +267,24 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	fileHandler := mcpserver.NewFileDownloadHandler(pl, logger)
 	handler := httpserver.New(mcpHandler, fileHandler, token)
-	httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
+	httpServer := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: handler,
+		// BaseContext ties every request's r.Context() to the same ctx
+		// signal.NotifyContext cancels on SIGINT/SIGTERM (net/http derives
+		// each request's context as a child of whatever this returns) — so
+		// the moment a shutdown signal arrives, an in-flight medical.ask
+		// call's provider.Collect (internal/ask/agent_loop.go's
+		// providerCtx) and the LLM SDK call underneath it see their context
+		// canceled immediately and return, instead of running to
+		// completion (which, under Gemini rate-limit retries, can easily
+		// outlast shutdownTimeout). Without this, httpServer.Shutdown
+		// below just blocks on that slow handler until shutdownCtx expires
+		// and returns context.DeadlineExceeded, which main() logs as a
+		// fatal crash and systemd restarts — a normal `systemctl restart`
+		// masquerading as a failure.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
 
 	logger.Info("medical-card ready",
 		"database", cfg.Database.Path,
