@@ -15,7 +15,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
+	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/llmtest"
+	"github.com/archer-developer/miranda-llm/router"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
@@ -52,7 +54,9 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 		ask.NewTimelineProvider(storage.NewTimelineRepository(s)),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(s)),
 	)
-	asker := ask.NewAsker(provider, nil, provider, nil, registry, 5*time.Second, 20, nil)
+	askRouter, err := router.New([]llm.Provider{provider}, nil, "fake")
+	require.NoError(t, err)
+	asker := ask.NewAsker(askRouter, registry, ask.NewSessionStore(storage.NewAskSessionRepository(s)), 5*time.Second, 20, 8, nil)
 
 	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, nil)
 
@@ -198,7 +202,9 @@ func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
 	require.NoError(t, err)
 	pl := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	registry := ask.NewRegistry(ask.NewTimelineProvider(storage.NewTimelineRepository(s)))
-	asker := ask.NewAsker(provider, nil, provider, nil, registry, 5*time.Second, 20, nil)
+	askRouter, err := router.New([]llm.Provider{provider}, nil, "fake")
+	require.NoError(t, err)
+	asker := ask.NewAsker(askRouter, registry, ask.NewSessionStore(storage.NewAskSessionRepository(s)), 5*time.Second, 20, 8, nil)
 
 	server := mcpserver.New(pl, asker, []config.UserConfig{{ID: "alex"}}, 50*1024*1024, testPublicBaseURL, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

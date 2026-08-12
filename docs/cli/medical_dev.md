@@ -68,10 +68,10 @@ Question
 
 Почему врач отменил статины?
 
-Planner
+Agent Loop
 ────────────────────────────────────────
 
-Selected Providers
+Tool calls
 
  ✓ TimelineProvider
  ✓ MedicationProvider
@@ -143,9 +143,7 @@ Answer
 
 # 5. Команда: planner
 
-Показывает решение Planner без запуска остальных компонентов.
-
-Используется для проверки выбора Knowledge Providers.
+**Устарело**: Planner как отдельный, изолированный от генерации ответа вызов LLM упразднён (см. `../adr/001-internal-agent-loop-implementation.md`, `../architecture/05-llm.md` §3) — выбор Knowledge Providers теперь часть одного открытого диалога Agent Loop, а не отдельное решение, которое можно показать в изоляции от остального ответа. Эта команда никогда не была реализована (см. `cmd/medical-dev/main.go`'s package doc comment) и теперь не будет — раздел сохранён как исторический контекст, не как план.
 
 ## Пример
 

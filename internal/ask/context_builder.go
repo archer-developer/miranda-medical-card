@@ -2,33 +2,20 @@ package ask
 
 import (
 	"sort"
-	"strings"
 )
-
-// providerDisplayNames labels each provider's section in the built prompt
-// — a human-readable header, not the internal provider name (matching
-// docs/architecture/03-knowledge-providers.md §13's example: "Timeline",
-// "Lab Results", not "timeline"/"lab_results").
-var providerDisplayNames = map[string]string{
-	"timeline":              "Timeline",
-	"medications":           "Medications",
-	"diagnoses":             "Diagnoses",
-	"procedures":            "Procedures",
-	"lab_results":           "Lab Results",
-	"instrumental_findings": "Instrumental Findings",
-	"profile":               "Medical Profile",
-	"documents":             "Documents",
-	"embeddings":            "Related (semantic search)",
-}
 
 // RankChunks implements the Context Builder's merge/dedupe/rank step
 // (docs/architecture/03-knowledge-providers.md §13): drops exact-duplicate
 // content, ranks by Confidence (ties broken by Provider priority —
 // registry's registration order, see docs/architecture/03-knowledge-providers.md
-// §17), and caps to maxChunks. Exposed separately from RenderContext so a
-// caller (Asker) can build docs/mcp/04-medical.md §5's `sources` from
-// exactly the chunk set that ended up in the prompt, not the raw
-// pre-dedup/pre-cap set every Provider originally returned.
+// §17), and caps to maxChunks (a maxChunks of 0 disables the cap, dedupe/
+// sort only). Used twice per agent loop turn (see agent_loop.go): once per
+// tool call, capping what that single call shows the model
+// (executeToolCall), and once more at the very end with an unbounded
+// maxChunks, purely to dedupe/sort the whole turn's accumulated chunks
+// before CollectSources builds docs/mcp/04-medical.md §5's `sources` from
+// them — the end-of-turn pass must never re-truncate, or `sources` could
+// silently omit a chunk the model was actually shown.
 func RankChunks(chunks []KnowledgeChunk, registry *Registry, maxChunks int) []KnowledgeChunk {
 	deduped := dedupeChunks(chunks)
 	sort.SliceStable(deduped, func(i, j int) bool {
@@ -41,34 +28,6 @@ func RankChunks(chunks []KnowledgeChunk, registry *Registry, maxChunks int) []Kn
 		deduped = deduped[:maxChunks]
 	}
 	return deduped
-}
-
-// RenderContext renders ranked (as returned by RankChunks) into the
-// documented QUESTION/section-separator prompt shape
-// (docs/architecture/03-knowledge-providers.md §13's example). Pure
-// string formatting — no ranking decisions of its own.
-func RenderContext(question string, ranked []KnowledgeChunk) string {
-	var b strings.Builder
-	b.WriteString("QUESTION\n\n")
-	b.WriteString(question)
-
-	for _, group := range groupBySource(ranked) {
-		b.WriteString("\n\n========================\n\n")
-		name := providerDisplayNames[group.source]
-		if name == "" {
-			name = group.source
-		}
-		b.WriteString(name)
-		b.WriteString("\n\n")
-		for i, c := range group.chunks {
-			if i > 0 {
-				b.WriteString("\n\n")
-			}
-			b.WriteString(c.Content)
-		}
-	}
-
-	return b.String()
 }
 
 func dedupeChunks(chunks []KnowledgeChunk) []KnowledgeChunk {
@@ -84,30 +43,6 @@ func dedupeChunks(chunks []KnowledgeChunk) []KnowledgeChunk {
 	return result
 }
 
-type sourceGroup struct {
-	source string
-	chunks []KnowledgeChunk
-}
-
-// groupBySource groups chunks by Source, preserving each group's first
-// appearance position in chunks (i.e. the overall Confidence/priority
-// ranking RankChunks already applied) rather than re-sorting groups
-// alphabetically.
-func groupBySource(chunks []KnowledgeChunk) []sourceGroup {
-	var groups []sourceGroup
-	index := make(map[string]int)
-	for _, c := range chunks {
-		i, ok := index[c.Source]
-		if !ok {
-			i = len(groups)
-			index[c.Source] = i
-			groups = append(groups, sourceGroup{source: c.Source})
-		}
-		groups[i].chunks = append(groups[i].chunks, c)
-	}
-	return groups
-}
-
 // CollectedSources returns the docs/mcp/04-medical.md §5 `sources` list for
 // chunks — one entry per chunk carrying a DocumentID or EventID, since a
 // chunk with neither (e.g. a Profile aggregate with no single source
@@ -120,8 +55,12 @@ type Source struct {
 }
 
 // CollectSources builds docs/mcp/04-medical.md §5's `sources` from ranked
-// chunks (as returned by RankChunks — pass the same slice used to build the
-// context, so sources exactly match what the model actually saw).
+// chunks (as returned by RankChunks's end-of-turn, unbounded-maxChunks
+// pass — see that function's own doc comment). Because each tool call's
+// own contribution was already capped before ever reaching the model (see
+// agent_loop.go's executeToolCall), and this final pass never re-caps,
+// sources built here are guaranteed to be a subset of exactly what the
+// model actually saw, never missing something it may have cited.
 func CollectSources(chunks []KnowledgeChunk) []Source {
 	seen := make(map[string]bool, len(chunks))
 	var result []Source

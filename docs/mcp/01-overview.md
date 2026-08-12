@@ -251,14 +251,7 @@ medical.ask
 
 > Были ли у меня проблемы с печенью?
 
-Внутри сервиса автоматически выполняются:
-
-- Planner;
-- Knowledge Providers;
-- Search;
-- Timeline;
-- Context Builder;
-- Answer Generator.
+Внутри сервиса автоматически выполняется Agent Loop — единый диалог с LLM, который сам решает, какие Knowledge Providers (Search, Timeline и другие) вызвать и когда сформировать финальный ответ (см. `04-medical.md` §7).
 
 Для Miranda это остается полностью прозрачным.
 
@@ -382,7 +375,7 @@ string, необязательный, по умолчанию равен userId
 - Embeddings
 - OCR
 - Prompt
-- Planner
+- Agent Loop
 - Knowledge Providers
 - Pipeline
 - Timeline Builder

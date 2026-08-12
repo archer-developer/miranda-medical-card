@@ -133,7 +133,7 @@ Instrumental Findings Provider
     ]
 ```
 
-Knowledge Chunk, переданный Answer Generator, формулируется как человекочитаемый факт (см. `../architecture/03-knowledge-providers.md` §12), а не как сырая структура — например:
+Knowledge Chunk, возвращаемый моделью (Agent Loop) как результат вызова инструмента, формулируется как человекочитаемый факт (см. `../architecture/03-knowledge-providers.md` §12), а не как сырая структура — например:
 
 ```
 Размер правой доли печени (КВР)

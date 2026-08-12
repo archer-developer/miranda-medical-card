@@ -30,7 +30,7 @@
 //	medical-dev document <documentId> --user alex
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
-//	medical-dev backfill-titles --user alex [--provider gemini-planner]
+//	medical-dev backfill-titles --user alex [--provider gemini-agent]
 package main
 
 import (
@@ -44,10 +44,12 @@ import (
 	"strings"
 	"time"
 
+	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/anthropic"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
 	"github.com/archer-developer/miranda-llm/openaicompat"
+	"github.com/archer-developer/miranda-llm/router"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
@@ -205,9 +207,8 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 
 // resolveEscalationProvider mirrors cmd/miranda-medical-card/main.go's
 // helper of the same name — see that copy's doc comment. providerName is
-// any configured role (document_provider, planner_provider,
-// answer_provider), not just the document one — each has its own
-// independent escalation target.
+// any configured role (document_provider, agent_provider), not just the
+// document one — each has its own independent escalation target.
 func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
 		if c.Name != providerName {
@@ -219,6 +220,37 @@ func resolveEscalationProvider(providers map[string]extraction.Provider, configs
 		return providers[c.Escalation.TargetProvider]
 	}
 	return nil
+}
+
+// buildAskRouter mirrors cmd/miranda-medical-card/main.go's helper of the
+// same name — see that copy's doc comment.
+func buildAskRouter(providers map[string]extraction.Provider, configs []config.ProviderConfig, agentProviderName string) (*router.Router, error) {
+	routerProviders := make([]llm.Provider, 0, len(providers))
+	for name, p := range providers {
+		lp, ok := p.(llm.Provider)
+		if !ok {
+			return nil, fmt.Errorf("provider %q (%T) does not implement llm.Provider", name, p)
+		}
+		routerProviders = append(routerProviders, lp)
+	}
+
+	escalations := make(map[string]router.EscalationConfig, len(configs))
+	for _, c := range configs {
+		if c.Escalation.Enabled && c.Escalation.ToolName != "" {
+			escalations[c.Name] = router.EscalationConfig{
+				Enabled:        true,
+				ToolName:       c.Escalation.ToolName,
+				Description:    c.Escalation.Description,
+				TargetProvider: c.Escalation.TargetProvider,
+			}
+		}
+	}
+
+	r, err := router.New(routerProviders, escalations, agentProviderName)
+	if err != nil {
+		return nil, fmt.Errorf("build ask router: %w", err)
+	}
+	return r, nil
 }
 
 func printJSON(v any) error {
@@ -377,8 +409,8 @@ func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 // of llm.document_provider — useful when the default model's free-tier
 // daily quota (per-model, not shared across a project's models) is
 // exhausted but a differently-named model still has budget, e.g.
-// --provider gemini-planner (gemini-3.5-flash-lite) when gemini-document
-// (gemini-3.6-flash) returns 429 RESOURCE_EXHAUSTED. No escalation
+// --provider gemini-agent when gemini-document returns 429
+// RESOURCE_EXHAUSTED. No escalation
 // provider is wired for this command regardless of llm.yaml's escalation
 // config — a one-off metadata backfill doesn't need it, and StudyTitle
 // simply won't be set for a document this pass can't get a title for (see
@@ -465,24 +497,23 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	if err != nil {
 		return err
 	}
-	plannerProvider, err := resolveProvider(providers, cfg.LLM.PlannerProvider, "planner_provider")
+	if _, err := resolveProvider(providers, cfg.LLM.AgentProvider, "agent_provider"); err != nil {
+		return err
+	}
+	askRouter, err := buildAskRouter(providers, cfg.LLM.Providers, cfg.LLM.AgentProvider)
 	if err != nil {
 		return err
 	}
-	answerProvider, err := resolveProvider(providers, cfg.LLM.AnswerProvider, "answer_provider")
-	if err != nil {
-		return err
-	}
-	plannerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.PlannerProvider)
-	answerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.AnswerProvider)
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
 		return err
 	}
 
+	timelineRepo := storage.NewTimelineRepository(store)
 	registry := ask.NewRegistry(
-		ask.NewTimelineProvider(storage.NewTimelineRepository(store)),
+		ask.NewTimelineProvider(timelineRepo),
+		ask.NewSelfReportedEventProvider(timelineRepo),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(store)),
 		ask.NewDiagnosisProvider(storage.NewDiagnosisRepository(store)),
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),
@@ -491,7 +522,8 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 		ask.NewDocumentProvider(storage.NewFTSRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
-	asker := ask.NewAsker(plannerProvider, plannerEscalationProvider, answerProvider, answerEscalationProvider, registry, 20*time.Second, 20, logger)
+	sessionStore := ask.NewSessionStore(storage.NewAskSessionRepository(store))
+	asker := ask.NewAsker(askRouter, registry, sessionStore, 20*time.Second, 20, 8, logger)
 
 	fmt.Println("Question")
 	fmt.Println(strings.Repeat("-", 40))
@@ -499,7 +531,10 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	fmt.Println(question)
 	fmt.Println()
 
-	result, err := asker.Ask(ctx, *user, question)
+	// medical-dev is a one-off diagnostic CLI, not a Miranda-facing session
+	// — every invocation is stateless (empty sessionId), and *user doubles
+	// as both the caller and the subject (no subjectId flag exposed here).
+	result, err := asker.Ask(ctx, *user, *user, "", question)
 	if err != nil {
 		return err
 	}

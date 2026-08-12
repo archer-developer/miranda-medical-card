@@ -76,6 +76,56 @@ func (p *TimelineProvider) Collect(ctx context.Context, req KnowledgeRequest) ([
 	return chunks, nil
 }
 
+// --- Self-Reported Events ---
+
+// selfReportedEventTypes are the timeline.Event.Type values that originate
+// from medical.log_event rather than a document — see
+// docs/domain/12-self-reported-events.md §5's TimelineEvent.type mapping
+// (symptom/observation -> "symptom", self-reported medication intake ->
+// "medication_taken"). TimelineProvider itself surfaces every event type
+// mixed together with no way to filter to just these; this provider exists
+// so a question specifically about the user's own reported symptoms/intake
+// doesn't have to wade through document-derived events to find them.
+var selfReportedEventTypes = []string{"symptom", "medication_taken"}
+
+type SelfReportedEventProvider struct{ repo storage.TimelineRepository }
+
+func NewSelfReportedEventProvider(repo storage.TimelineRepository) *SelfReportedEventProvider {
+	return &SelfReportedEventProvider{repo: repo}
+}
+
+func (p *SelfReportedEventProvider) Metadata() ProviderMetadata {
+	return ProviderMetadata{
+		Name: "self_reported_events",
+		Description: "Самостоятельно зафиксированные пользователем события (medical.log_event): симптомы, " +
+			"самочувствие, наблюдения, а также самостоятельно отмеченные приёмы лекарств. Это неверифицируемые " +
+			"записи со слов пользователя, в отличие от документально подтверждённых фактов. Используйте для " +
+			"вопросов о жалобах и самочувствии пользователя ('когда болела голова', 'как часто бывает изжога'), " +
+			"а не для назначений врача (см. medications) или лабораторных анализов.",
+	}
+}
+
+func (p *SelfReportedEventProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
+	events, err := p.repo.List(ctx, req.UserID, storage.TimelineFilter{
+		From: req.From, To: req.To, Limit: limitOrDefault(req.Limit), Types: selfReportedEventTypes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ask: self-reported event provider: %w", err)
+	}
+	chunks := make([]KnowledgeChunk, len(events))
+	for i, e := range events {
+		// Always self-reported by construction (Types filter above), unlike
+		// TimelineProvider which mixes sources and branches on DocumentID —
+		// see docs/domain/12-self-reported-events.md §6 for the 0.90 scale.
+		chunks[i] = KnowledgeChunk{
+			Source: "self_reported_events", Title: e.Title, Confidence: 0.90,
+			Content: fmt.Sprintf("%s: %s. %s", e.Date.Format("2006-01-02"), e.Title, e.Summary),
+			EventID: e.SourceEntityID,
+		}
+	}
+	return chunks, nil
+}
+
 // --- Medication ---
 
 type MedicationProvider struct{ repo storage.MedicationRepository }
@@ -211,12 +261,15 @@ func (p *LabProvider) Metadata() ProviderMetadata {
 }
 
 func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
-	// IndicatorName is the Planner's dedicated field for this provider, but
-	// a Planner selection sometimes puts the same kind of term in Query
-	// instead (the shared searchQuery field every provider's selection
-	// carries) — both name what to search for, so both drive the same
-	// alias/substring-aware lookup; only an empty search term falls back to
-	// every indicator (see KnowledgeRequest.IndicatorName's doc comment).
+	// IndicatorName is the field the lab_results tool's own schema exposes
+	// (see tools.go's toolParameters — it deliberately has no searchQuery
+	// property, unlike documents/embeddings). Query is consulted only as a
+	// defensive fallback for a tool call that didn't conform to that
+	// schema (e.g. a model that included an extra field the schema didn't
+	// declare) — both name what to search for, so both drive the same
+	// alias/substring-aware lookup; only an empty search term falls back
+	// to every indicator (see KnowledgeRequest.IndicatorName's doc
+	// comment).
 	term := req.IndicatorName
 	if term == "" {
 		term = req.Query

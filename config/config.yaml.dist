@@ -47,25 +47,33 @@
 #   dir: "data/files"
 #   max_size_bytes: 52428800
 
-# llm: every configured model backend (providers), and which one each
-# Pipeline/medical.ask stage uses by name (document_provider covers both
-# OCR and Structured Extraction — see internal/config.LLMConfig's doc
-# comment). Mirrors miranda's own config/llm.yaml providers/default_provider
-# shape (see internal/config.ProviderConfig's doc comment) so the two
-# formats stay directly comparable. api_key_envs supports several
-# environment variables for automatic key rotation on rate limits
-# (gemini only — useful on free-tier keys) — list as many as you have.
+# llm: every configured model backend (providers), and which one each of the
+# two stages uses by name — document_provider covers both OCR and Structured
+# Extraction; agent_provider is the default/primary provider for the
+# medical.ask agent loop (see internal/config.LLMConfig's doc comment).
+# Mirrors miranda's own config/llm.yaml providers/default_provider shape
+# (see internal/config.ProviderConfig's doc comment) so the two formats stay
+# directly comparable. api_key_envs supports several environment variables
+# for automatic key rotation on rate limits (gemini only — useful on
+# free-tier keys) — list as many as you have.
 #
-# escalation is optional and currently only consulted for
-# document_provider: if Structured Extraction's own retries are exhausted
-# and the result still looks suspiciously empty (see
-# internal/extraction.StructuredWithRetry), one attempt is made against
-# escalation.target_provider instead of retrying document_provider again —
-# e.g. falling back from Gemini to Claude on a document Gemini keeps
-# missing. This is NOT miranda's tool-based Chat escalation (this service
-# never makes an open multi-turn Chat call) — only target_provider is
-# read; tool_name/description exist purely for schema fidelity with
-# miranda's format.
+# escalation means two different things depending on which stage the
+# provider is configured for:
+#   - document_provider: content-based retry. If Structured Extraction's own
+#     retries are exhausted and the result still looks suspiciously empty
+#     (see internal/extraction.StructuredWithRetry), one attempt is made
+#     against escalation.target_provider instead of retrying
+#     document_provider again — e.g. falling back from Gemini to Claude on a
+#     document Gemini keeps missing. Only target_provider is read here;
+#     tool_name/description are ignored for this stage.
+#   - agent_provider (and every provider wired into its router.Router — see
+#     cmd/miranda-medical-card/main.go, which builds the router over ALL
+#     configured providers, not just this one): miranda-llm's tool-based Chat
+#     escalation. When enabled and tool_name is set, the agent model may call
+#     tool_name mid-conversation to hand a hard question off to
+#     target_provider, and a hard provider failure mid-turn falls back to it
+#     too — this now applies, since medical.ask is a genuine open multi-turn
+#     Chat loop, unlike the one-shot Structured calls document_provider makes.
 # llm:
 #   providers:
 #     - name: gemini-document
@@ -78,27 +86,24 @@
 #       escalation:
 #         enabled: true
 #         target_provider: "claude-escalation"
-#     - name: gemini-planner
-#       type: gemini
-#       model: "gemini-3.5-flash-lite"
-#       api_key_envs: ["GEMINI_API_KEY_1"]
-#       gemini_rotation:
-#         cooldown_seconds: 30
-#         max_retry_cycles: 1
-#     - name: gemini-answer
+#     - name: gemini-agent
 #       type: gemini
 #       model: "gemini-3.6-flash"
 #       api_key_envs: ["GEMINI_API_KEY_1"]
 #       gemini_rotation:
 #         cooldown_seconds: 30
 #         max_retry_cycles: 1
+#       escalation:
+#         enabled: true
+#         tool_name: "escalate_to_claude"
+#         description: "Hand this question off to a more capable model when it needs deeper cross-referencing or careful clinical-safety judgment than you can confidently provide."
+#         target_provider: "claude-escalation"
 #     - name: claude-escalation
 #       type: anthropic
 #       model: "claude-sonnet-5"
 #       api_key_envs: ["ANTHROPIC_API_KEY"]
 #   document_provider: "gemini-document"
-#   planner_provider: "gemini-planner"
-#   answer_provider: "gemini-answer"
+#   agent_provider: "gemini-agent"
 
 # embedding:
 #   api_key_env: "GEMINI_API_KEY_1"

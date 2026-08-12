@@ -146,8 +146,7 @@ llm:
       model: x
       api_key_envs: ["X"]
   document_provider: bad
-  planner_provider: bad
-  answer_provider: bad
+  agent_provider: bad
 `)
 	_, err := config.Load(path)
 	require.Error(t, err)
@@ -165,12 +164,11 @@ llm:
       model: x
       api_key_envs: ["X"]
   document_provider: gemini-document
-  planner_provider: does-not-exist
-  answer_provider: gemini-document
+  agent_provider: does-not-exist
 `)
 	_, err := config.Load(path)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "planner_provider")
+	require.Contains(t, err.Error(), "agent_provider")
 }
 
 func TestLoad_EscalationTargetProviderMustExist(t *testing.T) {
@@ -187,8 +185,7 @@ llm:
         enabled: true
         target_provider: does-not-exist
   document_provider: gemini-document
-  planner_provider: gemini-document
-  answer_provider: gemini-document
+  agent_provider: gemini-document
 `)
 	_, err := config.Load(path)
 	require.Error(t, err)
@@ -210,8 +207,7 @@ llm:
       model: y
       api_key_envs: ["Y"]
   document_provider: dup
-  planner_provider: dup
-  answer_provider: dup
+  agent_provider: dup
 `)
 	_, err := config.Load(path)
 	require.Error(t, err)
@@ -236,11 +232,43 @@ llm:
       model: claude-sonnet-5
       api_key_envs: ["ANTHROPIC_API_KEY"]
   document_provider: gemini-document
-  planner_provider: gemini-document
-  answer_provider: gemini-document
+  agent_provider: gemini-document
 `)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	require.True(t, cfg.LLM.Providers[0].Escalation.Enabled)
 	require.Equal(t, "claude", cfg.LLM.Providers[0].Escalation.TargetProvider)
+}
+
+// TestLoad_EscalationToolNameAndDescriptionRoundTrip guards against a
+// regression now that these two fields are functionally read (by
+// buildAskRouter's router.EscalationConfig, for agent_provider) rather than
+// accepted only for schema fidelity with miranda's format (as they still
+// are for document_provider) — see ProviderConfig.Escalation's doc comment.
+func TestLoad_EscalationToolNameAndDescriptionRoundTrip(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-agent
+      type: gemini
+      model: x
+      api_key_envs: ["X"]
+      escalation:
+        enabled: true
+        tool_name: escalate_to_claude
+        description: "Hand off hard questions."
+        target_provider: claude
+    - name: claude
+      type: anthropic
+      model: claude-sonnet-5
+      api_key_envs: ["ANTHROPIC_API_KEY"]
+  document_provider: gemini-agent
+  agent_provider: gemini-agent
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Equal(t, "escalate_to_claude", cfg.LLM.Providers[0].Escalation.ToolName)
+	require.Equal(t, "Hand off hard questions.", cfg.LLM.Providers[0].Escalation.Description)
 }

@@ -86,30 +86,18 @@ LLM должна извлекать информацию максимально 
 
 ---
 
-## Planner
+## Agent Loop (medical.ask)
 
-Первый вызов LLM во время ответа пользователю.
+Единственный, многоходовой вызов LLM, обслуживающий `medical.ask` (см. `docs/adr/001-internal-agent-loop-implementation.md`, `internal/ask`).
 
-Получает:
+В отличие от прежней архитектуры (раздельные Planner и Answer Generator, см. историю этого документа), один и тот же диалог с моделью:
 
-- вопрос пользователя;
-- список зарегистрированных Knowledge Providers;
-- описание возможностей каждого Provider.
+- получает вопрос пользователя (и, если передан `sessionId`, — историю предыдущих вопросов/ответов этой сессии, см. §6);
+- получает список зарегистрированных Knowledge Providers как LLM Tools (function calling), а не как текстовое описание для одноразового структурированного ответа;
+- самостоятельно решает, какие Providers вызвать и с какими параметрами, видит результат каждого вызова и на его основании может вызвать ещё один Provider — до тех пор, пока не решит, что данных достаточно;
+- как только модель отвечает обычным текстом без нового вызова инструмента, этот текст становится финальным ответом пользователю без отдельного вызова LLM поверх него.
 
-Возвращает Execution Plan.
-
----
-
-## Answer Generator
-
-Последний вызов LLM.
-
-Получает:
-
-- вопрос пользователя;
-- подготовленный контекст.
-
-Возвращает ответ.
+Planner и Answer Generator как отдельные вызовы упразднены: одна модель выполняет обе роли в рамках одного открытого диалога.
 
 ---
 
@@ -158,51 +146,52 @@ LLM никогда не должна:
 ===================================================
 
                     User Question
+                    (+ session history, если передан sessionId)
                           │
                           ▼
-                     Planner (LLM)
-                          │
-                          ▼
-                 Knowledge Providers
-                          │
-                          ▼
-                   Context Builder
-                          │
-                          ▼
-                 Answer Generator
-                          │
-                          ▼
-                     Final Answer
+                 ┌─── Agent Loop (LLM, Chat) ───┐
+                 │                              │
+                 │   Provider Tool Call?        │
+                 │        │           │         │
+                 │       да          нет        │
+                 │        │           │         │
+                 │        ▼           ▼         │
+                 │  Knowledge      Final         │
+                 │  Provider       Answer ───────┼──▶ Final Answer
+                 │        │                      │
+                 │        └──────────────────────┘
+                 │      (результат — обратно в диалог,
+                 │       возможен ещё один вызов инструмента)
+                 └──────────────────────────────┘
 ```
 
 ---
 
-# 6. Многоэтапная работа LLM
+# 6. Многоходовая работа LLM
 
-Один пользовательский запрос может включать несколько независимых вызовов модели.
+Один пользовательский вопрос обслуживается одним открытым диалогом (`llm.Provider.Chat`, а не одноразовым `Structured`-вызовом), в рамках которого модель может вызвать ноль, один или несколько Knowledge Providers, по одному или несколько раз каждый — по мере того как результат одного вызова подсказывает, нужен ли ещё один.
 
 Например:
 
 ```
-Planner
+Question
 
 ↓
 
-Knowledge Providers
+Chat: LLM решает вызвать lab_results (indicatorName=ALT)
 
 ↓
 
-Answer Generator
+Chat: видит результат, решает вызвать timeline (для контекста даты)
+
+↓
+
+Chat: отвечает текстом без нового вызова инструмента — это финальный ответ
 ```
 
-Каждый вызов решает только одну задачу.
+Это отличается от прежней архитектуры (раздельные одноразовые вызовы Planner и Answer Generator — см. `docs/adr/001-internal-agent-loop-implementation.md`) тем, что модель может пересмотреть выбор источников знаний по ходу диалога, а не фиксировать его один раз в начале.
 
-Это позволяет:
-
-- уменьшить сложность Prompt;
-- снизить стоимость;
-- упростить отладку;
-- заменить отдельные модели независимо.
+Число ходов одного вызова `medical.ask` ограничено (`internal/ask.Asker`'s `maxIterations`, см. `cmd/miranda-medical-card/main.go`'s `askMaxToolIterations`) — если модель не приходит к финальному текстовому ответу за отведённое число итераций, `medical.ask` возвращает ошибку.
 
 ---
 
@@ -216,8 +205,7 @@ Answer Generator
 |-------|------------|
 | OCR | Vision |
 | Structured Extraction | высокая точность |
-| Planner | быстрый вывод, хорошее понимание языка |
-| Answer Generator | качественная генерация текста |
+| Agent Loop (medical.ask) | tool calling (function calling), хорошее понимание языка, качественная генерация текста — одна модель совмещает то, что раньше требовалось от Planner и Answer Generator по отдельности |
 | Embeddings | embedding model |
 
 Архитектура не должна предполагать использование одной универсальной модели.
@@ -259,19 +247,11 @@ Medical Service не должен зависеть от конкретного A
 Например:
 
 ```
-Planner
+Agent Loop (medical.ask)
 
 ↓
 
 Gemini Flash
-```
-
-```
-Answer Generator
-
-↓
-
-Claude Sonnet
 ```
 
 ```
@@ -333,10 +313,9 @@ Claude
 Примеры:
 
 - Extraction
-- Planner
 - Summary
 
-Использование свободного текста для подобных задач не рекомендуется.
+Использование свободного текста для подобных задач не рекомендуется. Выбор Provider в Agent Loop использует не `Structured`, а строго типизированные параметры инструмента (JSON Schema per-tool, см. §11) — тот же принцип, другой механизм miranda-llm.
 
 ---
 
@@ -385,38 +364,43 @@ Medical Service не должен реализовывать собственн�
 
 | Требование | Пакет / тип |
 |---|---|
-| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider` — каждый реализует общий интерфейс `llm.Provider`; сконфигурированы через `internal/config.ProviderConfig` (см. ниже), не через `router.Router` — см. "Tool-based эскалация" ниже за тем, почему |
-| Маршрутизация моделей | `internal/config.LLMConfig` — провайдер на каждый этап (`document_provider`/`planner_provider`/`answer_provider`) конфигурируется по имени, отдельно вызывающим сервисом |
-| Автоматическая эскалация | `router.Router` не используется (см. ниже). Caller-side эскалация по качеству результата реализована только для Structured Extraction — `internal/extraction.StructuredWithRetry`'s `escalate` параметр, см. "Конфигурация провайдеров и caller-side эскалация" ниже |
+| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider` — каждый реализует общий интерфейс `llm.Provider`; сконфигурированы через `internal/config.ProviderConfig` (см. ниже) |
+| Маршрутизация моделей | `internal/config.LLMConfig` — `document_provider` конфигурируется по имени отдельно от `agent_provider` (agent loop, см. `03-knowledge-providers.md`) |
+| Автоматическая эскалация | Два независимых механизма — см. "Tool-based эскалация" и "Конфигурация провайдеров" ниже: `router.Router` (reliability fallback + tool-based эскалация) для `agent_provider`, caller-side проверка качества результата только для Structured Extraction (`document_provider`) |
 | Ротация API-ключей | `keyrotation` (внутри `gemini.Provider`) |
-| Structured Output | `llm.StructuredProvider` / `Provider.Structured` — отдельный однократный (не потоковый) вызов, возвращающий `json.RawMessage` по JSON Schema |
-| Streaming | `llm.Provider.Chat` — потоковый по умолчанию (используется только для OCR, Stage 1 документного провайдера) |
-| Retry | `keyrotation.Run` (ротация ключей, внутри каждого провайдера) + `internal/extraction.StructuredWithRetry`'s собственный ретрай/эскалация на уровне Structured Extraction |
+| Structured Output | `llm.StructuredProvider` / `Provider.Structured` — отдельный однократный (не потоковый) вызов, возвращающий `json.RawMessage` по JSON Schema; используется только Structured Extraction теперь, не Agent Loop (см. ниже) |
+| Streaming | `llm.Provider.Chat` — потоковый по умолчанию; используется для OCR (Stage 1 документного провайдера) и, через `router.Router`, для каждого хода Agent Loop |
+| Retry | `keyrotation.Run` (ротация ключей, внутри каждого провайдера) + `internal/extraction.StructuredWithRetry`'s собственный ретрай/эскалация на уровне Structured Extraction + `router.Router`'s reliability fallback на уровне Agent Loop |
 | Timeout | через `context.Context`, передаваемый вызывающей стороной — библиотека не навязывает собственный таймаут |
-| Telemetry | `llmtrace.Logger` — пишет request/response каждого вызова текстовым блоком в лог; структурированного per-call учёта токенов/стоимости в виде отдельного API пока нет — это открытый пробел, а не реализованная возможность |
+| Telemetry | `llmtrace.Logger` — пишет request/response каждого вызова текстовым блоком в лог (`logs/llm.log` при `logging.level: debug`, см. `cmd/miranda-medical-card/main.go`'s `buildLLMTraceWriter`); структурированного per-call учёта токенов/стоимости в виде отдельного API пока нет — это открытый пробел, а не реализованная возможность |
 
-## Structured Output — основной способ использования для Extraction/Planner/Summary
+## Structured Output — используется только для Extraction/Summary теперь
 
-`Provider.Structured` (а не `Chat`) — правильный вызов для этапов Structured Extraction (§5), Planner (`03-knowledge-providers.md` §6) и генерации Summary (`02-processing-pipeline.md` §9): один непотоковый запрос, схема JSON Schema, результат без интерпретации моделью.
+`Provider.Structured` (а не `Chat`) остаётся правильным вызовом для Structured Extraction (§5) и генерации Summary (`02-processing-pipeline.md` §9): один непотоковый запрос, схема JSON Schema, результат без интерпретации моделью.
 
-`Structured` **не** проходит через `router.Router`'s tool-based цепочку эскалации, которую использует `Chat`, — у одноразового structured-вызова нет открытого диалога, в рамках которого модели имело бы смысл самой решать "передать вопрос более сильной модели".
+Planner как отдельный `Structured`-вызов упразднён (см. "Agent Loop (medical.ask)" в §3) — выбор Knowledge Providers теперь делается моделью через `Chat`'s tool calling, в рамках того же диалога, что и генерация финального ответа, а не отдельным одноразовым вызовом.
 
-## Tool-based эскалация — не используется Medical Service
+`Structured` по-прежнему **не** проходит через `router.Router`'s tool-based цепочку эскалации, которую использует `Chat`, — у одноразового structured-вызова нет открытого диалога, в рамках которого модели имело бы смысл самой решать "передать вопрос более сильной модели".
+
+## Tool-based эскалация — используется для Agent Loop (medical.ask)
 
 `router.Router` поддерживает два разных механизма, объединённых в один API:
 
 1. **Reliability fallback** — при отказе провайдера (ключи исчерпаны, таймаут) автоматически пробуется следующий сконфигурированный провайдер.
-2. **Tool-based эскалация** — провайдеру предъявляется инструмент вида `escalate_to_claude`, который модель может вызвать сама, если решит, что вопрос ей не по силам. Это имеет смысл в открытом многоходовом диалоге (agent loop Miranda), но не для одноразовых structured-вызовов Medical Service, где у модели просто нет пространства для такого самостоятельного решения посреди генерации одного структурированного ответа.
+2. **Tool-based эскалация** — провайдеру предъявляется инструмент вида `escalate_to_claude`, который модель может вызвать сама, если решит, что вопрос ей не по силам. Раньше это не имело смысла для Medical Service (не было открытого многоходового диалога) — теперь имеет: Agent Loop — это ровно такой диалог.
 
-Medical Service не использует `router.Router` вообще (ни для (1), ни для (2)) — каждый этап (`document_provider`/`planner_provider`/`answer_provider`, см. ниже) сейчас резолвится ровно в один сконфигурированный провайдер, без цепочки. Reliability fallback (несколько провайдеров на один этап) — открытая возможность на будущее, не реализованная сегодня.
+Medical Service использует `router.Router` для `agent_provider` (и любого другого сконфигурированного провайдера — `cmd/miranda-medical-card/main.go`'s `buildAskRouter` строит один `router.Router` над **всеми** провайдерами из `llm.providers`, чтобы `escalation.target_provider` любого из них резолвился независимо от того, для какой роли он номинально сконфигурирован). `document_provider` продолжает резолвиться в ровно один провайдер вне `router.Router`-цепочки для Structured Extraction — его собственная эскалация (см. ниже) устроена иначе.
 
-## Конфигурация провайдеров и caller-side эскалация по качеству результата
+## Конфигурация провайдеров и два независимых механизма эскалации
 
-`internal/config.LLMConfig` описывает пул именованных провайдеров (`llm.providers`, каждый — `internal/config.ProviderConfig`) и то, какой из них использует каждый этап (`document_provider`/`planner_provider`/`answer_provider`) — намеренно тем же форматом, что и `providers`/`default_provider` в `miranda/config/llm.yaml` (`LLMProvider`/`EscalationConfig` там), чтобы конфигурации двух сервисов были напрямую сопоставимы, даже когда Medical Service использует лишь часть этого формата — см. `config/config.yaml.dist` за полным примером.
+`internal/config.LLMConfig` описывает пул именованных провайдеров (`llm.providers`, каждый — `internal/config.ProviderConfig`) и то, какой из них по умолчанию использует Agent Loop (`agent_provider`) — намеренно тем же форматом, что и `providers`/`default_provider` в `miranda/config/llm.yaml` (`LLMProvider`/`EscalationConfig` там), чтобы конфигурации двух сервисов были напрямую сопоставимы — см. `config/config.yaml.dist` за полным примером.
 
-Отдельно от router.Router-эскалации (см. выше, не используется) у Medical Service есть свой, caller-side механизм — специфичный именно для Structured Extraction, а не общий для всех этапов: если `document_provider`'s собственные попытки исчерпаны и результат всё ещё выглядит подозрительно пустым (`internal/extraction.isSuspiciouslyEmpty`, см. `02-processing-pipeline.md` §5), делается одна попытка против `escalation.target_provider` этого же провайдера — другой модели/провайдера, которая может не разделять то, из-за чего основная не справилась. Это решение вызывающего кода (`internal/extraction.StructuredWithRetry`), а не router.Router: оно реагирует не на ошибку, а на структурно валидный, но подозрительно пустой результат — то, что router.Router (ни (1), ни (2)) в принципе не умеет замечать, поскольку не заглядывает в содержимое успешного ответа.
+Каждый провайдер несёт свой собственный `escalation` блок, но какой из двух механизмов его читает зависит от роли провайдера:
 
-`escalation.tool_name`/`description` в `ProviderConfig` приняты только ради полного соответствия формату miranda — Medical Service их не читает; используется только `target_provider`. `planner_provider`/`answer_provider` могут иметь свой `escalation` блок в конфиге ради единообразия схемы, но он ни на что не влияет: `isSuspiciouslyEmpty`-подобной проверки "результат выглядит плохо" для Planner/Answer Generator сегодня не определено.
+- **`document_provider` (Structured Extraction) — caller-side, по качеству результата.** Если собственные попытки исчерпаны и результат всё ещё выглядит подозрительно пустым (`internal/extraction.isSuspiciouslyEmpty`, см. `02-processing-pipeline.md` §5), делается одна попытка против `escalation.target_provider` — другой модели/провайдера, которая может не разделять то, из-за чего основная не справилась. Это решение вызывающего кода (`internal/extraction.StructuredWithRetry`), а не `router.Router`: оно реагирует не на ошибку, а на структурно валидный, но подозрительно пустой результат — то, что `router.Router` в принципе не умеет замечать, поскольку не заглядывает в содержимое успешного ответа. Только `target_provider` читается для этой роли; `tool_name`/`description` игнорируются.
+- **`agent_provider` (и любой другой провайдер, участвующий в `router.Router` — см. выше) — `router.Router`'s tool-based эскалация.** Если `escalation.enabled` и задан `tool_name`, модель может сама вызвать этот инструмент посреди диалога, чтобы передать вопрос `target_provider`; а жёсткий отказ провайдера посреди хода тоже автоматически переключается на `target_provider` (reliability fallback). Здесь читаются все три поля: `enabled`, `tool_name`/`description`, `target_provider`.
+
+Провайдер с пустым `escalation.tool_name` (как сегодняшний `document_provider` в примере конфигурации) остаётся вне tool-based эскалации `router.Router`, даже будучи одним из провайдеров, которыми обёрнут `router.Router` — это то, что сохраняет его прежнее поведение неизменным при переходе на общий `router.Router`.
 
 ---
 
@@ -439,19 +423,19 @@ Medical Service не использует `router.Router` вообще (ни д�
 
 Все задачи, предполагающие машинную обработку результата, должны использовать строгие схемы.
 
-Например:
-
-Planner возвращает:
+Например, вызов Knowledge Provider инструмента (`lab_results`) в Agent Loop возвращает аргументы по JSON Schema:
 
 ```json
 {
-  "providers": [...]
+  "indicatorName": "ALT"
 }
 ```
 
 а не свободный текст:
 
-> Думаю, стоит посмотреть лекарства и анализы.
+> Думаю, стоит посмотреть анализ ALT.
+
+Сама схема каждого инструмента ограничена только теми полями, которые реально читает конкретный Provider (см. `03-knowledge-providers.md` §11) — например, `instrumental_findings` требует одновременно `structure` и `parameter`, а не принимает любое подмножество.
 
 ---
 
@@ -463,12 +447,11 @@ Planner возвращает:
 
 | Этап | Температура |
 |-------|-------------|
-| Planner | низкая |
 | Extraction | низкая |
 | Summary | низкая |
-| Answer Generator | средняя |
+| Agent Loop (medical.ask) | по умолчанию провайдера (`llm.ChatRequest.Temperature` не задаётся явно — см. `internal/ask/agent_loop.go`) |
 
-Главным приоритетом Medical Service является воспроизводимость результатов.
+Главным приоритетом Medical Service является воспроизводимость результатов — это по-прежнему справедливо для Structured Extraction/Summary. Agent Loop — открытый диалог с генерацией финального ответа, а не задача с одним детерминированным правильным результатом (как выбор Provider, так и формулировка ответа допускают разумную вариативность), поэтому здесь оставлено значение по умолчанию, а не зафиксирована низкая температура — при необходимости это легко изменить, явно задав `Temperature` в `ChatRequest`.
 
 ---
 
@@ -476,22 +459,13 @@ Planner возвращает:
 
 LLM должна получать только ту информацию, которая необходима для решения текущей задачи.
 
-Например Planner получает:
+Agent Loop получает:
 
-- вопрос пользователя;
-- список Providers;
-- описание Providers.
+- вопрос пользователя (и историю предыдущих вопросов/ответов сессии, если передан `sessionId`);
+- список Providers как инструменты (имя, описание, JSON Schema параметров);
+- по каждому вызванному инструменту — результат именно этого вызова (см. `internal/ask/format.go`), а не заранее собранный единый контекст.
 
-Planner не получает медицинские данные.
-
----
-
-Answer Generator получает:
-
-- вопрос пользователя;
-- готовый контекст.
-
-Answer Generator не получает информацию о структуре базы данных или механизмах поиска.
+Agent Loop не получает информацию о структуре базы данных или механизмах поиска — как и раньше, Providers остаются единственной абстракцией, через которую модель видит медицинские данные (см. `03-knowledge-providers.md` §4).
 
 ---
 
@@ -536,8 +510,8 @@ LLM-интеграция должна поддерживать автомати�
 - эталонные документы;
 - эталонные вопросы;
 - ожидаемые структуры Extraction;
-- ожидаемые Execution Plan;
-- ожидаемые ответы Planner.
+- ожидаемые последовательности вызовов инструментов (какие Providers, с какими параметрами, в каком порядке);
+- ожидаемые финальные ответы Agent Loop.
 
 Это позволит оценивать влияние изменения моделей и Prompt.
 

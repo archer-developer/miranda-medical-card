@@ -308,6 +308,36 @@ CREATE TABLE IF NOT EXISTS vital_signs (
 CREATE INDEX IF NOT EXISTS idx_vital_signs_user_id     ON vital_signs(user_id);
 CREATE INDEX IF NOT EXISTS idx_vital_signs_document_id ON vital_signs(document_id);
 CREATE INDEX IF NOT EXISTS idx_vital_signs_user_id_type ON vital_signs(user_id, type);
+
+-- ask_sessions/ask_messages back internal/ask.SessionStore's persistent
+-- medical.ask agent-loop conversation history (docs/adr/001, "Сессии и
+-- follow-up вопросы"). id is the sessionId Miranda supplies verbatim, not a
+-- generated key — a caller that never sends sessionId never creates a row
+-- here at all (see SessionStore's no-op-on-empty-sessionID contract).
+-- user_id/subject_id are informational snapshots of the most recent call's
+-- AskInput.UserID/SubjectID, mirroring that MCP tool's own field names and
+-- semantics — NOT used to scope history lookup, which is keyed by id alone
+-- (a follow-up whose subject shifts mid-conversation, e.g. a parent then
+-- asking about a child, still sees prior turns as context).
+CREATE TABLE IF NOT EXISTS ask_sessions (
+    id             TEXT PRIMARY KEY,
+    user_id        TEXT NOT NULL,
+    subject_id     TEXT,
+    created_at     INTEGER NOT NULL,
+    last_active_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ask_sessions_last_active ON ask_sessions(last_active_at);
+
+CREATE TABLE IF NOT EXISTS ask_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL REFERENCES ask_sessions(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL DEFAULT '',
+    tool_call_id    TEXT NOT NULL DEFAULT '',
+    tool_calls_json TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ask_messages_session_id ON ask_messages(session_id, id);
 `
 
 // schemaMigrations holds changes applied after schema's initial CREATE

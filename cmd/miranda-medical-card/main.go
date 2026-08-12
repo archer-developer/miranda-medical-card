@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,10 +30,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/anthropic"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
+	"github.com/archer-developer/miranda-llm/llmtrace"
 	"github.com/archer-developer/miranda-llm/openaicompat"
+	"github.com/archer-developer/miranda-llm/router"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
@@ -55,6 +59,10 @@ const (
 	shutdownTimeout  = 10 * time.Second
 	debugLogDir      = "logs"
 	debugLogFile     = "debug.log"
+	// llmLogFile carries every LLM request/response the router.Router
+	// backing the medical.ask agent loop traces (see buildLLMTraceWriter) —
+	// only written when logging.level is "debug", same as debugLogFile.
+	llmLogFile = "llm.log"
 
 	// askProviderTimeout bounds each Knowledge Provider's Collect call
 	// (docs/architecture/03-knowledge-providers.md §16) — a slow/hung
@@ -63,6 +71,13 @@ const (
 	// askMaxChunks caps the Context Builder's output
 	// (docs/architecture/04-search.md §3, "Минимизировать объём контекста").
 	askMaxChunks = 20
+	// askMaxToolIterations bounds the agent loop's tool-call round trips
+	// per medical.ask call (see internal/ask.Asker.Ask) — lower than
+	// miranda's own agent loop's 15, since this loop only ever calls
+	// read-only Knowledge Providers (no chained side-effecting steps), so a
+	// realistic worst case is a handful of distinct calls plus parameter
+	// refinement.
+	askMaxToolIterations = 8
 )
 
 func main() {
@@ -187,17 +202,15 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("main: %w", err)
 	}
-	plannerProvider, err := resolveProvider(providers, cfg.LLM.PlannerProvider, "planner_provider")
-	if err != nil {
-		return fmt.Errorf("main: %w", err)
-	}
-	answerProvider, err := resolveProvider(providers, cfg.LLM.AnswerProvider, "answer_provider")
-	if err != nil {
-		return fmt.Errorf("main: %w", err)
-	}
 	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
-	plannerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.PlannerProvider)
-	answerEscalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.AnswerProvider)
+
+	if _, err := resolveProvider(providers, cfg.LLM.AgentProvider, "agent_provider"); err != nil {
+		return fmt.Errorf("main: %w", err)
+	}
+	askRouter, err := buildAskRouter(providers, cfg.LLM.Providers, cfg.LLM.AgentProvider)
+	if err != nil {
+		return fmt.Errorf("main: %w", err)
+	}
 
 	embeddingAPIKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	if embeddingAPIKey == "" {
@@ -210,8 +223,13 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	pl := pipeline.New(documentProvider, escalationProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
 
+	// timelineRepo is shared between TimelineProvider and
+	// SelfReportedEventProvider — both read the same timeline_events table,
+	// just with a different Types filter (see providers.go).
+	timelineRepo := storage.NewTimelineRepository(store)
 	registry := ask.NewRegistry(
-		ask.NewTimelineProvider(storage.NewTimelineRepository(store)),
+		ask.NewTimelineProvider(timelineRepo),
+		ask.NewSelfReportedEventProvider(timelineRepo),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(store)),
 		ask.NewDiagnosisProvider(storage.NewDiagnosisRepository(store)),
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),
@@ -221,12 +239,27 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		ask.NewDocumentProvider(storage.NewFTSRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)
-	asker := ask.NewAsker(plannerProvider, plannerEscalationProvider, answerProvider, answerEscalationProvider, registry, askProviderTimeout, askMaxChunks, logger)
+	sessionStore := ask.NewSessionStore(storage.NewAskSessionRepository(store))
+	asker := ask.NewAsker(askRouter, registry, sessionStore, askProviderTimeout, askMaxChunks, askMaxToolIterations, logger)
 
 	if cfg.TLS.Enabled {
 		if err := tlscert.EnsureSelfSigned(cfg.TLS.CertFile, cfg.TLS.KeyFile, cfg.TLS.Hosts); err != nil {
 			return fmt.Errorf("main: prepare TLS certificate: %w", err)
 		}
+	}
+
+	llmLogWriter, err := buildLLMTraceWriter(cfg.Logging)
+	if err != nil {
+		return fmt.Errorf("main: %w", err)
+	}
+	if llmLogWriter != nil {
+		defer func() { _ = llmLogWriter.Close() }()
+		// askRouter wraps every configured provider instance (see
+		// buildAskRouter), so this one call traces both the agent loop's
+		// Chat calls and the document pipeline's Structured/Chat calls —
+		// pipeline.New above never reconstructs the providers, it reuses
+		// these same instances.
+		askRouter.SetTracer(llmtrace.New(llmLogWriter))
 	}
 
 	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, logger)
@@ -239,34 +272,29 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"database", cfg.Database.Path,
 		"files", cfg.Files.Dir,
 		"documentProvider", cfg.LLM.DocumentProvider,
-		"plannerProvider", cfg.LLM.PlannerProvider,
-		"answerProvider", cfg.LLM.AnswerProvider,
+		"agentProvider", cfg.LLM.AgentProvider,
 		"escalationConfigured", escalationProvider != nil,
-		"plannerEscalationConfigured", plannerEscalationProvider != nil,
-		"answerEscalationConfigured", answerEscalationProvider != nil,
 		"embeddingModel", cfg.Embedding.Model,
 		"publicBaseURL", cfg.PublicBaseURL,
 		"addr", cfg.HTTPAddr,
 		"tls", cfg.TLS.Enabled,
 		"users", len(cfg.Users),
+		"llmLogEnabled", llmLogWriter != nil,
 	)
 
 	return serveUntilInterrupted(ctx, httpServer, cfg.TLS, logger)
 }
 
-// newGeminiProvider builds one gemini.Provider for stage (a log-friendly
-// name only, e.g. "planner") using model. All Gemini calls share the same
-// rotation pool of API keys (cfg.APIKeyEnvs) — see gemini.RotationConfig.
 // buildProviders constructs every configured LLM backend once, keyed by
-// its ProviderConfig.Name, so document_provider/planner_provider/
-// answer_provider (and any provider's escalation.target_provider) can all
-// resolve by name against the same set of instances — mirrors miranda's
-// own cmd/miranda/main.go buildProviders. extraction.Provider (Chat +
-// Structured) is the return type since every provider type here
-// implements both, and that's a superset of what any single call site
-// actually needs (resolveProvider/resolveEscalationProvider narrow it
-// further where only Structured is required — see ask.StructuredProvider,
-// extraction.StructuredProvider).
+// its ProviderConfig.Name, so document_provider/agent_provider (and any
+// provider's escalation.target_provider) can all resolve by name against
+// the same set of instances — mirrors miranda's own cmd/miranda/main.go
+// buildProviders. extraction.Provider (Chat + Structured) is the return
+// type since every provider type here implements both, and that's a
+// superset of what any single call site actually needs
+// (resolveProvider/resolveEscalationProvider narrow it further where only
+// Structured is required; buildAskRouter narrows it to llm.Provider, the
+// Chat + Name() superset router.New needs).
 func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger *slog.Logger) (map[string]extraction.Provider, error) {
 	providers := make(map[string]extraction.Provider, len(configs))
 	for _, c := range configs {
@@ -327,11 +355,11 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 // see extraction.StructuredWithRetry's escalate parameter (and, since
 // escalation now also covers OCR, extraction.Extract's). Returns nil
 // (disabling escalation) when providerName has no escalation configured,
-// which is the default. Called once per role — document_provider,
-// planner_provider, answer_provider — since each is an independent
-// ProviderConfig with its own, independent escalation target (unlike
-// document_provider's OCR+Structured Extraction, which share one because
-// they're the same call's two stages).
+// which is the default. Only called for document_provider now — the agent
+// loop's escalation (agent_provider and any other router-wired provider)
+// goes through router.EscalationConfig instead (see buildAskRouter), a
+// different mechanism entirely (tool-based, mid-conversation) from this
+// content-based "the result looked suspiciously empty" retry.
 func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
 		if c.Name != providerName {
@@ -343,6 +371,75 @@ func resolveEscalationProvider(providers map[string]extraction.Provider, configs
 		return providers[c.Escalation.TargetProvider]
 	}
 	return nil
+}
+
+// buildAskRouter wraps every configured LLM provider (not just
+// agentProviderName) in a router.Router for the medical.ask agent loop
+// (internal/ask) — wrapping all of them, rather than just the one named
+// agent_provider, means any provider's own escalation.target_provider can
+// resolve regardless of which role it's nominally configured for, and it's
+// what lets one router.SetTracer call (see buildLLMTraceWriter) cover the
+// document pipeline's providers too, since providers here are the exact
+// same instances buildProviders constructed — pipeline.New is never handed
+// a separate copy.
+func buildAskRouter(providers map[string]extraction.Provider, configs []config.ProviderConfig, agentProviderName string) (*router.Router, error) {
+	routerProviders := make([]llm.Provider, 0, len(providers))
+	for name, p := range providers {
+		lp, ok := p.(llm.Provider)
+		if !ok {
+			// Unreachable in practice: every buildProviders branch
+			// (gemini.Provider/anthropic.Provider/openaicompat.Provider)
+			// implements llm.Provider's Name()+Chat() — extraction.Provider
+			// just doesn't declare Name() itself, so the assertion is
+			// needed to recover it. Guarded rather than assumed in case
+			// that ever stops being true for some future provider type.
+			return nil, fmt.Errorf("provider %q (%T) does not implement llm.Provider", name, p)
+		}
+		routerProviders = append(routerProviders, lp)
+	}
+
+	// A provider's escalation.tool_name being empty (document_provider's
+	// current config never sets one) keeps it out of router.Router's
+	// tool-based escalation entirely — its content-based escalation (see
+	// resolveEscalationProvider) is a separate mechanism this map doesn't
+	// touch.
+	escalations := make(map[string]router.EscalationConfig, len(configs))
+	for _, c := range configs {
+		if c.Escalation.Enabled && c.Escalation.ToolName != "" {
+			escalations[c.Name] = router.EscalationConfig{
+				Enabled:        true,
+				ToolName:       c.Escalation.ToolName,
+				Description:    c.Escalation.Description,
+				TargetProvider: c.Escalation.TargetProvider,
+			}
+		}
+	}
+
+	r, err := router.New(routerProviders, escalations, agentProviderName)
+	if err != nil {
+		return nil, fmt.Errorf("build ask router: %w", err)
+	}
+	return r, nil
+}
+
+// buildLLMTraceWriter opens logs/llm.log for router.Router.SetTracer (see
+// run()) when debug logging is enabled — mirrors buildLogger's own
+// open/lifecycle pattern (same directory, same append-mode open). Returns
+// (nil, nil), not an error, when debug logging is off, so the caller
+// simply skips wiring a tracer.
+func buildLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
+	if cfg.Level != "debug" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(debugLogDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create llm log dir: %w", err)
+	}
+	path := filepath.Join(debugLogDir, llmLogFile)
+	w, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open llm log %s: %w", path, err)
+	}
+	return w, nil
 }
 
 func serveUntilInterrupted(ctx context.Context, httpServer *http.Server, tlsCfg config.TLSConfig, logger *slog.Logger) error {

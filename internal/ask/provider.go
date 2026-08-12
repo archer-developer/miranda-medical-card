@@ -1,9 +1,3 @@
-// Package ask implements medical.ask (docs/mcp/04-medical.md) — the
-// Knowledge Providers pattern (docs/architecture/03-knowledge-providers.md):
-// Planner (LLM call #1, picks which Providers to use) -> Providers (plain
-// Go code, each deciding its own SQLite/FTS/Embeddings strategy) ->
-// Context Builder (merge/dedupe/rank, no LLM) -> Answer Generator (LLM call
-// #2, question + context -> answer).
 package ask
 
 import (

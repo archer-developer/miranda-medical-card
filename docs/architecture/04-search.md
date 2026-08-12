@@ -81,7 +81,8 @@ LLM не должна выполнять поиск.
                   User Question
                         │
                         ▼
-                 Planner (LLM)
+              Agent Loop (LLM) решает
+              вызвать Knowledge Provider
                         │
                         ▼
                Knowledge Provider
@@ -98,7 +99,7 @@ LLM не должна выполнять поиск.
                Knowledge Chunks
                         │
                         ▼
-               Context Builder
+      (результат — обратно в диалог с моделью)
 ```
 
 ---
@@ -554,4 +555,4 @@ LLM — самая высокая
 - Nutrition Service Search;
 - Federated Search между несколькими сервисами Miranda.
 
-Все новые механизмы должны интегрироваться через существующую архитектуру Knowledge Providers и не требовать изменений Planner.
+Все новые механизмы должны интегрироваться через существующую архитектуру Knowledge Providers и не требовать изменений кода Agent Loop (см. `03-knowledge-providers.md` §20 "Расширяемость").

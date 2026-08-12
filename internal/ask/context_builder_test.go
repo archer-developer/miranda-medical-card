@@ -44,20 +44,6 @@ func TestRankChunks_RespectsMaxChunks(t *testing.T) {
 	require.Len(t, ranked, 2)
 }
 
-func TestRenderContext_GroupsBySourceWithHeaders(t *testing.T) {
-	chunks := []ask.KnowledgeChunk{
-		{Source: "timeline", Content: "event one"},
-		{Source: "lab_results", Content: "ALT 54.7"},
-	}
-	rendered := ask.RenderContext("Когда впервые повысился ALT?", chunks)
-	require.Contains(t, rendered, "QUESTION")
-	require.Contains(t, rendered, "Когда впервые повысился ALT?")
-	require.Contains(t, rendered, "Timeline")
-	require.Contains(t, rendered, "event one")
-	require.Contains(t, rendered, "Lab Results")
-	require.Contains(t, rendered, "ALT 54.7")
-}
-
 func TestCollectSources_DedupesByDocumentAndEventID(t *testing.T) {
 	chunks := []ask.KnowledgeChunk{
 		{DocumentID: "doc1", Title: "T1", Content: "a"},

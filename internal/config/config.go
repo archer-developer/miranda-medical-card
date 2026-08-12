@@ -91,13 +91,12 @@ type FilesConfig struct {
 // ProviderConfig describes one configured LLM backend — deliberately
 // mirrors miranda's own internal/config.LLMProvider field-for-field (see
 // that repo's config/llm.yaml for the format this is meant to interoperate
-// with at the config-authoring level), even though Medical Service's
-// actual usage is narrower: every call this service makes is one-shot
-// Structured (Structured Extraction, Planner, Answer Generator — see
-// internal/ask, internal/extraction) plus one Chat call (OCR, Stage 1,
-// document provider only) — never an open multi-turn dialogue. See
-// Escalation's doc comment for what that narrower usage means for
-// ToolName/Description specifically.
+// with at the config-authoring level). Document Pipeline stages (OCR,
+// Structured Extraction — internal/extraction) still make one-shot
+// Structured/Chat calls with no open dialogue, but the medical.ask agent
+// loop (internal/ask) now makes genuine multi-turn Chat calls through a
+// router.Router — see Escalation's doc comment for what that means for
+// ToolName/Description.
 type ProviderConfig struct {
 	Name string `yaml:"name"`
 	// Type selects the miranda-llm package: "gemini", "anthropic", or
@@ -115,17 +114,21 @@ type ProviderConfig struct {
 	// Type == "gemini".
 	GeminiRotation GeminiRotationConfig `yaml:"gemini_rotation,omitempty"`
 	// Escalation names a fallback provider (by Name, elsewhere in
-	// Providers) to try once when this provider's own Structured result
-	// comes back suspiciously empty — see
-	// internal/extraction.StructuredWithRetry's escalate parameter.
-	// Currently only consulted for LLMConfig.DocumentProvider (the only
-	// stage isSuspiciouslyEmpty is defined for). This is deliberately NOT
-	// router.Router's tool-based Chat escalation (see
-	// docs/architecture/05-llm.md §9.1): ToolName/Description exist here
-	// purely for schema fidelity with miranda's format and are otherwise
-	// unused — every call this service makes through a StructuredProvider
-	// is one-shot, with no open dialogue for a model to reason about
-	// handing off mid-generation. Only TargetProvider is actually read.
+	// Providers) this provider can hand off to. Two independent mechanisms
+	// read it, depending on which stage this provider is configured for:
+	//   - LLMConfig.DocumentProvider: content-based — retried once when this
+	//     provider's own Structured result comes back suspiciously empty
+	//     (internal/extraction.StructuredWithRetry's escalate parameter).
+	//     Only TargetProvider is read here; ToolName/Description are unused
+	//     — a one-shot Structured call has no open dialogue for a model to
+	//     reason about handing off mid-generation.
+	//   - LLMConfig.AgentProvider: router.Router's own tool-based escalation
+	//     (docs/architecture/05-llm.md §9.1) — when Enabled and ToolName is
+	//     set, the agent model may call ToolName mid-conversation to hand a
+	//     hard question to TargetProvider, and a hard provider failure
+	//     mid-turn falls back to it too. This is a genuinely open multi-turn
+	//     Chat loop, unlike DocumentProvider's one-shot calls, so
+	//     ToolName/Description are functionally read here.
 	Escalation EscalationConfig `yaml:"escalation,omitempty"`
 }
 
@@ -137,22 +140,21 @@ type GeminiRotationConfig struct {
 }
 
 // EscalationConfig mirrors miranda's own EscalationConfig field-for-field
-// (see ProviderConfig.Escalation for what's actually consulted here).
+// (see ProviderConfig.Escalation for what's actually consulted here, and by
+// which mechanism, depending on the owning provider's role).
 type EscalationConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	ToolName string `yaml:"tool_name,omitempty"`
-	// Description is accepted for schema fidelity with miranda's format;
-	// unused (see ProviderConfig.Escalation).
+	Enabled        bool   `yaml:"enabled"`
+	ToolName       string `yaml:"tool_name,omitempty"`
 	Description    string `yaml:"description,omitempty"`
 	TargetProvider string `yaml:"target_provider"`
 }
 
 // LLMConfig lists every configured LLM backend and names which one each
-// Pipeline/Ask stage uses, by Provider name — mirrors miranda's own
+// stage uses, by Provider name — mirrors miranda's own
 // providers/default_provider shape (see ProviderConfig's doc comment) at
-// the schema level, adapted to Medical Service having several fixed,
-// always-active stages (document/planner/answer) instead of one ordered
-// fallback chain.
+// the schema level, adapted to Medical Service having two fixed,
+// always-active stages (document/agent) instead of one ordered fallback
+// chain.
 type LLMConfig struct {
 	Providers []ProviderConfig `yaml:"providers"`
 	// DocumentProvider is used for every Document Pipeline LLM stage: OCR
@@ -162,10 +164,14 @@ type LLMConfig struct {
 	// why OCR and Structured Extraction, though two separate LLM calls,
 	// share one provider instance.
 	DocumentProvider string `yaml:"document_provider"`
-	// PlannerProvider is used by the Planner (see internal/ask).
-	PlannerProvider string `yaml:"planner_provider"`
-	// AnswerProvider is used by the Answer Generator (see internal/ask).
-	AnswerProvider string `yaml:"answer_provider"`
+	// AgentProvider is the default/primary provider for the medical.ask
+	// agent loop (see internal/ask), wired into a router.Router alongside
+	// every other configured provider so any provider's own
+	// escalation.target_provider can resolve regardless of role — replaces
+	// the old, separate PlannerProvider/AnswerProvider fields (removed: the
+	// agent loop is one model doing both jobs across an open conversation,
+	// not two isolated one-shot calls).
+	AgentProvider string `yaml:"agent_provider"`
 }
 
 // EmbeddingConfig configures the Gemini embedding model used for semantic
@@ -215,19 +221,13 @@ func Default() Config {
 					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
 				},
 				{
-					Name: "gemini-planner", Type: "gemini", Model: "gemini-3.5-flash-lite",
-					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
-					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
-				},
-				{
-					Name: "gemini-answer", Type: "gemini", Model: "gemini-3.6-flash",
+					Name: "gemini-agent", Type: "gemini", Model: "gemini-3.6-flash",
 					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
 					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
 				},
 			},
 			DocumentProvider: "gemini-document",
-			PlannerProvider:  "gemini-planner",
-			AnswerProvider:   "gemini-answer",
+			AgentProvider:    "gemini-agent",
 		},
 		Embedding: EmbeddingConfig{
 			APIKeyEnv: "GEMINI_API_KEY_1",
@@ -341,17 +341,14 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.target_provider %q references an unknown provider", i, p.Name, p.Escalation.TargetProvider)
 		}
 	}
-	if c.LLM.DocumentProvider == "" || c.LLM.PlannerProvider == "" || c.LLM.AnswerProvider == "" {
-		return fmt.Errorf("config: llm.document_provider, planner_provider, and answer_provider must all be set")
+	if c.LLM.DocumentProvider == "" || c.LLM.AgentProvider == "" {
+		return fmt.Errorf("config: llm.document_provider and agent_provider must both be set")
 	}
 	if !providerNames[c.LLM.DocumentProvider] {
 		return fmt.Errorf("config: llm.document_provider %q references an unknown provider", c.LLM.DocumentProvider)
 	}
-	if !providerNames[c.LLM.PlannerProvider] {
-		return fmt.Errorf("config: llm.planner_provider %q references an unknown provider", c.LLM.PlannerProvider)
-	}
-	if !providerNames[c.LLM.AnswerProvider] {
-		return fmt.Errorf("config: llm.answer_provider %q references an unknown provider", c.LLM.AnswerProvider)
+	if !providerNames[c.LLM.AgentProvider] {
+		return fmt.Errorf("config: llm.agent_provider %q references an unknown provider", c.LLM.AgentProvider)
 	}
 	if c.Embedding.APIKeyEnv == "" {
 		return fmt.Errorf("config: embedding.api_key_env must not be empty")
