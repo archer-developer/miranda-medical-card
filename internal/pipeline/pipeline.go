@@ -356,8 +356,15 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 
 	// FTS is a pure, local SQLite operation — treated as required, same as
 	// every other persistence step above (see docs/architecture/04-search.md
-	// §13's recommended index content: full text + Summary + recommendations).
-	ftsContent := strings.Join(append([]string{extracted.FullText, summary}, extracted.Recommendations...), "\n")
+	// §13's recommended index content: full text + Summary + recommendations —
+	// except FullText itself for documentTypesWithoutFreeTextContent, see its
+	// doc comment).
+	ftsParts := []string{summary}
+	if !documentTypesWithoutFreeTextContent[extracted.DocumentType] {
+		ftsParts = append([]string{extracted.FullText}, ftsParts...)
+	}
+	ftsParts = append(ftsParts, extracted.Recommendations...)
+	ftsContent := strings.Join(ftsParts, "\n")
 	if err := p.fts.IndexDocument(ctx, userID, documentID, title, ftsContent); err != nil {
 		return fail(fmt.Errorf("pipeline: run: index fts: %w", err))
 	}
@@ -520,6 +527,30 @@ func buildTitle(extracted extraction.Result) string {
 		return label
 	}
 	return fmt.Sprintf("%s — %s", label, extracted.Organization)
+}
+
+// documentTypesWithoutFreeTextContent are extraction.Result.DocumentType
+// values whose entire expected content is already fully captured as
+// structured entities — lab_report as LabResult rows, prescription as
+// Medication rows (mirrors extraction.expectedCategoriesByDocumentType,
+// which lists exactly these two as having a single, fully-structured
+// expected category and no "recommendations"/free-text category). Their
+// raw OCR'd FullText carries no genuine free-text content beyond that —
+// only boilerplate (reference ranges, lab-methodology footnotes,
+// accreditation text) FTS has no way to tell apart from something real,
+// which is exactly docs/architecture/04-search.md §2's "Использовать
+// наиболее структурированный источник" and §13's "Не рекомендуется
+// индексировать структурированные сущности — они уже представлены в
+// SQLite". Traced back to a real medical.ask failure where an FTS hit on
+// "рекомендации" turned out to be a lab report's WHO reference-range
+// citation, not a doctor's actual advice — the agent had no way to tell
+// the difference either, and burned its remaining tool calls chasing it.
+// Summary and Recommendations (both already-extracted, not raw OCR) stay
+// indexed for these types regardless, in the rare case Extraction did
+// find real free text worth surfacing.
+var documentTypesWithoutFreeTextContent = map[string]bool{
+	"lab_report":   true,
+	"prescription": true,
 }
 
 // buildSummary produces MedicalDocument.Summary (docs/domain/03-files-and-documents.md

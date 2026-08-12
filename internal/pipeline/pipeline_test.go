@@ -120,6 +120,70 @@ func TestUploadDocument_HappyPath(t *testing.T) {
 	require.Equal(t, "summary", embeddings[0].SourceType)
 }
 
+// TestUploadDocument_LabReportRawTextNotFTSIndexed covers
+// pipeline.documentTypesWithoutFreeTextContent: traced back to a real
+// medical.ask failure where a lab report's raw OCR text — boilerplate
+// reference-range citations, not doctor's advice — false-positive matched
+// an FTS search for "рекомендации" and sent the agent chasing a document
+// that had nothing relevant in it. lab_report's entire expected content is
+// already structured (LabResult rows), so its raw FullText shouldn't be
+// FTS-searchable at all; Summary must still be, regardless.
+func TestUploadDocument_LabReportRawTextNotFTSIndexed(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Общий анализ крови. Референсные значения по [рекомендации] ВОЗ, 2011 см.комм БОЙЛЕРПЛЕЙТСЛОВО."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+	require.Equal(t, storage.DocumentStatusReady, result.Status)
+
+	fts := storage.NewFTSRepository(s)
+
+	byRawText, err := fts.SearchDocuments(ctx, "user1", "БОЙЛЕРПЛЕЙТСЛОВО", 10)
+	require.NoError(t, err)
+	require.Empty(t, byRawText, "a lab report's raw OCR text must not be FTS-searchable")
+
+	bySummary, err := fts.SearchDocuments(ctx, "user1", "Лабораторное", 10)
+	require.NoError(t, err)
+	require.Len(t, bySummary, 1, "Summary must stay FTS-indexed regardless of document type")
+}
+
+// TestUploadDocument_ConsultationRawTextStaysFTSIndexed is the converse of
+// TestUploadDocument_LabReportRawTextNotFTSIndexed: a document type not in
+// documentTypesWithoutFreeTextContent (consultation notes carry genuine
+// free-text doctor's remarks beyond what's structured) must keep its raw
+// OCR text searchable.
+func TestUploadDocument_ConsultationRawTextStaysFTSIndexed(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Жалобы на бессонницу и раздражительность в течение месяца."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"consultation","diagnoses":[{"name":"Инсомния"}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "note.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	result, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+	require.Equal(t, storage.DocumentStatusReady, result.Status)
+
+	fts := storage.NewFTSRepository(s)
+	byRawText, err := fts.SearchDocuments(ctx, "user1", "раздражительность", 10)
+	require.NoError(t, err)
+	require.Len(t, byRawText, 1, "a consultation's raw OCR text (genuine free-text remarks) must stay FTS-searchable")
+}
+
 // TestUploadDocument_StudyTitleFromExtractionBecomesDocumentTitle covers
 // extraction.Schema's studyTitle field (added because the fixed
 // documentType label alone — "Лабораторное исследование" for every lab
