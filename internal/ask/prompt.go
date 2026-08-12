@@ -38,15 +38,30 @@ Once you have enough information to answer (or you're confident no tool here has
 // answerRules is the old Answer Generator's answerPrompt (internal/ask/answer.go,
 // now removed), carried over essentially verbatim — these are clinically
 // load-bearing rules for how a fact may be stated, not just formatting
-// guidance, so they're preserved rather than rewritten. Only the framing
-// changed: the old prompt pointed at one combined "context provided below"
-// block (RenderContext, also removed); here, "what the tools returned"
-// means every RoleTool message this conversation has accumulated so far,
-// since results now arrive incrementally across turns instead of as one
-// upfront block.
+// guidance, so changes here need the same care as the original. Only the
+// framing changed at the agent-loop rewrite: the old prompt pointed at one
+// combined "context provided below" block (RenderContext, also removed);
+// here, "what the tools returned" means every RoleTool message this
+// conversation has accumulated so far, since results now arrive
+// incrementally across turns instead of as one upfront block.
+//
+// The general-guidance carve-out (2026-08-12) was a deliberate, explicit
+// product decision, not a default the agent picked on its own: traced a
+// real medical.ask "рекомендации по питанию" (dietary recommendations)
+// question that exhausted every tool-call iteration hunting for a document
+// containing pre-written diet advice — because the original absolute "do
+// not recommend" rule left synthesizing an answer from the lab values it
+// already had as the only forbidden move, and no such document existed to
+// find (an FTS hit on "рекомендации" turned out to be a lab report's
+// reference-range footnote, not doctor's advice). The line between
+// "general guidance" and "treatment" below is intentionally narrow — it
+// exists to let the agent stop searching and answer, not to loosen the
+// diagnose/prescribe/danger-interpretation restrictions, which are
+// unchanged.
 const answerRules = `Rules for your final answer:
 - Base your answer strictly on what the tools actually returned during this conversation. Never invent or assume a fact you didn't get from a tool call.
 - If the available data doesn't contain enough information to answer, say so plainly (e.g. "В медицинской истории нет информации о ..."). Do not guess.
 - When you state a fact, make its source clear in the wording: a fact from lab_results, medications, diagnoses, procedures, instrumental_findings, profile, documents, or a document-derived timeline entry came from a document or verified structured record — you may state it directly ("Согласно результатам анализа от..."). A fact from self_reported_events, a self-reported timeline entry, or an embeddings result sourced from the user's own note must be attributed as the user's own unverified account (e.g. "по вашей записи от...", "по вашим словам..."), not stated as a confirmed medical fact.
-- You are not a doctor. Do not diagnose, do not recommend treatment, do not interpret whether a lab value is dangerous — state facts and, if relevant, suggest discussing interpretation with a doctor.
+- You are not a doctor. Do not diagnose a condition, do not prescribe or recommend medication/treatment, and do not state whether a lab value is dangerous or clinically significant — state facts and, if relevant, suggest discussing interpretation with a doctor.
+- You may give general dietary and lifestyle guidance (diet, exercise, sleep, everyday habits) grounded in facts this conversation actually retrieved (e.g. an elevated LDL cholesterol value), phrased as general, non-personalized guidance — not a diagnosis, not a prescription, not a claim that a value is dangerous. If no tool here has anything relevant to draw on, say so plainly rather than inventing generic advice untethered to the person's own data — this carve-out is for grounding an answer already worth giving, not a license to answer without having looked.
 - Answer in the same language as the question, concisely and clearly.`
