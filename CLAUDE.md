@@ -98,6 +98,13 @@ Same family-wide conventions as [miranda-service-skeleton](../miranda-service-sk
   *why* a decision was made (a past incident, a rejected alternative). This is a small home-infra
   codebase maintained intermittently; future-you benefits more from carried-forward reasoning than
   terse code.
+- **Keep docs in the same change, not a follow-up** — if a change alters behavior that
+  `docs/architecture/*.md`, `docs/mcp/*.md`, `docs/cli/*.md`, or this file describes, update that doc as
+  part of the same change. Cheap now, expensive later: this file's own opening line calls those docs
+  "the source of truth," and a stale one actively misleads the next person (or the next Claude Code
+  session) who trusts it instead of the code. Periodic on-demand doc-vs-code audits are a backstop for
+  drift that slips through anyway (changes made outside a session, a doc nobody's revisited) — worth
+  asking for occasionally — not a substitute for this.
 - **No Docker, no CGO, no CI.** Single static Go binary (`CGO_ENABLED=0`), deployed by hand-rolled
   `scripts/deploy.sh` over SSH to a `systemd --user` service. `go build ./... && go vet ./... && go test
   ./...` run locally before committing is the actual quality gate.
