@@ -41,6 +41,14 @@ type KnowledgeRequest struct {
 	// IndicatorName narrows LabProvider to one indicator's history; empty
 	// means "every indicator" (bounded by Limit).
 	IndicatorName string
+	// DocumentID narrows LabProvider to results from one specific
+	// document/event — the id an earlier timeline/documents tool call
+	// returned for it (see KnowledgeChunk.DocumentID and formatToolResult).
+	// Takes priority over IndicatorName when both are set. Unlike every
+	// other field here, the value is model-supplied and not otherwise tied
+	// to UserID, so LabProvider.Collect re-checks ownership itself rather
+	// than trusting it (see filterByOwner).
+	DocumentID string
 	// Structure/Parameter narrow InstrumentalFindingProvider — both must be
 	// set (see that provider's doc comment for why partial values return
 	// nothing).

@@ -59,6 +59,13 @@ func toolParameters(providerName string) map[string]any {
 				"type":        "string",
 				"description": `A specific lab indicator (e.g. "ALT", "холестерин"). Omit to get every indicator's history.`,
 			},
+			"documentId": map[string]any{
+				"type": "string",
+				"description": "Return only results from one specific document/event — an id an earlier timeline " +
+					"or documents call already returned for it. Takes priority over indicatorName.",
+			},
+			"from":  dateProperty("Only include results taken on or after this date."),
+			"to":    dateProperty("Only include results taken on or before this date."),
 			"limit": limitProperty(),
 		}, nil)
 	case "instrumental_findings":
@@ -114,6 +121,7 @@ type toolCallArgs struct {
 	To            string `json:"to"`
 	Limit         int    `json:"limit"`
 	IndicatorName string `json:"indicatorName"`
+	DocumentID    string `json:"documentId"`
 	Structure     string `json:"structure"`
 	Parameter     string `json:"parameter"`
 	SearchQuery   string `json:"searchQuery"`
@@ -136,6 +144,7 @@ func decodeKnowledgeRequest(providerName, argsJSON string) (KnowledgeRequest, er
 	req := KnowledgeRequest{
 		Query:         args.SearchQuery,
 		IndicatorName: args.IndicatorName,
+		DocumentID:    args.DocumentID,
 		Structure:     args.Structure,
 		Parameter:     args.Parameter,
 		Limit:         args.Limit,

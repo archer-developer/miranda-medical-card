@@ -62,8 +62,16 @@ func (r *sqliteLabResultRepository) Add(ctx context.Context, l normalization.Lab
 	return nil
 }
 
+// labResultOrderBy sorts most-recent-first (taken_at DESC), with
+// undated rows (taken_at IS NULL) pushed last rather than sorting
+// unpredictably among the dated ones — used by both listing methods below so
+// LabProvider.Collect's Limit truncation (see internal/ask/providers.go)
+// actually keeps the most recent results, matching what the lab_results
+// tool's own schema promises the model ("most recent first").
+const labResultOrderBy = ` ORDER BY taken_at IS NULL, taken_at DESC`
+
 func (r *sqliteLabResultRepository) ListByUser(ctx context.Context, userID string) ([]normalization.LabResult, error) {
-	rows, err := r.db.QueryContext(ctx, labResultSelectColumns+` FROM lab_results WHERE user_id = ?`, userID)
+	rows, err := r.db.QueryContext(ctx, labResultSelectColumns+` FROM lab_results WHERE user_id = ?`+labResultOrderBy, userID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list lab results by user: %w", err)
 	}
@@ -72,7 +80,7 @@ func (r *sqliteLabResultRepository) ListByUser(ctx context.Context, userID strin
 }
 
 func (r *sqliteLabResultRepository) ListByDocument(ctx context.Context, documentID string) ([]normalization.LabResult, error) {
-	rows, err := r.db.QueryContext(ctx, labResultSelectColumns+` FROM lab_results WHERE document_id = ?`, documentID)
+	rows, err := r.db.QueryContext(ctx, labResultSelectColumns+` FROM lab_results WHERE document_id = ?`+labResultOrderBy, documentID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list lab results by document: %w", err)
 	}

@@ -255,8 +255,10 @@ func (p *LabProvider) Metadata() ProviderMetadata {
 		Name: "lab_results",
 		Description: "История результатов лабораторных анализов (кровь, моча и т.п.): значение, единица измерения, " +
 			"референсный диапазон, дата. Укажите indicatorName (например ALT, LDL), чтобы получить историю " +
-			"конкретного показателя; без него возвращаются все показатели. Используйте для вопросов о динамике " +
-			"конкретных анализов, отклонениях от нормы.",
+			"конкретного показателя; from/to, чтобы получить все показатели за период (например все показатели " +
+			"одного анализа по его дате); documentId — id, который уже вернул более ранний вызов timeline или " +
+			"documents для этого документа/события, — чтобы получить все его показатели одним вызовом. Без " +
+			"параметров возвращаются все показатели, сначала самые новые.",
 	}
 }
 
@@ -277,14 +279,35 @@ func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]Know
 
 	var results []normalization.LabResult
 	var err error
-	if term != "" {
+	switch {
+	case req.DocumentID != "":
+		results, err = p.repo.ListByDocument(ctx, req.DocumentID)
+		if err == nil {
+			// ListByDocument, unlike ListByUser/HistoryByIndicator, isn't
+			// itself scoped to a user — documentId is model-supplied (a
+			// value it read back from an earlier tool result), so a
+			// hallucinated or cross-household id must never leak another
+			// user's results here.
+			results = filterByOwner(results, req.UserID)
+		}
+	case term != "":
 		results, err = p.repo.HistoryByIndicator(ctx, req.UserID, term)
-	} else {
+	default:
 		results, err = p.repo.ListByUser(ctx, req.UserID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("ask: lab provider: %w", err)
 	}
+
+	results = filterByDateRange(results, req.From, req.To)
+	// Every branch above already returns most-recent-first (see
+	// labResultOrderBy), so truncating here keeps the newest Limit results
+	// — matching the lab_results tool schema's own "most recent first"
+	// description (tools.go's limitProperty).
+	if req.Limit > 0 && len(results) > req.Limit {
+		results = results[:req.Limit]
+	}
+
 	chunks := make([]KnowledgeChunk, len(results))
 	for i, r := range results {
 		var content string
@@ -303,6 +326,43 @@ func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]Know
 		chunks[i] = KnowledgeChunk{Source: "lab_results", Title: r.IndicatorName, Content: content, Confidence: 1.0, DocumentID: r.DocumentID}
 	}
 	return chunks, nil
+}
+
+// filterByOwner drops any result whose UserID isn't userID — see its call
+// site in LabProvider.Collect for why ListByDocument specifically needs
+// this and every other lookup here doesn't.
+func filterByOwner(results []normalization.LabResult, userID string) []normalization.LabResult {
+	kept := results[:0]
+	for _, r := range results {
+		if r.UserID == userID {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+// filterByDateRange keeps only results taken within [from, to] (either
+// bound optional). A result with no TakenAt is dropped as soon as either
+// bound is set — an undated row can't be known to fall inside a requested
+// range, so silently including it would defeat the point of asking for one.
+func filterByDateRange(results []normalization.LabResult, from, to *time.Time) []normalization.LabResult {
+	if from == nil && to == nil {
+		return results
+	}
+	kept := results[:0]
+	for _, r := range results {
+		if r.TakenAt == nil {
+			continue
+		}
+		if from != nil && r.TakenAt.Before(*from) {
+			continue
+		}
+		if to != nil && r.TakenAt.After(*to) {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept
 }
 
 // --- Instrumental Findings ---

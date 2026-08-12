@@ -75,6 +75,64 @@ func TestLabProvider_QualitativeValueFormattedAsText(t *testing.T) {
 	require.Equal(t, "Группа крови: A(II) Rh+ (2025-01-01).", chunks[0].Content, "must not fall through to numeric %%g formatting for a qualitative-only result")
 }
 
+func TestLabProvider_OrdersMostRecentFirstAndHonorsLimit(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 1, TakenAt: mustDate("2025-01-01")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 2, TakenAt: mustDate("2026-01-01")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l3", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 3, TakenAt: mustDate("2025-06-01")}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2, "limit must actually bound the result count")
+	require.Contains(t, chunks[0].Content, "2026-01-01", "most recent result must come first")
+	require.Contains(t, chunks[1].Content, "2025-06-01")
+}
+
+func TestLabProvider_FiltersByDateRange(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 1, TakenAt: mustDate("2026-07-24")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: "doc1", IndicatorName: "AST", Value: 2, TakenAt: mustDate("2026-07-24")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l3", UserID: "user1", DocumentID: "doc2", IndicatorName: "ALT", Value: 3, TakenAt: mustDate("2025-01-01")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l4", UserID: "user1", DocumentID: "doc1", IndicatorName: "Группа крови", QualitativeValue: "A(II)"}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", From: mustDate("2026-07-24"), To: mustDate("2026-07-24")})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2, "must return every indicator taken on that date, and only that date — an undated row must not slip through")
+}
+
+func TestLabProvider_FiltersByDocumentID(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: 1, TakenAt: mustDate("2026-07-24")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: "doc1", IndicatorName: "AST", Value: 2, TakenAt: mustDate("2026-07-24")}))
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l3", UserID: "user1", DocumentID: "doc2", IndicatorName: "Мочевина", Value: 3, TakenAt: mustDate("2025-01-01")}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "doc1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	require.ElementsMatch(t, []string{"ALT", "AST"}, []string{chunks[0].Title, chunks[1].Title})
+}
+
+func TestLabProvider_DocumentIDNeverLeaksAnotherUsersResults(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	// Same documentId, but owned by a different user — e.g. a hallucinated
+	// or guessed id must never let one household member read another's
+	// results (ListByDocument itself has no user filter — see
+	// LabProvider.Collect's filterByOwner call).
+	require.NoError(t, repo.Add(context.Background(), normalization.LabResult{ID: "l1", UserID: "other-user", DocumentID: "shared-doc-id", IndicatorName: "ALT", Value: 1, TakenAt: mustDate("2026-07-24")}))
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "shared-doc-id"})
+	require.NoError(t, err)
+	require.Empty(t, chunks, "a document owned by another user must never be returned")
+}
+
 func TestInstrumentalFindingProvider_RequiresBothStructureAndParameter(t *testing.T) {
 	s := newTestStore(t)
 	repo := storage.NewInstrumentalFindingRepository(s)
