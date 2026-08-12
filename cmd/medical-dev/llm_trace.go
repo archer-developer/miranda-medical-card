@@ -358,8 +358,19 @@ type geminiToolCall struct {
 	Arguments string `json:"Arguments"`
 }
 type geminiChatResponse struct {
-	Text      string           `json:"text"`
-	ToolCalls []geminiToolCall `json:"tool_calls"`
+	Text       string           `json:"text"`
+	ToolCalls  []geminiToolCall `json:"tool_calls"`
+	DurationMs int64            `json:"duration_ms"`
+	Usage      *geminiUsage     `json:"usage"`
+}
+
+// geminiUsage mirrors genai.GenerateContentResponseUsageMetadata's fields
+// this tool actually surfaces — added to gemini.Provider's own trace()
+// alongside duration_ms (miranda-llm, 2026-08-13) specifically so a slow or
+// expensive turn is visible per-call here instead of only in aggregate.
+type geminiUsage struct {
+	PromptTokenCount     int32 `json:"promptTokenCount"`
+	CandidatesTokenCount int32 `json:"candidatesTokenCount"`
 }
 
 // --- Anthropic trace shape (anthropic.Provider.trace) — used only for the
@@ -496,6 +507,13 @@ func describeOutgoing(b traceBlock) []string {
 		}
 		for _, tc := range resp.ToolCalls {
 			out = append(out, fmt.Sprintf("call %s(%s)", tc.Name, truncate(tc.Arguments, 200)))
+		}
+		if resp.DurationMs > 0 {
+			stat := fmt.Sprintf("[%dms", resp.DurationMs)
+			if resp.Usage != nil {
+				stat += fmt.Sprintf(", %d+%d tokens", resp.Usage.PromptTokenCount, resp.Usage.CandidatesTokenCount)
+			}
+			out = append(out, stat+"]")
 		}
 		return out
 	}

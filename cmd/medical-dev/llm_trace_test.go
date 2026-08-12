@@ -68,6 +68,39 @@ func TestParseTraceFile_GeminiShape(t *testing.T) {
 // puts each functionResponse in its own trailing "user" content entry —
 // looking only at the last content entry (the original bug here) silently
 // dropped the first tool's result from the table.
+// TestDescribeOutgoing_ShowsDurationAndTokenUsage covers gemini.Provider's
+// trace() now including duration_ms/usage (miranda-llm, 2026-08-13) — added
+// so a slow or token-heavy turn is visible per-call in this table, not just
+// as an aggregate. A response with no duration_ms (older trace, or a
+// provider shape that doesn't report it) must not print an empty stat line.
+func TestDescribeOutgoing_ShowsDurationAndTokenUsage(t *testing.T) {
+	log := `=== 2026-08-12T18:14:45Z provider=gemini-agent conversation=session_1 ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Вопрос"}]}]}
+--- response ---
+{"text":"Ответ.","tool_calls":null,"duration_ms":2891,"usage":{"promptTokenCount":4812,"candidatesTokenCount":396}}
+
+=== 2026-08-12T18:14:47Z provider=gemini-agent conversation=session_2 ===
+--- request ---
+{"contents":[{"role":"user","parts":[{"text":"Вопрос без duration"}]}]}
+--- response ---
+{"text":"Ответ.","tool_calls":null}
+
+`
+	path := writeTrace(t, log)
+	blocks, err := parseTraceFile(path)
+	require.NoError(t, err)
+	require.Len(t, blocks, 2)
+
+	out := describeOutgoing(blocks[0])
+	require.Len(t, out, 2, "answer line plus a duration/usage stat line")
+	require.Contains(t, out[1], "2891ms")
+	require.Contains(t, out[1], "4812+396 tokens")
+
+	out2 := describeOutgoing(blocks[1])
+	require.Len(t, out2, 1, "no duration_ms in the trace must not print an empty/zero stat line")
+}
+
 func TestParseTraceFile_GeminiParallelToolCalls(t *testing.T) {
 	log := `=== 2026-08-12T19:08:01Z provider=gemini-agent conversation=session_parallel ===
 --- request ---
