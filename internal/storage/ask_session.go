@@ -34,12 +34,17 @@ type AskMessage struct {
 	CreatedAt  time.Time
 }
 
-// askRoleTool is AskMessage.Role's value for a tool-result message — kept
-// as an unexported constant rather than importing miranda-llm here (this
-// package stays free of an llm dependency, see AskSessionRepository's own
-// doc comment); the string itself is dictated by internal/ask/session.go's
-// toLLMMessages, which does string(llm.RoleTool) == "tool".
-const askRoleTool = "tool"
+// askRoleTool and askRoleAssistant are AskMessage.Role's values for a
+// tool-result message and an assistant turn respectively — kept as
+// unexported constants rather than importing miranda-llm here (this package
+// stays free of an llm dependency, see AskSessionRepository's own doc
+// comment); the strings themselves are dictated by internal/ask/session.go's
+// toLLMMessages, which does string(llm.RoleTool) == "tool" and
+// string(llm.RoleAssistant) == "assistant".
+const (
+	askRoleTool      = "tool"
+	askRoleAssistant = "assistant"
+)
 
 // AskSessionRepository persists medical.ask agent-loop conversation state —
 // see internal/ask.SessionStore for the llm.Message translation layer built
@@ -157,36 +162,59 @@ func (r *sqliteAskSessionRepository) Messages(ctx context.Context, sessionID str
 	return trimOrphanedLeadingToolMessages(result), nil
 }
 
-// trimOrphanedLeadingToolMessages drops any leading run of
-// role=="tool" messages from msgs.
+// trimOrphanedLeadingToolMessages drops any leading run of role=="tool"
+// messages, and any leading assistant tool-call ("function call") turn that
+// has nothing valid before it, from msgs.
 //
 // Messages' own limit truncates to the most recent N rows by id with no
 // awareness of assistant-tool-call/tool-result group boundaries — if the
 // cut lands inside such a group, the window can start with a tool-result
-// message whose originating assistant tool-call message was in the
-// dropped older rows. Replayed back into []llm.Message (see
-// internal/ask/session.go's toLLMMessages) and on to a real provider, that
-// orphaned entry has no name to resolve against: miranda-llm/gemini's
-// toGeminiContents recovers a RoleTool message's function name only by
-// walking earlier assistant messages in the SAME slice
-// (toolNames[m.ToolCallID]), so an orphan resolves to an empty name and
-// the provider's API is very likely to reject the whole turn outright —
-// silently breaking every future turn of that session.
+// message whose originating assistant tool-call message was in the dropped
+// older rows. Replayed back into []llm.Message (see internal/ask/session.go's
+// toLLMMessages) and on to a real provider, that orphaned entry has no name
+// to resolve against: miranda-llm/gemini's toGeminiContents recovers a
+// RoleTool message's function name only by walking earlier assistant
+// messages in the SAME slice (toolNames[m.ToolCallID]), so an orphan
+// resolves to an empty name and the provider's API is very likely to reject
+// the whole turn outright — silently breaking every future turn of that
+// session.
+//
+// The same cut can just as easily land one row later, leaving an assistant
+// tool-call message itself (role=="assistant" with ToolCalls set) as the
+// window's first entry — a *complete*, well-formed call/result pair, but
+// still invalid as the very first thing replayed: Gemini requires a
+// function-call turn be immediately preceded by a user or function-response
+// turn (see the "function call turn comes immediately after a user turn or
+// after a function response turn" error this produced in production,
+// 2026-08-14 — a session that ballooned past maxSessionMessages from a burst
+// of retried tool calls got wedged permanently this way, for every future
+// turn of that session, not just the one that tripped it). The window is
+// prepended after the system prompt, which Gemini doesn't count as a valid
+// predecessor, so a leading tool-call turn has no legal predecessor at all
+// once older rows are trimmed away — it must be dropped, together with the
+// tool-result messages answering it (which the loop below then finds newly
+// leading, and drops in turn as plain orphans).
 //
 // Any role=="tool" message at the very front of a chronologically-ordered
-// window is, by construction, always such an orphan: its owning assistant
-// message, if it were present in the window at all, would necessarily
-// sort before it (lower id). So the fix is unconditional and doesn't need
-// to inspect ToolCallIDs at all — just drop every leading tool message.
-// This can never remove a well-formed pair (a tool message immediately
-// preceded by its own assistant call survives, since that assistant
-// message isn't itself a leading tool message and stops the trim).
+// window is, by construction, always an orphan: its owning assistant
+// message, if it were present in the window at all, would necessarily sort
+// before it (lower id). So both checks are unconditional and don't need to
+// inspect ToolCallIDs at all. This can never remove a genuinely safe
+// opener — a plain user message or a tool-call-free assistant message stops
+// the loop immediately, since neither check matches it.
 func trimOrphanedLeadingToolMessages(msgs []AskMessage) []AskMessage {
-	i := 0
-	for i < len(msgs) && msgs[i].Role == askRoleTool {
-		i++
+	for len(msgs) > 0 {
+		if msgs[0].Role == askRoleTool {
+			msgs = msgs[1:]
+			continue
+		}
+		if msgs[0].Role == askRoleAssistant && len(msgs[0].ToolCalls) > 0 {
+			msgs = msgs[1:]
+			continue
+		}
+		break
 	}
-	return msgs[i:]
+	return msgs
 }
 
 func (r *sqliteAskSessionRepository) SessionActiveSince(ctx context.Context, sessionID string) (time.Time, bool, error) {

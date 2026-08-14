@@ -110,13 +110,14 @@ func TestAskSessionRepository_Messages_TruncationNeverOrphansAToolMessage(t *tes
 	require.NoError(t, repo.AppendMessage(ctx, "sess1", storage.AskMessage{Role: "tool", ToolCallID: "call_2", Content: "r2"}))
 
 	// limit=2: naive cut is rows 4-5 (assistant+call_2, tool(call_2)) — a
-	// complete, well-formed pair, nothing to trim.
+	// complete call/result pair, but still invalid as a window opener: a
+	// function-call turn (row 4) needs a user or function-response turn
+	// immediately before it, and nothing precedes it once row 1-3 are
+	// trimmed away. Must trim to empty, not return the pair (see this
+	// function's own doc comment — production incident 2026-08-14).
 	messages, err := repo.Messages(ctx, "sess1", 2)
 	require.NoError(t, err)
-	require.Len(t, messages, 2)
-	require.Equal(t, "assistant", messages[0].Role)
-	require.Equal(t, "tool", messages[1].Role)
-	require.Equal(t, "call_2", messages[1].ToolCallID)
+	require.Empty(t, messages)
 
 	// limit=1: naive cut is just row 5, tool(call_2) alone — orphaned (its
 	// assistant call isn't in the window) — must trim to empty, not return
@@ -126,16 +127,44 @@ func TestAskSessionRepository_Messages_TruncationNeverOrphansAToolMessage(t *tes
 	require.Empty(t, messages)
 
 	// limit=3: naive cut is rows 3-5 (tool(call_1), assistant+call_2,
-	// tool(call_2)) — row 3 is an orphan (call_1's assistant message is
-	// row 2, outside this window) and must be trimmed, leaving only the
-	// complete trailing pair.
+	// tool(call_2)) — row 3 is an orphan tool result, and row 4 is again a
+	// leading function-call turn with nothing before it once row 3 is gone.
+	// Both must be trimmed, along with the tool result answering row 4.
 	messages, err = repo.Messages(ctx, "sess1", 3)
+	require.NoError(t, err)
+	require.Empty(t, messages)
+
+	// limit=5 (the full history): row 1 is a real user message, a safe
+	// opener — nothing should be trimmed.
+	messages, err = repo.Messages(ctx, "sess1", 5)
+	require.NoError(t, err)
+	require.Len(t, messages, 5)
+	require.Equal(t, "user", messages[0].Role)
+}
+
+// TestAskSessionRepository_Messages_TruncationTrimsLeadingAssistantFinalMessage
+// guards the "safe opener" boundary the other test's limit=5 case only
+// touches in passing: a tool-call-free assistant message (a turn's final
+// answer, no ToolCalls) is NOT a function-call turn, so it's fine — and
+// required — to leave standing as the window's first entry; only a
+// function-call turn needs a predecessor.
+func TestAskSessionRepository_Messages_TruncationKeepsLeadingPlainAssistantMessage(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewAskSessionRepository(newTestStore(t))
+	require.NoError(t, repo.EnsureSession(ctx, "sess1", "alex", ""))
+
+	require.NoError(t, repo.AppendMessage(ctx, "sess1", storage.AskMessage{Role: "user", Content: "q1"}))
+	require.NoError(t, repo.AppendMessage(ctx, "sess1", storage.AskMessage{Role: "assistant", Content: "final answer"}))
+	require.NoError(t, repo.AppendMessage(ctx, "sess1", storage.AskMessage{Role: "user", Content: "q2"}))
+
+	// limit=2: naive cut is rows 2-3 (plain assistant, user) — row 2 has no
+	// ToolCalls, so it's not a function-call turn and must survive.
+	messages, err := repo.Messages(ctx, "sess1", 2)
 	require.NoError(t, err)
 	require.Len(t, messages, 2)
 	require.Equal(t, "assistant", messages[0].Role)
-	require.Equal(t, "call_2", messages[0].ToolCalls[0].ID)
-	require.Equal(t, "tool", messages[1].Role)
-	require.Equal(t, "call_2", messages[1].ToolCallID)
+	require.Empty(t, messages[0].ToolCalls)
+	require.Equal(t, "user", messages[1].Role)
 }
 
 func TestAskSessionRepository_DeleteInactiveSessions_CascadesToMessages(t *testing.T) {
