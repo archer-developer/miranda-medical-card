@@ -248,7 +248,7 @@ func reprocessDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slo
 
 type ListDocumentsInput struct {
 	UserID    string `json:"userId" jsonschema:"User identifier."`
-	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose documents to fetch, if not the caller's own."`
+	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose documents to fetch, if not the caller's own. Must be that household member's own user_id — the same identifier used for userId elsewhere (e.g. \"anna\"), never a display name like \"Аня\". Omit to default to the caller's own data."`
 }
 
 type DocumentListItem struct {

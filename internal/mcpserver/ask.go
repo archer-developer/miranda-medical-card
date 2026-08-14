@@ -19,7 +19,7 @@ func registerAskTool(server *mcp.Server, asker *ask.Asker, gate *userGate, logge
 
 type AskInput struct {
 	UserID    string `json:"userId" jsonschema:"User identifier."`
-	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose data the question is about, if not the caller's own."`
+	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose data the question is about, if not the caller's own. Must be that household member's own user_id — the same identifier used for userId elsewhere (e.g. \"anna\"), never a display name like \"Аня\". Omit to default to the caller's own data."`
 	Question  string `json:"question" jsonschema:"The user's question in natural language."`
 	// SessionID is injected by Miranda's own backend dispatch layer with its
 	// resolved conversation id (the same mechanism it already uses to
