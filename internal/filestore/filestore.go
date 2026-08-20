@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // Store writes uploaded file content under baseDir, one subdirectory per
@@ -32,18 +33,43 @@ func New(baseDir string) (*Store, error) {
 	return &Store{baseDir: baseDir}, nil
 }
 
+// extensionPattern matches an acceptable on-disk file extension: a dot
+// followed by 1-10 ASCII letters/digits. filename comes from a
+// caller-supplied fileUri's response (see medical.upload_document's
+// fetchFile) — an untrusted system boundary — so an extension that doesn't
+// look like a plausible one (too long, containing spaces or other odd
+// characters) is dropped rather than carried onto disk verbatim.
+var extensionPattern = regexp.MustCompile(`^\.[A-Za-z0-9]{1,10}$`)
+
 // Save writes data under userID's subdirectory, content-addressed by its
-// own SHA256, and returns the path (relative to baseDir — see
+// own SHA256 plus filename's extension (if it looks like a plausible one —
+// see extensionPattern), and returns the path (relative to baseDir — see
 // storage.File.StoragePath's doc comment: this value is what gets
-// persisted there) and hex-encoded hash. Writing the same (userID, data)
-// twice is a safe no-op, not an error — matches how storage.FileRepository
-// treats (userID, sha256) as a dedup key, not a hard uniqueness
-// constraint: whichever caller uploads first "wins" the path, and every
-// later identical upload just confirms the same bytes are already there.
-func (s *Store) Save(userID string, data []byte) (relativePath, sha256Hex string, err error) {
+// persisted there) and hex-encoded hash. Keeping the extension is purely
+// for on-disk legibility (so a directory listing or a backup/antivirus tool
+// can tell a PDF from a JPEG without opening it) — every actual read path
+// (medical.get_document's fileUri, medical.download_file) already serves
+// content-type/filename from storage.File's own columns, never sniffs the
+// on-disk name, so this has no effect on correctness.
+//
+// Writing the same (userID, data) twice under the same extension is a safe
+// no-op, not an error — matches how storage.FileRepository treats (userID,
+// sha256) as a dedup key, not a hard uniqueness constraint: whichever
+// caller uploads first "wins" the path, and every later identical upload
+// just confirms the same bytes are already there. Identical content
+// re-uploaded under a *different* extension is the one case this doesn't
+// dedup on disk (two physical copies, same bytes) — harmless wasted space,
+// not a correctness issue, since storage.FileRepository.FindBySHA256 still
+// dedups the File row itself and always resolves back to whichever copy
+// was written first.
+func (s *Store) Save(userID, filename string, data []byte) (relativePath, sha256Hex string, err error) {
 	sum := sha256.Sum256(data)
 	sha256Hex = hex.EncodeToString(sum[:])
-	relativePath = filepath.Join(userID, sha256Hex)
+	ext := filepath.Ext(filename)
+	if !extensionPattern.MatchString(ext) {
+		ext = ""
+	}
+	relativePath = filepath.Join(userID, sha256Hex+ext)
 
 	fullPath := filepath.Join(s.baseDir, relativePath)
 	if _, statErr := os.Stat(fullPath); statErr == nil {

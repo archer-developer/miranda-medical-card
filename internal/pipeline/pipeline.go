@@ -180,7 +180,7 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 // after it has fetched the bytes from a caller-supplied fileUri
 // (docs/mcp/03-documents.md §4).
 func (p *Pipeline) UploadFile(ctx context.Context, userID, filename, contentType string, data []byte) (storage.File, error) {
-	path, sha, err := p.files.Save(userID, data)
+	path, sha, err := p.files.Save(userID, filename, data)
 	if err != nil {
 		return storage.File{}, fmt.Errorf("pipeline: upload file: %w", err)
 	}

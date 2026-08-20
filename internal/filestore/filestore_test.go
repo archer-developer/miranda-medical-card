@@ -1,6 +1,7 @@
 package filestore_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,7 +14,7 @@ func TestSaveAndRead(t *testing.T) {
 	require.NoError(t, err)
 
 	data := []byte("pdf content goes here")
-	path, sha, err := s.Save("user1", data)
+	path, sha, err := s.Save("user1", "scan.pdf", data)
 	require.NoError(t, err)
 	require.NotEmpty(t, path)
 	require.Len(t, sha, 64)
@@ -23,14 +24,44 @@ func TestSaveAndRead(t *testing.T) {
 	require.Equal(t, data, got)
 }
 
+func TestSave_KeepsFilenameExtension(t *testing.T) {
+	s, err := filestore.New(t.TempDir())
+	require.NoError(t, err)
+
+	path, _, err := s.Save("user1", "scan.pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	require.Equal(t, ".pdf", filepath.Ext(path), "on-disk path should keep the original file's extension")
+}
+
+func TestSave_NoExtensionInFilenameIsFine(t *testing.T) {
+	s, err := filestore.New(t.TempDir())
+	require.NoError(t, err)
+
+	path, _, err := s.Save("user1", "file", []byte("bytes"))
+	require.NoError(t, err)
+	require.Empty(t, filepath.Ext(path))
+}
+
+func TestSave_ImplausibleExtensionIsDropped(t *testing.T) {
+	s, err := filestore.New(t.TempDir())
+	require.NoError(t, err)
+
+	// filename comes from a caller-supplied fileUri's response — an
+	// untrusted system boundary — so something that isn't a short
+	// alphanumeric extension must not be carried onto disk verbatim.
+	path, _, err := s.Save("user1", "report.this is not an extension", []byte("bytes"))
+	require.NoError(t, err)
+	require.Empty(t, filepath.Ext(path))
+}
+
 func TestSave_SameContentTwiceIsIdempotent(t *testing.T) {
 	s, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
 	data := []byte("identical bytes")
-	path1, sha1, err := s.Save("user1", data)
+	path1, sha1, err := s.Save("user1", "doc.pdf", data)
 	require.NoError(t, err)
-	path2, sha2, err := s.Save("user1", data)
+	path2, sha2, err := s.Save("user1", "doc.pdf", data)
 	require.NoError(t, err)
 
 	require.Equal(t, path1, path2)
@@ -42,9 +73,9 @@ func TestSave_SameContentDifferentUsersIsolated(t *testing.T) {
 	require.NoError(t, err)
 
 	data := []byte("shared boilerplate form")
-	path1, _, err := s.Save("user1", data)
+	path1, _, err := s.Save("user1", "form.pdf", data)
 	require.NoError(t, err)
-	path2, _, err := s.Save("user2", data)
+	path2, _, err := s.Save("user2", "form.pdf", data)
 	require.NoError(t, err)
 
 	require.NotEqual(t, path1, path2, "must not collapse two different users' uploads onto the same path")
@@ -61,7 +92,7 @@ func TestRemove(t *testing.T) {
 	s, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
-	path, _, err := s.Save("user1", []byte("data"))
+	path, _, err := s.Save("user1", "doc.pdf", []byte("data"))
 	require.NoError(t, err)
 	require.NoError(t, s.Remove(path))
 
