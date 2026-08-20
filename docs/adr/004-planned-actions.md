@@ -1,4 +1,4 @@
-> **Статус**: предложено, реализация в процессе. См. `internal/planning`, `internal/planmatch`,
+> **Статус**: реализовано. См. `internal/planning`, `internal/planmatch`,
 > `internal/decline`, `docs/domain/14-planned-action.md`, `docs/mcp/08-planned-actions.md`.
 
 ## Проблема
