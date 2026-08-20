@@ -484,6 +484,44 @@ func TestExtract_EscalatesOCROnPrimaryFailure(t *testing.T) {
 	require.Len(t, result.LabResults, 1)
 }
 
+// TestExtract_RetriesOCRAgainstEscalationWhenStructuredStaysSuspicious
+// covers the gap found in production on 2026-08-20: a real single-page,
+// fully legible consultation report ("2024-02-06.pdf") whose OCR
+// transcription reliably stopped right after the boilerplate consent
+// paragraph, never reaching the actual "Заключение" (diagnoses,
+// recommendations) that followed on the same page — reproduced 3 times
+// independently, across two different Gemini models, all stopping at the
+// same boundary. Because OCR returned no error (just an incomplete
+// transcription), ocrWithEscalation's own retry never triggered, and every
+// Structured attempt (2 against primary + 1 escalation) kept re-analyzing
+// that same truncated text, uselessly. Extract must now retry OCR itself
+// against escalate once Structured has exhausted its own retries and is
+// still suspicious, and use the result if that recovers a non-suspicious
+// Structured result.
+func TestExtract_RetriesOCRAgainstEscalationWhenStructuredStaysSuspicious(t *testing.T) {
+	truncatedText := strings.Repeat("boilerplate consent paragraph, no clinical content here yet ", 10)
+	completeText := truncatedText + " Заключение: гонартроз левого коленного сустава. Рекомендовано: физиотерапия."
+
+	primary := llmtest.New("fake-primary", llmtest.Response{Text: truncatedText}).WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "consultation"})}, // attempt 1 on truncated text
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "consultation"})}, // attempt 2 on truncated text
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{ // attempt 1 on the retried, complete text
+			DocumentType: "consultation",
+			Diagnoses:    []extraction.Diagnosis{{Name: "Гонартроз левого коленного сустава"}},
+		})},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)}, // stage 2b
+	)
+	escalate := llmtest.New("fake-escalate", llmtest.Response{Text: completeText}).WithStructured(
+		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "consultation"})}, // StructuredWithRetry's own escalation attempt, still on the (not yet retried) truncated text
+	)
+
+	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, "base64img", "application/pdf", nil)
+	require.NoError(t, err)
+	require.False(t, stillSuspicious, "the OCR retry against escalate must have recovered a non-suspicious result")
+	require.Len(t, result.Diagnoses, 1)
+	require.Equal(t, completeText, result.FullText, "the recovered, complete transcription must be what's actually used, not the original truncated one")
+}
+
 // TestExtract_OCRFailsOutrightWithoutEscalation confirms a nil escalate
 // (no escalation configured for document_provider in llm.yaml) keeps
 // today's plain "OCR fails, the whole call fails" behavior — not a
