@@ -56,6 +56,16 @@ type Result struct {
 	Status          string // storage.DocumentStatusReady or storage.DocumentStatusFailed
 	Summary         string
 	ExtractedCounts ExtractedCounts
+	// PlannedActions is this document's own current PlannedActions — see
+	// ExtractedCounts.PlannedActions for just their count, this is the same
+	// set with a full description/type/due date each, so a caller (Miranda)
+	// can tell the user what was actually added to their plan without a
+	// separate medical.planned_actions round trip. Read back from storage
+	// after matchPlannedActions (see its call site), not built directly from
+	// normalized.PlannedActions — ReplaceForSource's reconciliation may keep
+	// an existing row's id/status on a reprocess (see its own doc comment),
+	// so only a fresh read reflects what's actually persisted.
+	PlannedActions []normalization.PlannedAction
 }
 
 // Pipeline wires internal/extraction (LLM calls), internal/filestore
@@ -338,6 +348,10 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 	if err := p.matchPlannedActions(ctx, userID, documentID, normalized); err != nil {
 		return fail(fmt.Errorf("pipeline: run: match planned actions: %w", err))
 	}
+	documentPlannedActions, err := p.plannedActionsForDocument(ctx, userID, documentID)
+	if err != nil {
+		return fail(fmt.Errorf("pipeline: run: list planned actions: %w", err))
+	}
 
 	summary := buildSummary(extracted)
 	title := buildTitle(extracted)
@@ -404,6 +418,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 			Recommendations:      len(extracted.Recommendations),
 			PlannedActions:       len(normalized.PlannedActions),
 		},
+		PlannedActions: documentPlannedActions,
 	}, nil
 }
 
@@ -469,6 +484,27 @@ func (p *Pipeline) matchPlannedActions(ctx context.Context, userID, documentID s
 		}
 	}
 	return nil
+}
+
+// plannedActionsForDocument reads back documentID's own current
+// PlannedActions (sourceType document, sourceId documentID) after
+// matchPlannedActions has persisted them — see Result.PlannedActions' doc
+// comment for why this can't just reuse the in-memory normalized.PlannedActions
+// passed into matchPlannedActions. ListByUser is already the narrowest
+// repository method that can answer this; a document-scoped variant isn't
+// worth adding for what's a low-volume, household-scale table.
+func (p *Pipeline) plannedActionsForDocument(ctx context.Context, userID, documentID string) ([]normalization.PlannedAction, error) {
+	all, err := p.plannedActions.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list by user: %w", err)
+	}
+	var forDocument []normalization.PlannedAction
+	for _, a := range all {
+		if a.SourceType == normalization.PlannedActionSourceDocument && a.SourceID == documentID {
+			forDocument = append(forDocument, a)
+		}
+	}
+	return forDocument, nil
 }
 
 // rebuildTimeline replaces every TimelineEvent for documentID with the set

@@ -59,6 +59,12 @@ func TestPlannedAction_AutoCompletesFromLaterDocument_AndRevertsOnReprocessWitho
 	require.Equal(t, resultA.DocumentID, pending[0].SourceID)
 	planID := pending[0].ID
 
+	// Result.PlannedActions (returned straight from UploadDocument, no
+	// separate medical.planned_actions round trip needed) must mirror what
+	// was actually persisted — same id, type, description, due date, status.
+	require.Len(t, resultA.PlannedActions, 1)
+	require.Equal(t, pending[0], resultA.PlannedActions[0])
+
 	// 2. Upload document B: a lab report with a matching glucose result —
 	// the pending action must auto-complete with a backlink to it.
 	providerB := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Глюкоза","value":5.2,"unit":"ммоль/л"}]}`)

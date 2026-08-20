@@ -181,6 +181,82 @@ func TestServer_UploadDocumentFetchesFileURI(t *testing.T) {
 	require.Equal(t, docOut.DocumentID, listOut.Documents[0].DocumentID)
 }
 
+// TestServer_UploadDocument_ReturnsPlannedActions covers the
+// upload_document/reprocess_document response shape added alongside
+// docs/adr/004-planned-actions.md's own feature landing: extractedCounts
+// must include plannedActions (previously only computed internally by
+// internal/pipeline, never surfaced through MCP), and the response's own
+// plannedActions array must carry the full description/type/due-date-range
+// for each — so Miranda can tell the user what was added to their plan
+// straight from the upload response, without a separate
+// medical.planned_actions call. Two entries: one with a stated timeframe
+// (must produce a dueDateFrom/dueDateTo range) and one without (must not).
+func TestServer_UploadDocument_ReturnsPlannedActions(t *testing.T) {
+	provider := llmtest.New("fake",
+		llmtest.Response{Text: "Консультация эндокринолога. Рекомендован контроль глюкозы через 6 месяцев и консультация невролога."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{
+			"documentType": "consultation",
+			"documentDate": "2026-03-12",
+			"recommendations": ["Контроль глюкозы через 6 месяцев", "Консультация невролога"],
+			"plannedActions": [
+				{"type": "lab_test", "description": "Контроль глюкозы", "relatedIndicatorName": "Глюкоза", "dueAmountMax": 6, "dueUnit": "month"},
+				{"type": "consultation", "description": "Консультация невролога", "relatedProcedureName": "Консультация невролога"}
+			]
+		}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="consult.pdf"`)
+		_, _ = w.Write([]byte("pdf bytes"))
+	}))
+	t.Cleanup(fileServer.Close)
+
+	docResult := callTool(t, session, "medical.upload_document", map[string]any{"userId": "alex", "fileUri": fileServer.URL})
+	require.False(t, docResult.IsError, "%v", docResult.Content)
+	docOut := requireContentMirrorsStructured[struct {
+		ExtractedCounts struct {
+			PlannedActions int `json:"plannedActions"`
+		} `json:"extractedCounts"`
+		PlannedActions []struct {
+			PlannedActionID string `json:"plannedActionId"`
+			Type            string `json:"type"`
+			Description     string `json:"description"`
+			DueDateFrom     string `json:"dueDateFrom"`
+			DueDateTo       string `json:"dueDateTo"`
+			Status          string `json:"status"`
+		} `json:"plannedActions"`
+	}](t, docResult)
+
+	require.Equal(t, 2, docOut.ExtractedCounts.PlannedActions)
+	require.Len(t, docOut.PlannedActions, 2)
+
+	byDescription := make(map[string]struct {
+		PlannedActionID string `json:"plannedActionId"`
+		Type            string `json:"type"`
+		Description     string `json:"description"`
+		DueDateFrom     string `json:"dueDateFrom"`
+		DueDateTo       string `json:"dueDateTo"`
+		Status          string `json:"status"`
+	})
+	for _, a := range docOut.PlannedActions {
+		byDescription[a.Description] = a
+	}
+
+	glucose := byDescription["Контроль глюкозы"]
+	require.Equal(t, "lab_test", glucose.Type)
+	require.NotEmpty(t, glucose.PlannedActionID)
+	require.NotEmpty(t, glucose.DueDateFrom, "a recommendation with a stated timeframe must get a due date")
+	require.Equal(t, "pending", glucose.Status)
+
+	neurologist := byDescription["Консультация невролога"]
+	require.Equal(t, "consultation", neurologist.Type)
+	require.Empty(t, neurologist.DueDateFrom, "a recommendation with no stated timeframe must stay undated")
+}
+
 // TestServer_GetDocumentReturnsFileURI exercises the replacement for
 // medical.download_file (see docs/mcp/02-files.md §5): medical.get_document
 // must embed an absolute fileUri built from PublicBaseURL, and that URI

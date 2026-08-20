@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
@@ -30,7 +31,7 @@ var fileFetchClient = &http.Client{Timeout: fileFetchTimeout}
 func registerDocumentTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, maxFileSizeBytes int64, publicBaseURL string, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.upload_document",
-		Description: "Downloads a file from fileUri (HTTP GET, no file content in the call arguments) and imports it into the medical knowledge base: OCR, medical entity extraction, Timeline, Medical Profile, search indexes. Synchronous — returns only after processing completes. The response includes extractedCounts (number of entities of each type); if it looks suspiciously small for a substantial document, call medical.reprocess_document.",
+		Description: "Downloads a file from fileUri (HTTP GET, no file content in the call arguments) and imports it into the medical knowledge base: OCR, medical entity extraction, Timeline, Medical Profile, search indexes. Synchronous — returns only after processing completes. The response includes extractedCounts (number of entities of each type, including plannedActions) and plannedActions itself (this document's own future actions — repeat tests, vaccinations, follow-up visits — each with a description and, if the document stated a timeframe, a due date range); if extractedCounts looks suspiciously small for a substantial document, call medical.reprocess_document.",
 	}, uploadDocumentHandler(pl, gate, maxFileSizeBytes, logger))
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -60,6 +61,7 @@ type ExtractedCountsOutput struct {
 	Allergies            int `json:"allergies"`
 	VitalSigns           int `json:"vitalSigns"`
 	Recommendations      int `json:"recommendations"`
+	PlannedActions       int `json:"plannedActions"`
 }
 
 func toExtractedCountsOutput(c pipeline.ExtractedCounts) ExtractedCountsOutput {
@@ -67,7 +69,28 @@ func toExtractedCountsOutput(c pipeline.ExtractedCounts) ExtractedCountsOutput {
 		Diagnoses: c.Diagnoses, Medications: c.Medications, LabResults: c.LabResults,
 		InstrumentalFindings: c.InstrumentalFindings, Procedures: c.Procedures,
 		Allergies: c.Allergies, VitalSigns: c.VitalSigns, Recommendations: c.Recommendations,
+		PlannedActions: c.PlannedActions,
 	}
+}
+
+// toPlannedActionsOutput mirrors plannedActionsHandler's own mapping
+// (planned_actions.go) — kept as a separate copy rather than a shared
+// helper because the two call sites take their input differently (a single
+// document's freshly persisted list here vs. medical.planned_actions'
+// already-filtered/limited read), not because the mapping itself differs.
+func toPlannedActionsOutput(actions []normalization.PlannedAction) []PlannedActionOutput {
+	now := time.Now()
+	out := make([]PlannedActionOutput, len(actions))
+	for i, a := range actions {
+		out[i] = PlannedActionOutput{
+			PlannedActionID: a.ID, Type: a.Type, Description: a.Description,
+			DueDateFrom: formatOptionalDate(a.DueDateFrom), DueDateTo: formatOptionalDate(a.DueDateTo),
+			Overdue: a.Overdue(now), Status: a.Status,
+			SourceType: a.SourceType, SourceID: a.SourceID,
+			MatchedDocumentID: a.MatchedDocumentID, MatchedAt: formatOptionalDate(a.MatchedAt),
+		}
+	}
+	return out
 }
 
 // --- medical.upload_document ---
@@ -82,6 +105,11 @@ type UploadDocumentOutput struct {
 	Status          string                `json:"status"`
 	Summary         string                `json:"summary"`
 	ExtractedCounts ExtractedCountsOutput `json:"extractedCounts"`
+	// PlannedActions lists this document's own future actions (see
+	// extractedCounts.plannedActions for just their count) — description,
+	// type, and due date range each, so Miranda can tell the user what was
+	// added to their plan without a separate medical.planned_actions call.
+	PlannedActions []PlannedActionOutput `json:"plannedActions,omitempty"`
 }
 
 // uploadDocumentHandler never accepts a file's bytes as an MCP argument —
@@ -117,8 +145,12 @@ func uploadDocumentHandler(pl *pipeline.Pipeline, gate *userGate, maxFileSizeByt
 			return nil, UploadDocumentOutput{}, uploadDocumentError(err, logger, in.UserID, file.ID)
 		}
 
-		logger.Info("upload_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status)
-		out := UploadDocumentOutput{DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary, ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts)}
+		logger.Info("upload_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status, "plannedActions", len(result.PlannedActions))
+		out := UploadDocumentOutput{
+			DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary,
+			ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts),
+			PlannedActions:  toPlannedActionsOutput(result.PlannedActions),
+		}
 		// Content deliberately left nil: the MCP SDK then serializes the
 		// full, schema-validated out as the Content text (see
 		// modelcontextprotocol/go-sdk's toolForErr) instead of a hand-built
@@ -237,8 +269,12 @@ func reprocessDocumentHandler(pl *pipeline.Pipeline, gate *userGate, logger *slo
 			return nil, ReprocessDocumentOutput{}, mcpError(codePipelineFailed, "%v", err)
 		}
 
-		logger.Info("reprocess_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status)
-		out := ReprocessDocumentOutput{DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary, ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts)}
+		logger.Info("reprocess_document", "userId", in.UserID, "documentId", result.DocumentID, "status", result.Status, "plannedActions", len(result.PlannedActions))
+		out := ReprocessDocumentOutput{
+			DocumentID: result.DocumentID, Status: result.Status, Summary: result.Summary,
+			ExtractedCounts: toExtractedCountsOutput(result.ExtractedCounts),
+			PlannedActions:  toPlannedActionsOutput(result.PlannedActions),
+		}
 		// See upload_document's handler above for why Content is left nil.
 		return nil, out, nil
 	}
