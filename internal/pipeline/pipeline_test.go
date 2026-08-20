@@ -369,6 +369,49 @@ func TestUploadDocument_ExtractionFailureMarksDocumentFailed(t *testing.T) {
 	require.Equal(t, storage.DocumentStatusFailed, docs[0].Status)
 }
 
+// TestUploadDocument_RetryAfterFailureReusesSameDocumentAndCanSucceed covers
+// the bug found from a real production failure (2024-02-06.pdf's OCR
+// reliably truncating, see extraction.Extract's OCR-retry-against-escalation
+// fix): UploadDocument's own "already imported" check filtered existing
+// documents by fileID alone, ignoring status — so a FAILED document (a
+// previous attempt that genuinely broke, not a successful import) blocked
+// every subsequent retry with the same misleading DOCUMENT_ALREADY_IMPORTED,
+// forever, with no way to actually retry short of separately discovering the
+// document id and calling medical.reprocess_document. A retry must instead
+// go through, reusing the same (now FAILED) document row — not creating an
+// orphan duplicate — and succeed if the underlying problem is gone.
+func TestUploadDocument_RetryAfterFailureReusesSameDocumentAndCanSucceed(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	failingProvider := llmtest.New("fake", llmtest.Response{Err: errors.New("boom: provider unavailable")})
+	p := pipeline.New(failingProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+
+	_, err = p.UploadDocument(ctx, "user1", file.ID)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, pipeline.ErrAlreadyImported, "the first attempt is a genuine failure, not a duplicate")
+
+	docs, err := storage.NewDocumentRepository(s).List(ctx, "user1", storage.DocumentFilter{FileID: file.ID})
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	firstDocID := docs[0].ID
+	require.Equal(t, storage.DocumentStatusFailed, docs[0].Status)
+
+	workingProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)
+	p2 := pipeline.New(workingProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	result, err := p2.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err, "retrying the same file after a FAILED attempt must not bounce off ErrAlreadyImported")
+	require.Equal(t, firstDocID, result.DocumentID, "the retry must reuse the same document row, not create a new one")
+	require.Equal(t, storage.DocumentStatusReady, result.Status)
+
+	allDocs, err := storage.NewDocumentRepository(s).List(ctx, "user1", storage.DocumentFilter{FileID: file.ID})
+	require.NoError(t, err)
+	require.Len(t, allDocs, 1, "must not leave an orphan duplicate document row behind")
+}
+
 // TestUploadDocument_SuspiciouslyEmptyStructuredResultMarksDocumentFailed
 // covers the failure mode found on doc_3bdc49d9-7064-48d7-bc5b-9c2b0db38c05
 // in production (2026-08-09): OCR succeeded (substantial fullText) but

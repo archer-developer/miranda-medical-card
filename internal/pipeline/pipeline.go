@@ -215,8 +215,33 @@ func (p *Pipeline) UploadDocument(ctx context.Context, userID, fileID string) (R
 	if err != nil {
 		return Result{}, fmt.Errorf("pipeline: upload document: check already imported: %w", err)
 	}
-	if len(already) > 0 {
-		return Result{}, ErrAlreadyImported
+	// A FAILED document for this exact file (e.g. OCR/Structured Extraction
+	// kept coming back suspiciously empty, see extraction.Extract) is not
+	// "already imported" in the sense docs/mcp/03-documents.md §4's
+	// DOCUMENT_ALREADY_IMPORTED describes — that code means the file was
+	// *successfully* imported. Bouncing a retry off that stale failure with
+	// the same misleading error, forever, was the actual bug: it gave the
+	// caller no way to tell "already have this" apart from "processing
+	// broke last time," and no path to retry short of separately
+	// discovering the document id and calling medical.reprocess_document.
+	// Any other status (READY, or RUNNING/PENDING mid-flight) still blocks
+	// as before — only a genuinely failed previous attempt gets retried
+	// here, reusing that same document row (same as reprocess_document, and
+	// for the same reason: avoid piling up a fresh orphan FAILED row on
+	// every retry of a persistently-failing file).
+	var failed *storage.MedicalDocument
+	for i := range already {
+		if already[i].Status != storage.DocumentStatusFailed {
+			return Result{}, ErrAlreadyImported
+		}
+		failed = &already[i]
+	}
+	if failed != nil {
+		versions, err := p.extractionRepo.ListVersions(ctx, failed.ID)
+		if err != nil {
+			return Result{}, fmt.Errorf("pipeline: upload document: list extraction versions: %w", err)
+		}
+		return p.run(ctx, userID, failed.ID, file, len(versions)+1)
 	}
 
 	doc, err := p.documentRepo.Add(ctx, storage.MedicalDocument{UserID: userID, FileID: fileID})
