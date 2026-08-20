@@ -246,6 +246,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),
 		ask.NewInstrumentalFindingProvider(storage.NewInstrumentalFindingRepository(store)),
 		ask.NewProcedureProvider(storage.NewProcedureRepository(store)),
+		ask.NewPlannedActionProvider(storage.NewPlannedActionRepository(store)),
 		ask.NewProfileProvider(profile.NewStore(storage.NewProfileRepository(store))),
 		ask.NewDocumentProvider(storage.NewFTSRepository(store), storage.NewDocumentRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),

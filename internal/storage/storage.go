@@ -273,6 +273,30 @@ CREATE TABLE IF NOT EXISTS medication_intakes (
 CREATE INDEX IF NOT EXISTS idx_medication_intakes_user_id ON medication_intakes(user_id);
 CREATE INDEX IF NOT EXISTS idx_medication_intakes_source  ON medication_intakes(source_type, source_id);
 
+-- planned_actions backs normalization.PlannedAction (docs/domain/14-planned-action.md,
+-- docs/adr/004-planned-actions.md) — source_type/source_id mirrors
+-- medication_intakes' own document-or-self-reported split above.
+CREATE TABLE IF NOT EXISTS planned_actions (
+    id                    TEXT PRIMARY KEY,
+    user_id               TEXT NOT NULL,
+    source_type           TEXT NOT NULL,
+    source_id             TEXT NOT NULL,
+    type                  TEXT NOT NULL,
+    description           TEXT NOT NULL,
+    reference_text        TEXT NOT NULL DEFAULT '',
+    match_indicator_name  TEXT NOT NULL DEFAULT '',
+    match_procedure_name  TEXT NOT NULL DEFAULT '',
+    due_date_from         INTEGER,
+    due_date_to           INTEGER,
+    status                TEXT NOT NULL DEFAULT 'pending',
+    matched_document_id   TEXT NOT NULL DEFAULT '',
+    matched_entity_id     TEXT NOT NULL DEFAULT '',
+    matched_at            INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_planned_actions_user_id     ON planned_actions(user_id);
+CREATE INDEX IF NOT EXISTS idx_planned_actions_source      ON planned_actions(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_planned_actions_user_status ON planned_actions(user_id, status);
+
 CREATE TABLE IF NOT EXISTS medical_profiles (
     user_id     TEXT PRIMARY KEY,
     data        TEXT NOT NULL,

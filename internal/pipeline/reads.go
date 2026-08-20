@@ -3,7 +3,9 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"sort"
 
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 	"github.com/archer-developer/miranda-medical-card/internal/timeline"
@@ -95,4 +97,43 @@ func (p *Pipeline) GetTimeline(ctx context.Context, userID string, filter storag
 		return nil, fmt.Errorf("pipeline: get timeline: %w", err)
 	}
 	return events, nil
+}
+
+// GetUpcomingPlan implements docs/mcp/08-planned-actions.md's
+// medical.planned_actions. includeResolved additionally returns completed/
+// declined actions; the default (false, via ListPending) returns only
+// pending ones (including overdue — see normalization.PlannedAction.Overdue,
+// computed by the caller from DueDateTo, not stored). Results are sorted by
+// DueDateTo ascending, with actions that never got a due date (no timeframe
+// stated in the source text) sorted last rather than first or interleaved,
+// since they have no due-soon signal to rank by. limit <= 0 means no
+// truncation.
+func (p *Pipeline) GetUpcomingPlan(ctx context.Context, userID string, includeResolved bool, limit int) ([]normalization.PlannedAction, error) {
+	var (
+		actions []normalization.PlannedAction
+		err     error
+	)
+	if includeResolved {
+		actions, err = p.plannedActions.ListByUser(ctx, userID)
+	} else {
+		actions, err = p.plannedActions.ListPending(ctx, userID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: get upcoming plan: %w", err)
+	}
+
+	sort.SliceStable(actions, func(i, j int) bool {
+		a, b := actions[i].DueDateTo, actions[j].DueDateTo
+		if a == nil {
+			return false
+		}
+		if b == nil {
+			return true
+		}
+		return a.Before(*b)
+	})
+	if limit > 0 && len(actions) > limit {
+		actions = actions[:limit]
+	}
+	return actions, nil
 }

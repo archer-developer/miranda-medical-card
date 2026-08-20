@@ -47,6 +47,90 @@ func TestMedicationProvider_ReturnsAllHistory(t *testing.T) {
 	require.Equal(t, 1.0, chunks[0].Confidence)
 }
 
+func TestPlannedActionProvider_DocumentSourced_FullConfidenceAndDocumentID(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewPlannedActionRepository(s)
+	_, err := repo.Add(context.Background(), normalization.PlannedAction{
+		UserID: "user1", SourceType: "document", SourceID: "doc1",
+		Type: "lab_test", Description: "Повторный анализ глюкозы",
+		DueDateFrom: mustDate("2026-06-01"), DueDateTo: mustDate("2026-08-01"),
+	})
+	require.NoError(t, err)
+
+	provider := ask.NewPlannedActionProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Contains(t, chunks[0].Content, "Повторный анализ глюкозы")
+	require.Contains(t, chunks[0].Content, "2026-06-01")
+	require.Contains(t, chunks[0].Content, "2026-08-01")
+	require.Contains(t, chunks[0].Content, "ожидает")
+	require.Equal(t, "doc1", chunks[0].DocumentID)
+	require.Empty(t, chunks[0].EventID)
+	require.Equal(t, 1.0, chunks[0].Confidence)
+}
+
+func TestPlannedActionProvider_SelfReported_ReducedConfidenceAndEventID(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewPlannedActionRepository(s)
+	_, err := repo.Add(context.Background(), normalization.PlannedAction{
+		UserID: "user1", SourceType: "self_reported", SourceID: "selfevt_1",
+		Type: "vaccination", Description: "Прививка от бешенства",
+	})
+	require.NoError(t, err)
+
+	provider := ask.NewPlannedActionProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Equal(t, "selfevt_1", chunks[0].EventID)
+	require.Empty(t, chunks[0].DocumentID)
+	require.Equal(t, 0.9, chunks[0].Confidence)
+}
+
+func TestPlannedActionProvider_OverdueIsMentioned(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewPlannedActionRepository(s)
+	_, err := repo.Add(context.Background(), normalization.PlannedAction{
+		UserID: "user1", SourceType: "document", SourceID: "doc1",
+		Type: "lab_test", Description: "Просроченный анализ", DueDateTo: mustDate("2020-01-01"),
+	})
+	require.NoError(t, err)
+
+	provider := ask.NewPlannedActionProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Contains(t, chunks[0].Content, "Просрочено")
+}
+
+func TestPlannedActionProvider_CompletedAndDeclinedStatusInContent(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewPlannedActionRepository(s)
+	completed, err := repo.Add(context.Background(), normalization.PlannedAction{
+		UserID: "user1", SourceType: "document", SourceID: "doc1", Type: "lab_test", Description: "Готово",
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.MarkCompleted(context.Background(), completed.ID, "doc2", "lab_9", *mustDate("2026-06-01")))
+
+	declined, err := repo.Add(context.Background(), normalization.PlannedAction{
+		UserID: "user1", SourceType: "self_reported", SourceID: "selfevt_1", Type: "other", Description: "Отменено",
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.MarkDeclined(context.Background(), declined.ID, "user1"))
+
+	provider := ask.NewPlannedActionProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2, "Collect must include resolved actions too, so the agent can answer 'did I already do this'")
+
+	byTitle := map[string]string{}
+	for _, c := range chunks {
+		byTitle[c.Title] = c.Content
+	}
+	require.Contains(t, byTitle["Готово"], "выполнено")
+	require.Contains(t, byTitle["Отменено"], "отменено")
+}
+
 func TestLabProvider_FiltersByIndicatorName(t *testing.T) {
 	s := newTestStore(t)
 	repo := storage.NewLabResultRepository(s)

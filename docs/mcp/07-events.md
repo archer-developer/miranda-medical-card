@@ -42,6 +42,10 @@ Events API отвечает за медицинские факты, которы
 
 - классифицирует событие (симптом, наблюдение, приём лекарства, другое);
 - при упоминании лекарства — извлекает и канонизирует действующее вещество и дозу;
+- при упоминании будущего действия с приблизительным сроком ("нужно сделать прививку от бешенства
+  в течение полугода") — создаёт `PlannedAction` (см. `../domain/14-planned-action.md`,
+  `08-planned-actions.md`), независимо от `category`, тем же способом, что и извлечение
+  `medicationIntake`;
 - строит одно или несколько событий Timeline;
 - индексирует событие для поиска (FTS и Embeddings).
 
@@ -72,11 +76,18 @@ Events API отвечает за медицинские факты, которы
     "medicationIntake": {
         "drugName": "Ibuprofen",
         "dose": "400 mg"
+    },
+    "plannedAction": {
+        "plannedActionId": "plan_01J...",
+        "type": "vaccination",
+        "description": "Прививка от бешенства",
+        "dueDateFrom": "2026-01-19",
+        "dueDateTo": "2026-07-19"
     }
 }
 ```
 
-`timelineEventIds` содержит одно или два значения — второе появляется, если в тексте распознан также факт приёма лекарства (см. `../domain/12-self-reported-events.md` §5). `medicationIntake` присутствует только в этом случае.
+`timelineEventIds` содержит одно или два значения — второе появляется, если в тексте распознан также факт приёма лекарства (см. `../domain/12-self-reported-events.md` §5). `medicationIntake` присутствует только в этом случае. `plannedAction` присутствует, только если в тексте распознано будущее действие с приблизительным сроком — независимо от `medicationIntake` и `category` (см. `08-planned-actions.md` §3, `../adr/004-planned-actions.md` §3).
 
 ---
 
@@ -102,7 +113,7 @@ Events API отвечает за медицинские факты, которы
 
 Удаляет самостоятельно зафиксированное событие.
 
-Сервис самостоятельно удаляет связанные `MedicationIntake` и события Timeline (см. `../domain/12-self-reported-events.md` §8).
+Сервис самостоятельно удаляет связанные `MedicationIntake`, `PlannedAction` (если этот вызов `log_event` его создал, см. `08-planned-actions.md`) и события Timeline (см. `../domain/12-self-reported-events.md` §8).
 
 ## Параметры
 

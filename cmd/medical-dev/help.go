@@ -46,6 +46,15 @@ var commandCatalog = []commandHelp{
 		},
 	},
 	{
+		Name:    "planned-actions",
+		Summary: "Show a user's Planned Actions — future medical actions extracted from documents or logged directly in conversation, with due-date range and status (JSON)",
+		Usage:   "planned-actions --user <id> [--include-resolved]",
+		Examples: []string{
+			`planned-actions --user alex`,
+			`planned-actions --user alex --include-resolved`,
+		},
+	},
+	{
 		Name:    "document",
 		Summary: "Show full internal details of one document — metadata, recognized text, Summary, extracted entities (JSON)",
 		Usage:   "document <documentId> --user <id>",

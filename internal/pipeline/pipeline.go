@@ -22,6 +22,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
+	"github.com/archer-developer/miranda-medical-card/internal/planmatch"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 	"github.com/archer-developer/miranda-medical-card/internal/timeline"
@@ -45,6 +46,7 @@ type ExtractedCounts struct {
 	Allergies            int
 	VitalSigns           int
 	Recommendations      int
+	PlannedActions       int
 }
 
 // Result mirrors docs/mcp/03-documents.md §4's upload_document response
@@ -79,6 +81,7 @@ type Pipeline struct {
 	procedures           storage.ProcedureRepository
 	allergies            storage.AllergyRepository
 	vitalSigns           storage.VitalSignRepository
+	plannedActions       storage.PlannedActionRepository
 
 	timelineRepo   storage.TimelineRepository
 	profileStore   *profile.Store
@@ -141,6 +144,7 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 		procedures:           procedures,
 		allergies:            allergies,
 		vitalSigns:           vitalSigns,
+		plannedActions:       storage.NewPlannedActionRepository(s),
 
 		timelineRepo:   storage.NewTimelineRepository(s),
 		profileStore:   profile.NewStore(storage.NewProfileRepository(s)),
@@ -303,7 +307,8 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		"documentId", documentID, "diagnoses", len(normalized.Diagnoses), "medications", len(normalized.Medications),
 		"labResults", len(normalized.LabResults), "instrumentalFindings", len(normalized.InstrumentalFindings),
 		"procedures", len(normalized.Procedures), "allergies", len(normalized.Allergies),
-		"vitalSigns", len(normalized.VitalSigns), "normalizeErrors", len(normErrs))
+		"vitalSigns", len(normalized.VitalSigns), "plannedActions", len(normalized.PlannedActions),
+		"normalizeErrors", len(normErrs))
 
 	if err := p.persistCanonicalUnits(ctx, userID, normalized); err != nil {
 		return fail(fmt.Errorf("pipeline: run: persist canonical units: %w", err))
@@ -329,6 +334,9 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 	}
 	if err := p.vitalSigns.ReplaceForDocument(ctx, documentID, normalized.VitalSigns); err != nil {
 		return fail(fmt.Errorf("pipeline: run: persist vital signs: %w", err))
+	}
+	if err := p.matchPlannedActions(ctx, userID, documentID, normalized); err != nil {
+		return fail(fmt.Errorf("pipeline: run: match planned actions: %w", err))
 	}
 
 	summary := buildSummary(extracted)
@@ -394,6 +402,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 			Allergies:            len(normalized.Allergies),
 			VitalSigns:           len(normalized.VitalSigns),
 			Recommendations:      len(extracted.Recommendations),
+			PlannedActions:       len(normalized.PlannedActions),
 		},
 	}, nil
 }
@@ -424,6 +433,42 @@ func (p *Pipeline) generateDocumentEmbedding(ctx context.Context, userID, docume
 	if err != nil {
 		p.logger.Warn("pipeline: store document embedding failed", "documentId", documentID, "error", err)
 	}
+}
+
+// matchPlannedActions implements docs/adr/004-planned-actions.md §4's
+// auto-completion step. Runs for every document (upload and reprocess —
+// same code path, no branching): first reconciles documentID's own
+// document-sourced PlannedActions (normalization.PlannedActionSourceDocument)
+// against normalized.PlannedActions via ReplaceForSource's non-destructive
+// reconciliation, then unconditionally reverts any PlannedAction previously
+// completed *by* documentID back to pending (ClearMatchesFromDocument) —
+// necessary before rematching so a reprocess whose new extraction no longer
+// contains the previously-matching result doesn't leave a stale completion
+// behind — and finally rematches every user's still-pending action against
+// this document's freshly normalized entities (planmatch.Match), marking
+// whatever matches as completed with a backlink to documentID/the matched
+// entity.
+//
+// A pure, local SQLite operation with no external LLM call, so — like
+// Diagnoses/Timeline/Profile above — this is required, not best-effort like
+// Embeddings.
+func (p *Pipeline) matchPlannedActions(ctx context.Context, userID, documentID string, normalized normalization.Result) error {
+	if err := p.plannedActions.ReplaceForSource(ctx, normalization.PlannedActionSourceDocument, documentID, normalized.PlannedActions); err != nil {
+		return fmt.Errorf("replace: %w", err)
+	}
+	if err := p.plannedActions.ClearMatchesFromDocument(ctx, documentID); err != nil {
+		return fmt.Errorf("clear matches: %w", err)
+	}
+	pending, err := p.plannedActions.ListPending(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("list pending: %w", err)
+	}
+	for _, c := range planmatch.Match(normalized, pending) {
+		if err := p.plannedActions.MarkCompleted(ctx, c.PlannedActionID, documentID, c.MatchedEntityID, time.Now()); err != nil {
+			return fmt.Errorf("mark completed: %w", err)
+		}
+	}
+	return nil
 }
 
 // rebuildTimeline replaces every TimelineEvent for documentID with the set

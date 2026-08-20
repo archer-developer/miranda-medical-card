@@ -37,12 +37,25 @@ type MedicationIntakeOutput struct {
 	DoseUnit   string  `json:"doseUnit,omitempty"`
 }
 
+// LoggedPlannedActionOutput mirrors docs/mcp/07-events.md §3's plannedAction
+// response object — see PlannedActionOutput (planned_actions.go) for the
+// read-tool's fuller shape; this one is intentionally smaller (no status/
+// overdue — an action is always freshly pending the moment it's logged).
+type LoggedPlannedActionOutput struct {
+	PlannedActionID string `json:"plannedActionId"`
+	Type            string `json:"type"`
+	Description     string `json:"description"`
+	DueDateFrom     string `json:"dueDateFrom,omitempty"`
+	DueDateTo       string `json:"dueDateTo,omitempty"`
+}
+
 type LogEventOutput struct {
-	EventID          string                  `json:"eventId"`
-	Status           string                  `json:"status"`
-	Category         string                  `json:"category,omitempty"`
-	TimelineEventIDs []string                `json:"timelineEventIds"`
-	MedicationIntake *MedicationIntakeOutput `json:"medicationIntake,omitempty"`
+	EventID          string                     `json:"eventId"`
+	Status           string                     `json:"status"`
+	Category         string                     `json:"category,omitempty"`
+	TimelineEventIDs []string                   `json:"timelineEventIds"`
+	MedicationIntake *MedicationIntakeOutput    `json:"medicationIntake,omitempty"`
+	PlannedAction    *LoggedPlannedActionOutput `json:"plannedAction,omitempty"`
 }
 
 func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[LogEventInput, LogEventOutput] {
@@ -73,6 +86,13 @@ func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 		if result.MedicationIntake != nil {
 			out.MedicationIntake = &MedicationIntakeOutput{
 				DrugName: result.MedicationIntake.DrugName, DoseAmount: result.MedicationIntake.DoseAmount, DoseUnit: result.MedicationIntake.DoseUnit,
+			}
+		}
+		if result.PlannedAction != nil {
+			out.PlannedAction = &LoggedPlannedActionOutput{
+				PlannedActionID: result.PlannedAction.PlannedActionID, Type: result.PlannedAction.Type,
+				Description: result.PlannedAction.Description,
+				DueDateFrom: formatOptionalDate(result.PlannedAction.DueDateFrom), DueDateTo: formatOptionalDate(result.PlannedAction.DueDateTo),
 			}
 		}
 		logger.Info("log_event", "userId", in.UserID, "eventId", out.EventID, "category", out.Category)

@@ -242,6 +242,79 @@ func (p *ProcedureProvider) Collect(ctx context.Context, req KnowledgeRequest) (
 	return chunks, nil
 }
 
+// --- Planned Actions ---
+
+type PlannedActionProvider struct {
+	repo storage.PlannedActionRepository
+}
+
+func NewPlannedActionProvider(repo storage.PlannedActionRepository) *PlannedActionProvider {
+	return &PlannedActionProvider{repo: repo}
+}
+
+func (p *PlannedActionProvider) Metadata() ProviderMetadata {
+	return ProviderMetadata{
+		Name: "planned_actions",
+		Description: "Запланированные будущие медицинские действия: контрольные анализы, прививки, обследования, " +
+			"повторные визиты — извлечённые из рекомендаций в документах или сказанные пользователем напрямую в " +
+			"диалоге, с ожидаемым сроком (диапазон дат, если он был указан) и статусом pending/completed/declined " +
+			"(completed выставляется автоматически, когда подходящий результат появляется в новом документе — " +
+			"никогда вручную). Используйте для вопросов 'что мне нужно сделать', 'какие анализы предстоят', " +
+			"'что просрочено', 'я уже это делал?'.",
+	}
+}
+
+func (p *PlannedActionProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]KnowledgeChunk, error) {
+	actions, err := p.repo.ListByUser(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("ask: planned action provider: %w", err)
+	}
+	now := time.Now()
+	chunks := make([]KnowledgeChunk, len(actions))
+	for i, a := range actions {
+		content := a.Description
+		switch {
+		case a.DueDateFrom != nil && a.DueDateTo != nil && a.DueDateFrom.Equal(*a.DueDateTo):
+			content += fmt.Sprintf(" Срок: %s.", formatDate(a.DueDateTo))
+		case a.DueDateFrom != nil && a.DueDateTo != nil:
+			content += fmt.Sprintf(" Срок: %s — %s.", formatDate(a.DueDateFrom), formatDate(a.DueDateTo))
+		case a.DueDateTo != nil:
+			content += fmt.Sprintf(" Срок: до %s.", formatDate(a.DueDateTo))
+		}
+		switch a.Status {
+		case normalization.PlannedActionStatusCompleted:
+			content += " Статус: выполнено"
+			if a.MatchedAt != nil {
+				content += fmt.Sprintf(" (%s)", formatDate(a.MatchedAt))
+			}
+			content += "."
+		case normalization.PlannedActionStatusDeclined:
+			content += " Статус: отменено пользователем."
+		default:
+			content += " Статус: ожидает."
+			if a.Overdue(now) {
+				content += " Просрочено."
+			}
+		}
+
+		// Confidence/source-linking mirrors TimelineProvider's own
+		// document-vs-self-reported split (see this file's doc comment) —
+		// the second provider in this package whose rows can come from
+		// either.
+		confidence := 1.0
+		chunk := KnowledgeChunk{Source: "planned_actions", Title: a.Description, Content: content}
+		if a.SourceType == normalization.PlannedActionSourceDocument {
+			chunk.DocumentID = a.SourceID
+		} else {
+			confidence = 0.9
+			chunk.EventID = a.SourceID
+		}
+		chunk.Confidence = confidence
+		chunks[i] = chunk
+	}
+	return chunks, nil
+}
+
 // --- Lab Results ---
 
 type LabProvider struct{ repo storage.LabResultRepository }

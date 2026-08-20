@@ -5,10 +5,11 @@
 // ("использовать те же Application Services, что и MCP API... не
 // обращаться напрямую к Repository").
 //
-// Implemented: profile, timeline, document, ask, pipeline (the read-oriented
-// commands directly useful for inspecting a running deployment's data, plus
-// pipeline for re-running Processing Pipeline against an already-imported
-// document with full Debug-level tracing to stderr — docs/cli/medical_dev.md
+// Implemented: profile, timeline, planned-actions, document, ask, pipeline
+// (the read-oriented commands directly useful for inspecting a running
+// deployment's data, plus pipeline for re-running Processing Pipeline
+// against an already-imported document with full Debug-level tracing to
+// stderr — docs/cli/medical_dev.md
 // §12), backfill-titles and reindex-fts — not part of that doc (both are
 // one-off data migrations, not standing diagnostic commands), see
 // pipeline.Pipeline.BackfillStudyTitle's and .ReindexDocumentFTS's own doc
@@ -20,7 +21,7 @@
 // llm-trace command cover a question asked either way) rather than
 // anything Application-Service-shaped.
 // Not implemented: planner, provider, search, prompt, llm (see
-// docs/cli/medical_dev.md §5-8, §13) — each would need its own
+// docs/cli/medical_dev.md §5-8, §14) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
 // or a single Provider's raw output, independent of a full Ask) that
 // internal/ask doesn't expose today.
@@ -41,6 +42,7 @@
 //	medical-dev              # or `medical-dev help` — full command list with examples (help.go)
 //	medical-dev profile --user alex
 //	medical-dev timeline --user alex [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--type TYPE]
+//	medical-dev planned-actions --user alex [--include-resolved]
 //	medical-dev document <documentId> --user alex
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
@@ -124,6 +126,8 @@ func run(args []string) error {
 		return runProfile(args, cfg, store)
 	case "timeline":
 		return runTimeline(args, cfg, store)
+	case "planned-actions":
+		return runPlannedActions(args, cfg, store)
 	case "document":
 		return runDocument(args, cfg, store)
 	case "ask":
@@ -365,6 +369,30 @@ func runTimeline(args []string, cfg config.Config, store *storage.Store) error {
 	return printJSON(events)
 }
 
+// --- planned-actions ---
+
+func runPlannedActions(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("planned-actions", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	includeResolved := fs.Bool("include-resolved", false, "include completed/declined actions")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	pl, err := newPipeline(cfg, store)
+	if err != nil {
+		return err
+	}
+	actions, err := pl.GetUpcomingPlan(context.Background(), *user, *includeResolved, 0)
+	if err != nil {
+		return err
+	}
+	return printJSON(actions)
+}
+
 // --- document ---
 
 func runDocument(args []string, cfg config.Config, store *storage.Store) error {
@@ -399,7 +427,7 @@ func runDocument(args []string, cfg config.Config, store *storage.Store) error {
 // method medical.reprocess_document uses) with a Debug-level logger writing
 // straight to stderr, so every Structured Extraction attempt and Pipeline
 // stage (see internal/extraction.StructuredWithRetry, internal/pipeline's
-// run) is visible immediately — docs/cli/medical_dev.md §12's "подробный
+// run) is visible immediately — docs/cli/medical_dev.md §13's "подробный
 // лог выполнения", without needing to enable server-wide debug logging or
 // tail logs/debug.log separately.
 func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
@@ -636,6 +664,7 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),
 		ask.NewInstrumentalFindingProvider(storage.NewInstrumentalFindingRepository(store)),
 		ask.NewProcedureProvider(storage.NewProcedureRepository(store)),
+		ask.NewPlannedActionProvider(storage.NewPlannedActionRepository(store)),
 		ask.NewDocumentProvider(storage.NewFTSRepository(store), storage.NewDocumentRepository(store)),
 		ask.NewEmbeddingProvider(storage.NewEmbeddingRepository(store), storage.NewDocumentRepository(store), storage.NewSelfReportedEventRepository(store), embedder, cfg.Embedding.Model),
 	)

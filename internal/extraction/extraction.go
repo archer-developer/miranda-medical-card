@@ -27,6 +27,8 @@ import (
 	"log/slog"
 
 	llm "github.com/archer-developer/miranda-llm"
+
+	"github.com/archer-developer/miranda-medical-card/internal/planning"
 )
 
 // SchemaName is passed as llm.StructuredRequest.SchemaName.
@@ -76,7 +78,8 @@ Rules:
 - A lab result is not always numeric: use "value"+"unit" for a quantitative result, "qualitativeValue" for a non-numeric one (e.g. blood type, a positive/negative/detected/not-detected test result, a text finding) — never force a non-numeric result into "value", and never omit the entry just because it has no numeric value. Recognize qualitative results under any of their common abbreviated or full forms — "отрицат."/"отрицательно"/"negative", "полож."/"положительно"/"positive", "обнаружено"/"не обнаружено", "detected"/"not detected", "норма"/"в пределах нормы" — these are results, not commentary to skip.
 - A table row under a header like "Исследование"/"Показатель"/"Анализ" + "Результат" + (optionally) "Норма"/"Референсные значения"/"Комментарий" is a lab result row, no matter how many rows the table has — a table with exactly one row is still a table you must extract, not something to treat as an aside. Columns are separated by " | " (see the transcription's own formatting) — use that to tell where the result value ends and an adjacent comment column begins; do not fold a comment column's text into "qualitativeValue".
 - A document's length or the proportion of it that is patient-facing informational/educational text (safety instructions, legal disclaimers, contact information, general health advice) has no bearing on whether to extract the actual clinical data — a document that is 95% boilerplate and 5% one real lab result must still produce that one labResults entry.
-- If you are not confident you can read a value correctly, omit that specific field rather than guessing.`
+- If you are not confident you can read a value correctly, omit that specific field rather than guessing.
+- If a recommendation states or implies a future action with a rough timeframe — a repeat test, a vaccination, a follow-up visit or examination ("Повторный анализ крови через полгода", "сдать кровь на глюкозу", "прививка от бешенства в течение месяца") — also record it in plannedActions with its timeframe expressed as a relative amount + unit (dueAmountMin/dueAmountMax/dueUnit), never as a calendar date you compute yourself: you don't reliably know "today's date" relative to this document, only the offset the text itself states. A recommendation with no extractable timeframe stays in recommendations only, not plannedActions.`
 
 // InstrumentalPrompt is Stage 2b's instruction — a separate, narrowly
 // scoped call from Prompt/Schema (Stage 2a), asked only to extract
@@ -237,6 +240,10 @@ func Schema() map[string]any {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 			},
+			"plannedActions": map[string]any{
+				"type":  "array",
+				"items": planning.SchemaObject(),
+			},
 		},
 		"required": []string{"documentType"},
 	}
@@ -284,21 +291,22 @@ func InstrumentalSchema() map[string]any {
 // of Schema (it comes from Stage 1, OCR) but is included here since callers
 // need both together.
 type Result struct {
-	DocumentType         string                `json:"documentType"`
-	DocumentDate         string                `json:"documentDate,omitempty"`
-	Organization         string                `json:"organization,omitempty"`
-	Doctor               string                `json:"doctor,omitempty"`
-	Language             string                `json:"language,omitempty"`
-	StudyTitle           string                `json:"studyTitle,omitempty"`
-	FullText             string                `json:"fullText"`
-	Diagnoses            []Diagnosis           `json:"diagnoses,omitempty"`
-	Medications          []Medication          `json:"medications,omitempty"`
-	LabResults           []LabResult           `json:"labResults,omitempty"`
-	InstrumentalFindings []InstrumentalFinding `json:"instrumentalFindings,omitempty"`
-	Procedures           []Procedure           `json:"procedures,omitempty"`
-	Allergies            []Allergy             `json:"allergies,omitempty"`
-	VitalSigns           []VitalSign           `json:"vitalSigns,omitempty"`
-	Recommendations      []string              `json:"recommendations,omitempty"`
+	DocumentType         string                   `json:"documentType"`
+	DocumentDate         string                   `json:"documentDate,omitempty"`
+	Organization         string                   `json:"organization,omitempty"`
+	Doctor               string                   `json:"doctor,omitempty"`
+	Language             string                   `json:"language,omitempty"`
+	StudyTitle           string                   `json:"studyTitle,omitempty"`
+	FullText             string                   `json:"fullText"`
+	Diagnoses            []Diagnosis              `json:"diagnoses,omitempty"`
+	Medications          []Medication             `json:"medications,omitempty"`
+	LabResults           []LabResult              `json:"labResults,omitempty"`
+	InstrumentalFindings []InstrumentalFinding    `json:"instrumentalFindings,omitempty"`
+	Procedures           []Procedure              `json:"procedures,omitempty"`
+	Allergies            []Allergy                `json:"allergies,omitempty"`
+	VitalSigns           []VitalSign              `json:"vitalSigns,omitempty"`
+	Recommendations      []string                 `json:"recommendations,omitempty"`
+	PlannedActions       []planning.PlannedAction `json:"plannedActions,omitempty"`
 }
 
 type Diagnosis struct {
@@ -529,6 +537,8 @@ func isCategoryEmpty(result Result, category string) bool {
 		return len(result.VitalSigns) == 0
 	case "recommendations":
 		return len(result.Recommendations) == 0
+	case "plannedActions":
+		return len(result.PlannedActions) == 0
 	default:
 		return true
 	}
@@ -544,7 +554,8 @@ func allCategoriesEmpty(result Result) bool {
 		len(result.Procedures) == 0 &&
 		len(result.Allergies) == 0 &&
 		len(result.VitalSigns) == 0 &&
-		len(result.Recommendations) == 0
+		len(result.Recommendations) == 0 &&
+		len(result.PlannedActions) == 0
 }
 
 // isSuspiciouslyEmpty reports whether result looks like the observed
@@ -604,6 +615,7 @@ func structuredAttempts(ctx context.Context, provider StructuredProvider, text s
 			"medications", len(result.Medications), "labResults", len(result.LabResults),
 			"procedures", len(result.Procedures), "allergies", len(result.Allergies),
 			"vitalSigns", len(result.VitalSigns), "recommendations", len(result.Recommendations),
+			"plannedActions", len(result.PlannedActions),
 			"suspiciouslyEmpty", suspicious)
 		if !suspicious {
 			break
@@ -889,6 +901,7 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 		"medications", len(result.Medications), "labResults", len(result.LabResults),
 		"instrumentalFindings", len(result.InstrumentalFindings), "procedures", len(result.Procedures),
 		"allergies", len(result.Allergies), "vitalSigns", len(result.VitalSigns),
-		"recommendations", len(result.Recommendations), "stillSuspicious", stillSuspicious)
+		"recommendations", len(result.Recommendations), "plannedActions", len(result.PlannedActions),
+		"stillSuspicious", stillSuspicious)
 	return result, merged, stillSuspicious, nil
 }

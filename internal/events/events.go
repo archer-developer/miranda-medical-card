@@ -12,28 +12,34 @@ import (
 	"fmt"
 
 	llm "github.com/archer-developer/miranda-llm"
+
+	"github.com/archer-developer/miranda-medical-card/internal/planning"
 )
 
 // SchemaName is passed as llm.StructuredRequest.SchemaName.
 const SchemaName = "self_reported_event_extraction"
 
-// Prompt classifies rawText and, if it mentions taking a medication,
-// extracts that as a separate MedicationIntake — independent of category,
-// since a single report can be both a symptom AND a medication intake at
-// once (see docs/domain/12-self-reported-events.md §5's headache+ibuprofen
-// example).
+// Prompt classifies rawText and, if it mentions taking a medication or a
+// future action, extracts that separately as MedicationIntake/PlannedAction
+// — both independent of category, since a single report can be a symptom
+// AND a medication intake at once (see
+// docs/domain/12-self-reported-events.md §5's headache+ibuprofen example),
+// and equally can describe something the user needs to do in the future
+// regardless of how the note itself is classified.
 const Prompt = `You are a medical assistant classifying a short, free-text note a patient wrote about themselves (not a document, not OCR output).
 
 Your job:
 1. Classify the note into exactly one category: "symptom" (a complaint, pain, discomfort), "observation" (a measurement or noted fact not equivalent to a symptom, e.g. "давление 145/95"), "medication_intake" (the note is only about taking a medication, nothing else), or "other".
 2. Write a short, factual one-sentence description of what the note says — no medical interpretation, no advice, just what was written.
 3. If the note mentions taking a specific medication (even in passing, alongside a symptom), extract it separately as medicationIntake — this applies regardless of which category you chose in step 1.
+4. If the note describes something the user needs to do in the future with a rough timeframe (a follow-up test, a vaccination, a visit) — e.g. "нужно сделать прививку от бешенства в течение полугода" — extract it as plannedAction, independent of category, same as medicationIntake. Express the timeframe as a relative amount + unit (dueAmountMin/dueAmountMax/dueUnit), never as a calendar date you compute yourself — you don't reliably know today's date, only the offset the user stated.
 
 Rules:
 - Do not diagnose, interpret, or draw medical conclusions.
 - Do not infer a fact that is not written in the text.
 - Omit medicationIntake entirely if no medication is mentioned.
-- If you cannot confidently classify the note or extract anything structured, it is fine to omit category/description/medicationIntake — the original text is preserved regardless of what you return here.`
+- Omit plannedAction entirely if the note describes nothing forward-looking.
+- If you cannot confidently classify the note or extract anything structured, it is fine to omit category/description/medicationIntake/plannedAction — the original text is preserved regardless of what you return here.`
 
 // Schema is the JSON Schema passed as llm.StructuredRequest.Schema.
 func Schema() map[string]any {
@@ -55,15 +61,17 @@ func Schema() map[string]any {
 				},
 				"required": []string{"drugName"},
 			},
+			"plannedAction": planning.SchemaObject(),
 		},
 	}
 }
 
 // Result is the Go-side mirror of Schema.
 type Result struct {
-	Category         string            `json:"category,omitempty"`
-	Description      string            `json:"description,omitempty"`
-	MedicationIntake *MedicationIntake `json:"medicationIntake,omitempty"`
+	Category         string                  `json:"category,omitempty"`
+	Description      string                  `json:"description,omitempty"`
+	MedicationIntake *MedicationIntake       `json:"medicationIntake,omitempty"`
+	PlannedAction    *planning.PlannedAction `json:"plannedAction,omitempty"`
 }
 
 type MedicationIntake struct {
@@ -80,7 +88,7 @@ type StructuredProvider interface {
 
 // Extract runs Structured Extraction over rawText. Unlike
 // internal/extraction.Structured, a failure here (LLM error, or a result
-// with empty Category/Description/MedicationIntake) is not escalated as a
+// with empty Category/Description/MedicationIntake/PlannedAction) is not escalated as a
 // Pipeline failure by this function's caller — see
 // docs/mcp/07-events.md §3: the user's original text must never be lost
 // just because automatic structuring didn't work, so Extract returns

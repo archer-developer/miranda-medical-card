@@ -30,7 +30,7 @@ func TestCommandCatalog_EveryEntryIsUsable(t *testing.T) {
 // against adding a case in main.go and forgetting the catalog.
 func TestCommandCatalog_MatchesRunSwitch(t *testing.T) {
 	dispatched := []string{
-		"profile", "timeline", "document", "ask", "pipeline",
+		"profile", "timeline", "planned-actions", "document", "ask", "pipeline",
 		"backfill-titles", "reindex-fts", "llm-trace",
 	}
 	for _, name := range dispatched {

@@ -209,6 +209,8 @@ Provider Registry
 
 ├── Procedures
 
+├── Planned Actions
+
 ├── Lab Results
 
 ├── Instrumental Findings
@@ -419,9 +421,10 @@ Agent Loop может вызвать большое количество Provide
 4. Instrumental Findings
 5. Diagnosis
 6. Procedures
-7. Medical Profile
-8. Documents
-9. Embeddings
+7. Planned Actions
+8. Medical Profile
+9. Documents
+10. Embeddings
 
 Конкретный порядок может изменяться в зависимости от сервиса.
 

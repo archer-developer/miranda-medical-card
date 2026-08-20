@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/archer-developer/miranda-medical-card/internal/events"
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 	"github.com/archer-developer/miranda-medical-card/internal/timeline"
 )
@@ -19,6 +20,7 @@ type LogEventResult struct {
 	Category         string
 	TimelineEventIDs []string
 	MedicationIntake *LoggedMedicationIntake // nil unless a medication was recognized
+	PlannedAction    *LoggedPlannedAction    // nil unless a future action was recognized
 }
 
 // LoggedMedicationIntake mirrors the medicationIntake object in
@@ -27,6 +29,17 @@ type LoggedMedicationIntake struct {
 	DrugName   string
 	DoseAmount float64
 	DoseUnit   string
+}
+
+// LoggedPlannedAction mirrors docs/mcp/07-events.md §3's plannedAction
+// response object — see docs/adr/004-planned-actions.md §3 for why this
+// goes through medical.log_event rather than a dedicated write tool.
+type LoggedPlannedAction struct {
+	PlannedActionID string
+	Type            string
+	Description     string
+	DueDateFrom     *time.Time
+	DueDateTo       *time.Time
 }
 
 // LogEvent implements docs/mcp/07-events.md §3 / docs/architecture/02-processing-pipeline.md
@@ -89,6 +102,29 @@ func (p *Pipeline) LogEvent(ctx context.Context, userID, text string, occurredAt
 		loggedIntake = &LoggedMedicationIntake{DrugName: drugName, DoseAmount: intake.DoseAmount, DoseUnit: intake.DoseUnit}
 	}
 
+	var loggedPlan *LoggedPlannedAction
+	if extracted.PlannedAction != nil && strings.TrimSpace(extracted.PlannedAction.Description) != "" {
+		// anchorDate is occurred (the moment reported, or a backdated
+		// occurredAt), not time.Now() — see normalization.BuildPlannedAction's
+		// doc comment: the same anchor a document-derived PlannedAction uses
+		// is its own document's date, so a self-reported one should anchor
+		// on the moment it describes, not the moment this call happens to
+		// run.
+		built, buildErr := normalization.BuildPlannedAction(ctx, "", userID,
+			normalization.PlannedActionSourceSelfReported, event.ID, occurred, *extracted.PlannedAction, p.indicatorAliases)
+		if buildErr != nil {
+			p.logger.Warn("pipeline: log event: build planned action failed", "eventId", event.ID, "error", buildErr)
+		}
+		stored, err := p.plannedActions.Add(ctx, built)
+		if err != nil {
+			return LogEventResult{}, fmt.Errorf("pipeline: log event: store planned action: %w", err)
+		}
+		loggedPlan = &LoggedPlannedAction{
+			PlannedActionID: stored.ID, Type: stored.Type, Description: stored.Description,
+			DueDateFrom: stored.DueDateFrom, DueDateTo: stored.DueDateTo,
+		}
+	}
+
 	if err := p.selfReportedEvents.UpdateExtracted(ctx, event.ID, userID, extracted.Category, extracted.Description, medicationIntakeID); err != nil {
 		return LogEventResult{}, fmt.Errorf("pipeline: log event: update extracted: %w", err)
 	}
@@ -114,7 +150,7 @@ func (p *Pipeline) LogEvent(ctx context.Context, userID, text string, occurredAt
 
 	return LogEventResult{
 		EventID: event.ID, Status: storage.DocumentStatusReady, Category: extracted.Category,
-		TimelineEventIDs: timelineEventIDs, MedicationIntake: loggedIntake,
+		TimelineEventIDs: timelineEventIDs, MedicationIntake: loggedIntake, PlannedAction: loggedPlan,
 	}, nil
 }
 
@@ -216,6 +252,13 @@ func (p *Pipeline) DeleteEvent(ctx context.Context, userID, eventID string) (boo
 		if err := p.medicationIntakes.RemoveBySource(ctx, "self_reported", eventID); err != nil {
 			return false, fmt.Errorf("pipeline: delete event: remove medication intake: %w", err)
 		}
+	}
+	// Unconditional (unlike MedicationIntakeID's guard above) — there's no
+	// equivalent "did this event produce a plan?" flag stored on
+	// SelfReportedEvent itself, and RemoveBySource is a no-op delete when
+	// nothing matches, so it's cheap to just always attempt it.
+	if err := p.plannedActions.RemoveBySource(ctx, normalization.PlannedActionSourceSelfReported, eventID); err != nil {
+		return false, fmt.Errorf("pipeline: delete event: remove planned action: %w", err)
 	}
 	if err := p.fts.RemoveEvent(ctx, eventID); err != nil {
 		return false, fmt.Errorf("pipeline: delete event: remove fts: %w", err)

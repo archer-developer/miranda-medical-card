@@ -144,3 +144,64 @@ func TestDeleteEvent_IdempotentAndOwnershipMismatchLooksLikeNotFound(t *testing.
 	require.NoError(t, err, "deleting again must not error")
 	require.False(t, deleted)
 }
+
+func TestLogEvent_PlannedAction_CreatesSelfReportedPendingAction(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"category":"other","description":"Нужно сделать прививку от бешенства","plannedAction":{"type":"vaccination","description":"Прививка от бешенства","relatedProcedureName":"Прививка от бешенства","dueAmountMin":5,"dueAmountMax":7,"dueUnit":"month"}}`),
+	})
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	result, err := p.LogEvent(ctx, "user1", "нужно сделать прививку от бешенства в течение полугода", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result.PlannedAction)
+	require.Equal(t, "vaccination", result.PlannedAction.Type)
+	require.Equal(t, "Прививка от бешенства", result.PlannedAction.Description)
+	require.NotNil(t, result.PlannedAction.DueDateTo)
+
+	pending, err := storage.NewPlannedActionRepository(s).ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, "self_reported", pending[0].SourceType)
+	require.Equal(t, result.EventID, pending[0].SourceID)
+	require.Equal(t, "Прививка от бешенства", pending[0].MatchProcedureName)
+}
+
+func TestLogEvent_NoPlannedActionInText_CreatesNoRecord(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"category":"symptom","description":"головная боль"}`),
+	})
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	result, err := p.LogEvent(ctx, "user1", "болит голова", nil)
+	require.NoError(t, err)
+	require.Nil(t, result.PlannedAction)
+
+	all, err := storage.NewPlannedActionRepository(s).ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Empty(t, all)
+}
+
+func TestDeleteEvent_RemovesPlannedAction(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"category":"other","plannedAction":{"type":"vaccination","description":"Прививка от бешенства","relatedProcedureName":"Прививка от бешенства","dueAmountMax":6,"dueUnit":"month"}}`),
+	})
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	logged, err := p.LogEvent(ctx, "user1", "text", nil)
+	require.NoError(t, err)
+	require.NotNil(t, logged.PlannedAction)
+
+	deleted, err := p.DeleteEvent(ctx, "user1", logged.EventID)
+	require.NoError(t, err)
+	require.True(t, deleted)
+
+	all, err := storage.NewPlannedActionRepository(s).ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Empty(t, all, "delete_event must clean up the PlannedAction it created, same as MedicationIntake")
+}

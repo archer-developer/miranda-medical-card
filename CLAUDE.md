@@ -128,7 +128,7 @@ Same family-wide conventions as [miranda-service-skeleton](../miranda-service-sk
   ./cmd/miranda-medical-card`.
 - **Diagnostics against a live/seeded database**: `go run ./cmd/medical-dev <command>` (or bare
   `medical-dev`/`medical-dev help` for a full command list with examples) — see docs/cli/medical_dev.md
-  for the documented subset (profile, timeline, document, ask, pipeline) plus `backfill-titles`,
+  for the documented subset (profile, timeline, planned-actions, document, ask, pipeline) plus `backfill-titles`,
   `reindex-fts`, and `llm-trace`, three commands not in that doc because they're one-off
   migrations/log-analysis rather than Application-Service-shaped reads (see each one's own doc comment
   in `cmd/medical-dev/`). `scripts/deploy.sh` ships the `medical-dev` binary to the server alongside the

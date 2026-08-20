@@ -23,10 +23,12 @@ package normalization
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
+	"github.com/archer-developer/miranda-medical-card/internal/planning"
 )
 
 const dateLayout = "2006-01-02"
@@ -151,6 +153,58 @@ type VitalSign struct {
 	MeasuredAt *time.Time
 }
 
+// PlannedAction mirrors docs/domain/14-planned-action.md — a future medical
+// action (repeat test, vaccination, follow-up visit) recommended in a
+// document or reported directly by the user, with an approximate due-date
+// range rather than a point date (see docs/adr/004-planned-actions.md).
+//
+// Unlike every other entity in this package, PlannedAction's source isn't
+// always a document — SourceType/SourceID ("document"|"self_reported")
+// mirrors storage.MedicationIntake's own SourceType/SourceID, the existing
+// precedent in this codebase for "a fact may come from a document or from a
+// dialogue with Miranda." SourceID is the documentID or the
+// SelfReportedEvent id, depending on SourceType.
+type PlannedAction struct {
+	ID                 string
+	UserID             string
+	SourceType         string // "document" | "self_reported"
+	SourceID           string
+	Type               string // see planning.Types
+	Description        string
+	ReferenceText      string
+	MatchIndicatorName string // lab_test only — canonicalized like LabResult.IndicatorName
+	MatchProcedureName string // every other type — canonicalized like Procedure.Name
+	DueDateFrom        *time.Time
+	DueDateTo          *time.Time
+	Status             string // see PlannedActionStatus* consts
+	MatchedDocumentID  string
+	MatchedEntityID    string
+	MatchedAt          *time.Time
+}
+
+// PlannedAction.Status values.
+const (
+	PlannedActionStatusPending   = "pending"
+	PlannedActionStatusCompleted = "completed"
+	PlannedActionStatusDeclined  = "declined"
+)
+
+// PlannedAction.SourceType values.
+const (
+	PlannedActionSourceDocument     = "document"
+	PlannedActionSourceSelfReported = "self_reported"
+)
+
+// Overdue reports whether a is still pending and its due-date range has
+// already closed as of asOf. The single place this is computed — see
+// docs/adr/004-planned-actions.md — so the MCP tool, medical-dev, and the
+// Knowledge Provider can't drift on the definition. A completed or declined
+// action, or one with no DueDateTo at all (no timeframe was ever stated),
+// is never overdue.
+func (a PlannedAction) Overdue(asOf time.Time) bool {
+	return a.Status == PlannedActionStatusPending && a.DueDateTo != nil && a.DueDateTo.Before(asOf)
+}
+
 // Result is every domain entity Normalize produced from one document.
 type Result struct {
 	Diagnoses            []Diagnosis
@@ -160,6 +214,7 @@ type Result struct {
 	Procedures           []Procedure
 	Allergies            []Allergy
 	VitalSigns           []VitalSign
+	PlannedActions       []PlannedAction
 }
 
 // Normalize maps extracted (Extraction.raw, see
@@ -359,7 +414,121 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		})
 	}
 
+	// PlannedActions anchor their relative due-date offsets (see
+	// ComputeDueDateRange) on the document's own date when it's known, and
+	// fall back to the current processing time otherwise — a document with
+	// no printed date but a "repeat in 6 months" recommendation still needs
+	// some reference point, and "processing time" is the only other one
+	// available here (see docs/adr/004-planned-actions.md).
+	anchor := time.Now().UTC()
+	if documentDate, err := parseOptionalDate(extracted.DocumentDate); err != nil {
+		addErr("documentDate %q: %w", extracted.DocumentDate, err)
+	} else if documentDate != nil {
+		anchor = *documentDate
+	}
+	for i, pa := range extracted.PlannedActions {
+		built, err := BuildPlannedAction(ctx, fmt.Sprintf("plan_%s_%d", documentID, i), userID,
+			PlannedActionSourceDocument, documentID, anchor, pa, indicatorAliases)
+		if err != nil {
+			addErr("plannedActions[%d] %q: %w", i, pa.Description, err)
+		}
+		result.PlannedActions = append(result.PlannedActions, built)
+	}
+
 	return result, errs
+}
+
+// BuildPlannedAction turns one planning.PlannedAction into a
+// normalization.PlannedAction, anchored at anchorDate — the document's own
+// date for a document-derived recommendation, or the moment of the
+// conversation for a self-reported one (see
+// docs/adr/004-planned-actions.md). Exported and used directly by
+// internal/pipeline.LogEvent as well as by Normalize's own loop above,
+// since a self-reported note is never run through Normalize at all (see
+// internal/events's package doc comment — it has its own, lighter
+// pipeline) but still needs the identical date-math/canonicalization this
+// function does for document-derived actions, so the two sources land on
+// matching keys.
+func BuildPlannedAction(ctx context.Context, id, userID, sourceType, sourceID string, anchorDate time.Time, p planning.PlannedAction, indicatorAliases IndicatorAliasResolver) (PlannedAction, error) {
+	from, to, err := ComputeDueDateRange(anchorDate, p.DueAmountMin, p.DueAmountMax, p.DueUnit)
+
+	var indicatorName, procedureName string
+	if p.Type == "lab_test" {
+		var aliasErr error
+		indicatorName, aliasErr = canonicalizeIndicatorName(ctx, indicatorAliases, p.RelatedIndicatorName)
+		if aliasErr != nil && err == nil {
+			err = aliasErr
+		}
+	} else {
+		procedureName = canonicalize(p.RelatedProcedureName)
+	}
+
+	return PlannedAction{
+		ID:                 id,
+		UserID:             userID,
+		SourceType:         sourceType,
+		SourceID:           sourceID,
+		Type:               p.Type,
+		Description:        p.Description,
+		ReferenceText:      p.ReferenceText,
+		MatchIndicatorName: indicatorName,
+		MatchProcedureName: procedureName,
+		DueDateFrom:        from,
+		DueDateTo:          to,
+		Status:             PlannedActionStatusPending,
+	}, err
+}
+
+// ComputeDueDateRange turns a rough relative timeframe (minAmount/maxAmount
+// + unit, as extracted by planning.PlannedAction) into an absolute
+// [from, to] date range anchored at base. See
+// docs/adr/004-planned-actions.md's "Диапазон дат, а не точечная дата" for
+// why this arithmetic is deterministic Go rather than something the LLM is
+// asked to compute itself.
+//
+// maxAmount <= 0 means no timeframe was stated at all (a legitimate case —
+// e.g. "сдать кровь на глюкозу" with no due date) — returns (nil, nil, nil),
+// not an error; such a PlannedAction simply never expires (see
+// PlannedAction.Overdue). minAmount defaults to maxAmount when omitted (a
+// precise "in 6 months" rather than an approximate "через полгода"
+// range). minAmount > maxAmount, or an unrecognized unit, is an error —
+// non-fatal to the caller, same posture as every other per-entity error
+// Normalize collects.
+func ComputeDueDateRange(base time.Time, minAmount, maxAmount float64, unit string) (from, to *time.Time, err error) {
+	if maxAmount <= 0 {
+		return nil, nil, nil
+	}
+	if minAmount <= 0 {
+		minAmount = maxAmount
+	}
+	if minAmount > maxAmount {
+		return nil, nil, fmt.Errorf("due amount min %v exceeds max %v", minAmount, maxAmount)
+	}
+
+	offset := func(amount float64) (time.Time, error) {
+		switch unit {
+		case "day":
+			return base.AddDate(0, 0, int(math.Round(amount))), nil
+		case "week":
+			return base.AddDate(0, 0, int(math.Round(amount*7))), nil
+		case "month":
+			return base.AddDate(0, int(math.Round(amount)), 0), nil
+		case "year":
+			return base.AddDate(int(math.Round(amount)), 0, 0), nil
+		default:
+			return time.Time{}, fmt.Errorf("unknown due unit %q", unit)
+		}
+	}
+
+	fromT, err := offset(minAmount)
+	if err != nil {
+		return nil, nil, err
+	}
+	toT, err := offset(maxAmount)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &fromT, &toT, nil
 }
 
 // parseOptionalDate parses an ISO 8601 (YYYY-MM-DD) date string, per
