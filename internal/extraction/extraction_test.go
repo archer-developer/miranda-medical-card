@@ -10,12 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/archer-developer/miranda-llm/gemini"
 	"github.com/archer-developer/miranda-llm/llmtest"
 
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
+	"github.com/archer-developer/miranda-medical-card/internal/planning"
 )
 
 // These are regression tests against the real Gemini API, using the
@@ -111,6 +113,41 @@ func assertLabResultValuesMatch(t *testing.T, expected, got extraction.Result) {
 	}
 }
 
+// assertPlannedActionsMatch checks docs/adr/004-planned-actions.md's core
+// extraction contract: plannedActions is a distinct category from
+// recommendations (checked by name, not just count, unlike
+// assertCategoryCountsMatch's other fields), each expected item's type must
+// appear, and — the actual regression signal — whether a due date was
+// extracted must match expectation exactly. An item the fixture expects
+// dated must come back with the same dueAmountMax/dueUnit (proving the
+// model extracted a relative offset, not a fabricated calendar date); an
+// item the fixture expects undated must come back with no dueAmountMax at
+// all (proving a recommendation with no stated timeframe is still captured
+// as a valid plannedAction — see TestFixtures_ThyroidUltrasoundUndatedRecommendation_PlannedActions's
+// own doc comment for the regression this specifically guards against).
+func assertPlannedActionsMatch(t *testing.T, expected, got extraction.Result) {
+	t.Helper()
+	require.Len(t, got.PlannedActions, len(expected.PlannedActions), "plannedActions count")
+	for _, want := range expected.PlannedActions {
+		var found *planning.PlannedAction
+		for i := range got.PlannedActions {
+			if got.PlannedActions[i].Type == want.Type {
+				found = &got.PlannedActions[i]
+				break
+			}
+		}
+		if !assert.NotNil(t, found, "plannedAction type %q missing from result", want.Type) {
+			continue
+		}
+		if want.DueAmountMax > 0 {
+			require.Equal(t, want.DueAmountMax, found.DueAmountMax, "plannedAction %q dueAmountMax", want.Type)
+			require.Equal(t, want.DueUnit, found.DueUnit, "plannedAction %q dueUnit", want.Type)
+		} else {
+			require.Zero(t, found.DueAmountMax, "plannedAction %q must have no due date", want.Type)
+		}
+	}
+}
+
 func TestFixtures_InvitroCBC(t *testing.T) {
 	skipUnlessLive(t)
 	provider := testProvider(t)
@@ -187,6 +224,52 @@ func TestFixtures_GravitaUltrasound_Instrumental(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, got, len(expected.InstrumentalFindings), "instrumentalFindings count")
+}
+
+// TestFixtures_ThyroidUltrasoundDatedRecommendation_PlannedActions is the
+// e2e regression test for docs/adr/004-planned-actions.md's "Диапазон дат,
+// а не точечная дата" decision: the fixture's one recommendation with an
+// explicit relative timeframe ("УЗ-контроль в динамике (через 12 месяцев)")
+// must come back as a plannedActions entry with dueAmountMax=12/dueUnit=month
+// — a relative offset, never a calendar date the model computed itself —
+// while the other two recommendations in the same document (no stated
+// timeframe) still become plannedActions, just undated ones.
+func TestFixtures_ThyroidUltrasoundDatedRecommendation_PlannedActions(t *testing.T) {
+	skipUnlessLive(t)
+	provider := testProvider(t)
+	text := loadText(t, "thyroid_ultrasound_dated_recommendation.txt")
+	expected := loadExpected(t, "thyroid_ultrasound_dated_recommendation_expected.json")
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
+	require.NoError(t, err)
+
+	assertCategoryCountsMatch(t, expected, got)
+	assertPlannedActionsMatch(t, expected, got)
+}
+
+// TestFixtures_ThyroidUltrasoundUndatedRecommendation_PlannedActions is the
+// regression test for the extraction prompt bug fixed alongside this test
+// (internal/extraction.Prompt used to say "A recommendation with no
+// extractable timeframe stays in recommendations only, not plannedActions"
+// — directly contradicting docs/adr/004-planned-actions.md's own "сдать
+// кровь на глюкозу" example and docs/domain/14-planned-action.md §5's "Пункт
+// без dueDateFrom/dueDateTo... всегда присутствует в выдаче
+// medical.planned_actions"). This fixture's recommendations state no
+// timeframe at all ("Анализ крови на гормоны щитовидной железы.
+// Консультация эндокринолога. Контроль УЗИ.") — before the fix this
+// produced zero plannedActions; it must now produce one per recommendation,
+// each with no due date.
+func TestFixtures_ThyroidUltrasoundUndatedRecommendation_PlannedActions(t *testing.T) {
+	skipUnlessLive(t)
+	provider := testProvider(t)
+	text := loadText(t, "thyroid_ultrasound_undated_recommendation.txt")
+	expected := loadExpected(t, "thyroid_ultrasound_undated_recommendation_expected.json")
+
+	got, _, err := extraction.StructuredWithRetry(context.Background(), provider, nil, text, nil)
+	require.NoError(t, err)
+
+	assertCategoryCountsMatch(t, expected, got)
+	assertPlannedActionsMatch(t, expected, got)
 }
 
 // TestStructuredWithRetry_TypeAwareRetryDoesNotStopOnUnrelatedCategory

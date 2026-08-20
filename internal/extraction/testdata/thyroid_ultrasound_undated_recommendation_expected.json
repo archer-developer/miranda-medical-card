@@ -1,0 +1,28 @@
+{
+  "documentType": "imaging_report",
+  "documentDate": "2025-04-18",
+  "organization": "ООО «ПРИМЕР МЕДИКА»",
+  "doctor": "Диагностова Инна Петровна",
+  "language": "ru",
+  "diagnoses": [
+    {"name": "УЗ-признаки невыраженных диффузных изменений щитовидной железы"}
+  ],
+  "medications": [],
+  "labResults": [],
+  "instrumentalFindings": [],
+  "procedures": [
+    {"type": "examination", "name": "УЗИ щитовидной железы", "performedAt": "2025-04-18", "performedBy": "Диагностова Инна Петровна"}
+  ],
+  "allergies": [],
+  "vitalSigns": [],
+  "recommendations": [
+    "Анализ крови на гормоны щитовидной железы.",
+    "Консультация эндокринолога.",
+    "Контроль УЗИ."
+  ],
+  "plannedActions": [
+    {"type": "lab_test", "description": "Анализ крови на гормоны щитовидной железы"},
+    {"type": "consultation", "description": "Консультация эндокринолога"},
+    {"type": "examination", "description": "Контроль УЗИ"}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "documentType": "imaging_report",
+  "documentDate": "2026-07-23",
+  "organization": "FAMILY CLINIC EXAMPLE",
+  "doctor": "Узистова Ольга Ивановна",
+  "language": "ru",
+  "diagnoses": [
+    {"name": "УЗ-признаки узловых образований обеих долей щитовидной железы (EU TI-RADS 3)"}
+  ],
+  "medications": [],
+  "labResults": [],
+  "instrumentalFindings": [],
+  "procedures": [
+    {"type": "examination", "name": "УЗИ щитовидной железы", "performedAt": "2026-07-23", "performedBy": "Узистова Ольга Ивановна"}
+  ],
+  "allergies": [],
+  "vitalSigns": [],
+  "recommendations": [
+    "Консультация эндокринолога",
+    "контроль анализа крови на гормоны щитовидной железы (ТТГ, Т3-св., Т4-св., АТПО)",
+    "УЗ-контроль в динамике (через 12 месяцев)"
+  ],
+  "plannedActions": [
+    {"type": "consultation", "description": "Консультация эндокринолога"},
+    {"type": "lab_test", "description": "контроль анализа крови на гормоны щитовидной железы"},
+    {"type": "examination", "description": "УЗ-контроль в динамике", "dueAmountMax": 12, "dueUnit": "month"}
+  ]
+}
