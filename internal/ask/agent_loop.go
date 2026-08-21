@@ -2,11 +2,13 @@ package ask
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/llmtrace"
+	"github.com/archer-developer/miranda-llm/llmtrace/anomaly"
 )
 
 // Ask runs the agent loop for one question: callerUserID is Miranda's
@@ -27,6 +29,23 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 
 	if sessionID != "" {
 		ctx = llmtrace.WithConversationID(ctx, sessionID)
+	}
+
+	// A Recorder scoped to just this turn, teed onto whatever the
+	// process-wide tracer already does (see llmtrace.ContextTracer) — never
+	// attached at all when anomaly detection is disabled (mirrors
+	// buildLLMTraceWriter's own debug-only gating in
+	// cmd/miranda-medical-card/main.go: a Recorder would never receive any
+	// Trace call anyway if no tracer is installed on the router at all).
+	// See reportAnomalies, called via defer below, for what happens with
+	// whatever it accumulates.
+	var recorder *anomaly.Recorder
+	var outcome anomaly.Outcome
+	if a.anomaly.enabled() {
+		recorder = anomaly.NewRecorder(sessionID)
+		ctx = llmtrace.WithTracer(ctx, recorder)
+		outcome.MaxIterations = a.maxIterations
+		defer func() { a.reportAnomalies(sessionID, recorder, outcome) }()
 	}
 
 	// Order matters: LoadHistory must read the session's staleness against
@@ -57,10 +76,13 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 	for i := 0; i < a.maxIterations; i++ {
 		text, calls, err := a.streamTurn(ctx, messages, tools, &pinnedProvider)
 		if err != nil {
+			outcome.IterationCount = i + 1
+			outcome.TimedOut = errors.Is(err, context.DeadlineExceeded)
 			return Result{}, fmt.Errorf("ask: %w", err)
 		}
 
 		if len(calls) == 0 {
+			outcome.IterationCount = i + 1
 			if err := a.sessions.RecordAssistantFinalMessage(ctx, sessionID, text); err != nil {
 				a.logger.Warn("ask: record final message failed", "error", err)
 			}
@@ -92,6 +114,8 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 		}
 	}
 
+	outcome.HitIterationCap = true
+	outcome.IterationCount = a.maxIterations
 	return Result{}, fmt.Errorf("ask: exceeded %d tool-call iterations without a final reply", a.maxIterations)
 }
 

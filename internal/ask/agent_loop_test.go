@@ -1,8 +1,12 @@
 package ask_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -234,6 +238,45 @@ func TestAsk_ExceedingMaxIterationsReturnsError(t *testing.T) {
 	_, err := asker.Ask(context.Background(), "alex", "alex", "", "Вопрос")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeded")
+}
+
+// TestAsk_ExceedingMaxIterations_WritesAnomalyFileAndWarns exercises the
+// full anomaly-detection wiring end to end through a real Ask() call — a
+// Recorder attached via ctx (see agent_loop.go), Detect finding the
+// iteration_cap anomaly from Outcome, and reportAnomalies (anomaly.go)
+// writing a file and logging exactly one WARNING. Unlike
+// TestReportAnomalies_* in anomaly_test.go (which drive reportAnomalies
+// directly with hand-built Gemini-shaped blocks, since llmtest.FakeProvider
+// traces requests via fmt.Sprintf("%+v", ...) rather than real provider
+// JSON), this only asserts the iteration_cap/timeout kinds are reachable
+// this way — those are the ones Detect derives from Outcome, not from
+// parsing block content.
+func TestAsk_ExceedingMaxIterations_WritesAnomalyFileAndWarns(t *testing.T) {
+	provider := &scriptedProvider{name: "timeline", chunks: []ask.KnowledgeChunk{{Source: "timeline", Content: "x"}}}
+	fake := llmtest.New("fake",
+		llmtest.Response{ToolCall: &llm.ToolCall{ID: "call_1", Name: "timeline", Arguments: `{}`}},
+		llmtest.Response{ToolCall: &llm.ToolCall{ID: "call_2", Name: "timeline", Arguments: `{}`}},
+	)
+	registry := ask.NewRegistry(provider)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	dir := filepath.Join(t.TempDir(), "anomalies")
+
+	sessions := ask.NewSessionStore(storage.NewAskSessionRepository(newTestStore(t)))
+	asker := ask.NewAsker(newRouterWithFake(t, fake), registry, sessions, testProviderTimeout, 20, 2, logger)
+	asker.SetAnomalyConfig(ask.AnomalyConfig{Dir: dir})
+
+	_, err := asker.Ask(context.Background(), "alex", "alex", "sess-1", "Вопрос")
+	require.Error(t, err)
+
+	require.Contains(t, logBuf.String(), "turn had anomalies")
+	require.Contains(t, logBuf.String(), "iteration_cap")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Contains(t, entries[0].Name(), "iteration_cap")
 }
 
 func TestAsk_SessionContinuity_ReplaysHistoryIntoSecondCall(t *testing.T) {

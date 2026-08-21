@@ -64,6 +64,15 @@ const (
 	// backing the medical.ask agent loop traces (see buildLLMTraceWriter) —
 	// only written when logging.level is "debug", same as debugLogFile.
 	llmLogFile = "llm.log"
+	// anomaliesDirName holds one file per agent-loop turn that
+	// llmtrace/anomaly.Detect flagged (a slow call, a stuck tool retry, an
+	// unknown tool, bad arguments, a tool error, or hitting the iteration
+	// cap/a timeout) — see the Asker.SetAnomalyConfig call in run(). Only
+	// populated when llm.log itself is (debug logging), for the same reason
+	// buildLLMTraceWriter is debug-gated: with no tracer installed at all, a
+	// turn's Recorder would never see a single Trace call to detect
+	// anything from.
+	anomaliesDirName = "anomalies"
 
 	// askProviderTimeout bounds each Knowledge Provider's Collect call
 	// (docs/architecture/03-knowledge-providers.md §16) — a slow/hung
@@ -270,8 +279,20 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		// buildAskRouter), so this one call traces both the agent loop's
 		// Chat calls and the document pipeline's Structured/Chat calls —
 		// pipeline.New above never reconstructs the providers, it reuses
-		// these same instances.
-		askRouter.SetTracer(llmtrace.New(llmLogWriter))
+		// these same instances. Wrapped in ContextTracer (rather than
+		// SetTracer(llmtrace.New(llmLogWriter)) directly) so Ask can tee an
+		// extra, turn-scoped anomaly.Recorder onto this same stream via
+		// ctx — see llmtrace.WithTracer's doc comment for why that's safe
+		// despite the tracer being installed once, globally, here.
+		askRouter.SetTracer(&llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)})
+
+		// Anomaly detection piggybacks on the same debug-only gate as
+		// llm.log itself (see anomaliesDirName's doc comment) — a Recorder
+		// attached to ctx would never receive a Trace call otherwise.
+		asker.SetAnomalyConfig(ask.AnomalyConfig{
+			LLMLogPath: filepath.Join(debugLogDir, llmLogFile),
+			Dir:        filepath.Join(debugLogDir, anomaliesDirName),
+		})
 	}
 
 	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, logger)

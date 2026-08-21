@@ -51,6 +51,11 @@ type Asker struct {
 	maxChunks     int
 	maxIterations int
 	logger        *slog.Logger
+
+	// anomaly configures per-turn anomaly detection (see agent_loop.go's
+	// Ask and anomaly.go's reportAnomalies) — disabled (zero value) unless
+	// SetAnomalyConfig is called.
+	anomaly AnomalyConfig
 }
 
 // NewAsker builds an Asker. chat is typically a *router.Router wrapping
