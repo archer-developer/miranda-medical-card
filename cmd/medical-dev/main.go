@@ -647,7 +647,11 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	}
 	if llmLogWriter != nil {
 		defer func() { _ = llmLogWriter.Close() }()
-		askRouter.SetTracer(llmtrace.New(llmLogWriter))
+		// Wrapped in ContextTracer, not SetTracer(llmtrace.New(...)) alone —
+		// mirrors cmd/miranda-medical-card/main.go's own run() exactly, so
+		// SetAnomalyConfig below actually has a live tracer to tee onto (see
+		// llmtrace.WithTracer's doc comment).
+		askRouter.SetTracer(&llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)})
 	}
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
@@ -675,6 +679,9 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	// identically asked either way, which is exactly what makes comparing
 	// a medical-dev ask run against a real medical.ask trace meaningful.
 	asker := ask.NewAsker(askRouter, registry, sessionStore, 20*time.Second, 20, 16, logger)
+	if llmLogWriter != nil {
+		asker.SetAnomalyConfig(ask.AnomalyConfig{LLMLogPath: llmLogPath, Dir: filepath.Join(filepath.Dir(llmLogPath), "anomalies")})
+	}
 
 	fmt.Println("Question")
 	fmt.Println(strings.Repeat("-", 40))
