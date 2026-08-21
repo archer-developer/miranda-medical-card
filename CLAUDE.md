@@ -58,8 +58,9 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
 - **`internal/ask`** — the Agent Loop: `Asker`/`Ask` (agent_loop.go), the Knowledge Provider abstraction
   (`Provider`/`Registry`/`KnowledgeChunk`/`KnowledgeRequest`, provider.go) and its ~10 concrete
   implementations (providers.go, search_providers.go), per-provider `llm.ToolDef` schema construction
-  (tools.go), the merged system prompt including the clinical-safety answer rules (prompt.go), and
-  session persistence (session.go, on top of `internal/storage`).
+  (tools.go), the merged system prompt including the clinical-safety answer rules (prompt.go), session
+  persistence (session.go, on top of `internal/storage`), and per-turn anomaly detection (anomaly.go,
+  `SetAnomalyConfig` — see "Reviewing `logs/anomalies/`" below).
 - **`internal/storage`** — SQLite persistence (`modernc.org/sqlite`, pure Go). One narrow repository
   interface per entity, each in its own file (e.g. `timeline_event.go` → `TimelineRepository`) — a thin
   interface a test can fake by hand, not a mocking framework. `storage.go` owns only the shared
@@ -174,3 +175,18 @@ a tool the model misuses) — the loop that found and fixed several real bugs th
 4. **Fix, redeploy** (`./scripts/deploy.sh` — restarts the live service; say so before running it
    against the production server), **and re-run step 1-2 against the fresh log** to confirm the same
    question now behaves differently, not just that the code compiles.
+
+**Reviewing `logs/anomalies/`:** every `Ask()` turn is checked, as it ends, for a set of mechanical
+anomalies — a slow LLM call, the model retrying a tool with identical arguments, a call to a tool that
+doesn't exist, malformed tool arguments, a tool execution error, or hitting the iteration cap/a timeout
+(`miranda-llm/llmtrace/anomaly.Detect`, wired in via `internal/ask/anomaly.go`'s `reportAnomalies`). A
+flagged turn gets its own file under `logs/anomalies/` (the whole conversation so far when a `sessionId`
+is available, re-read from `logs/llm.log` — just that turn's blocks otherwise) plus exactly one `WARN`
+line in the normal app log/journal — never a full trace dump there, that's what the file is for. This
+only runs when `logging.level: debug` is set, same as `logs/llm.log` itself (a Recorder attached to a
+turn's `ctx` would never see a call to detect anything from otherwise). Detection is mechanical/
+deterministic — it does not judge whether an anomaly is a real bug or a benign edge case. **Review is
+manual and on-demand, not automated**: periodically (or when investigating a report), open a session and
+ask it to look through `logs/anomalies/` — each file is already in `llm.log`'s own block format, so the
+same `medical-dev llm-trace` tooling and the debugging loop above apply directly; the file's leading
+`#`-prefixed header lines out anomaly kind(s) even before opening the trace itself.
