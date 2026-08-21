@@ -132,7 +132,11 @@ Same family-wide conventions as [miranda-service-skeleton](../miranda-service-sk
   `reindex-fts`, and `llm-trace`, three commands not in that doc because they're one-off
   migrations/log-analysis rather than Application-Service-shaped reads (see each one's own doc comment
   in `cmd/medical-dev/`). `scripts/deploy.sh` ships the `medical-dev` binary to the server alongside the
-  service itself, so every command works identically against the live database over SSH.
+  service itself, so every command works identically against the live database over SSH. `llm-trace`'s
+  own parsing/analysis logic (block reassembly, provider-shape decoding, conversation grouping) lives in
+  `miranda-llm/llmtrace/analyze` — `cmd/medical-dev/llm_trace.go` is just a thin flag-parsing wrapper
+  around it, shared with Miranda's own equivalent CLI command and web UI so neither service maintains
+  its own copy.
 
 ### Claude Code: use medical-dev directly, don't just reason about the code
 
