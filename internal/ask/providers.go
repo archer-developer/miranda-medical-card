@@ -183,8 +183,9 @@ func (p *DiagnosisProvider) Metadata() ProviderMetadata {
 	return ProviderMetadata{
 		Name: "diagnoses",
 		Description: "Диагнозы: название, код (МКБ-10, если указан), дата постановки, статус " +
-			"(предполагаемый/действующий/хронический/снят). Используйте для вопросов об истории диагнозов, " +
-			"хронических заболеваниях, дате первой постановки диагноза.",
+			"(предполагаемый/действующий/хронический/снят), и для некоторых активных диагнозов — оценочная дата " +
+			"разрешения (не из документа, общая медицинская оценка по типу диагноза, не факт). Используйте для " +
+			"вопросов об истории диагнозов, хронических заболеваниях, дате первой постановки диагноза.",
 	}
 }
 
@@ -201,6 +202,14 @@ func (p *DiagnosisProvider) Collect(ctx context.Context, req KnowledgeRequest) (
 		}
 		if d.DiagnosedAt != nil {
 			content += fmt.Sprintf(" Поставлен: %s.", formatDate(d.DiagnosedAt))
+		}
+		if d.ExpectedResolutionTo != nil {
+			// Explicitly labeled as an estimate, not a documented fact — this
+			// comes from the extraction model's general medical knowledge of
+			// the condition's typical course, not anything the source
+			// document itself states (see extraction.Schema's
+			// expectedResolutionAmount* description).
+			content += fmt.Sprintf(" Ожидаемое разрешение (оценочно, не из документа): к %s.", formatDate(d.ExpectedResolutionTo))
 		}
 		chunks[i] = KnowledgeChunk{Source: "diagnoses", Title: d.Name, Content: content, Confidence: 1.0, DocumentID: d.DocumentID}
 	}

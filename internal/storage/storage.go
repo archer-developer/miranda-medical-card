@@ -102,15 +102,18 @@ CREATE INDEX IF NOT EXISTS idx_extraction_records_document_id        ON extracti
 CREATE INDEX IF NOT EXISTS idx_extraction_records_document_id_active ON extraction_records(document_id, active);
 
 CREATE TABLE IF NOT EXISTS diagnoses (
-    id           TEXT PRIMARY KEY,
-    user_id      TEXT NOT NULL,
-    document_id  TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    code         TEXT NOT NULL DEFAULT '',
-    code_system  TEXT NOT NULL DEFAULT '',
-    diagnosed_at INTEGER,
-    status       TEXT NOT NULL DEFAULT '',
-    notes        TEXT NOT NULL DEFAULT ''
+    id                       TEXT PRIMARY KEY,
+    user_id                  TEXT NOT NULL,
+    document_id              TEXT NOT NULL,
+    name                     TEXT NOT NULL,
+    code                     TEXT NOT NULL DEFAULT '',
+    code_system              TEXT NOT NULL DEFAULT '',
+    diagnosed_at             INTEGER,
+    status                   TEXT NOT NULL DEFAULT '',
+    notes                    TEXT NOT NULL DEFAULT '',
+    expected_resolution_from INTEGER,
+    expected_resolution_to   INTEGER,
+    status_reasoning         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_diagnoses_user_id     ON diagnoses(user_id);
 CREATE INDEX IF NOT EXISTS idx_diagnoses_document_id ON diagnoses(document_id);
@@ -373,6 +376,9 @@ CREATE INDEX IF NOT EXISTS idx_ask_messages_session_id ON ask_messages(session_i
 // replay against a database that already has it (including a fresh one).
 var schemaMigrations = []string{
 	`ALTER TABLE lab_results ADD COLUMN qualitative_value TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE diagnoses ADD COLUMN expected_resolution_from INTEGER`,
+	`ALTER TABLE diagnoses ADD COLUMN expected_resolution_to INTEGER`,
+	`ALTER TABLE diagnoses ADD COLUMN status_reasoning TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is the shared SQLite connection every entity's repository is built

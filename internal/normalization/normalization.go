@@ -44,6 +44,21 @@ type Diagnosis struct {
 	DiagnosedAt *time.Time
 	Status      string
 	Notes       string
+	// ExpectedResolutionFrom/To are the [from, to] estimate of when an
+	// "active" diagnosis should resolve, computed from
+	// extraction.Diagnosis's relative ExpectedResolutionAmount*/Unit via
+	// ComputeDueDateRange — see docs/domain/07-diagnosis-and-allergy.md §2.
+	// Always nil for chronic/suspected/resolved, and for active diagnoses
+	// with no reasonable estimate.
+	ExpectedResolutionFrom *time.Time
+	ExpectedResolutionTo   *time.Time
+	// StatusReasoning is the model's own one-sentence explanation of why it
+	// picked Status (and, if set, ExpectedResolutionFrom/To) — kept
+	// deliberately separate from Notes (document-derived clinical context)
+	// so it can be reviewed/queried directly without conflating the two.
+	// Not shown to the user via medical.ask — see
+	// docs/domain/07-diagnosis-and-allergy.md.
+	StatusReasoning string
 }
 
 // Medication mirrors docs/domain/06-medication.md §2.
@@ -240,21 +255,48 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 
 	var result Result
 
+	// anchor is the reference point for every relative timeframe this
+	// document's extraction states (a diagnosis's expectedResolution*, a
+	// plannedAction's due*) — the document's own date when known, falling
+	// back to the current processing time otherwise (see the plannedActions
+	// loop below and docs/adr/004-planned-actions.md). Computed once, up
+	// front, since both loops need it.
+	anchor := time.Now().UTC()
+	if documentDate, err := parseOptionalDate(extracted.DocumentDate); err != nil {
+		addErr("documentDate %q: %w", extracted.DocumentDate, err)
+	} else if documentDate != nil {
+		anchor = *documentDate
+	}
+
 	for i, d := range extracted.Diagnoses {
 		diagnosedAt, err := parseOptionalDate(d.DiagnosedAt)
 		if err != nil {
 			addErr("diagnoses[%d] %q: diagnosedAt: %w", i, d.Name, err)
 		}
+		// A diagnosis's own diagnosedAt is the more precise anchor for its
+		// expected-resolution estimate when we have it; the document-level
+		// anchor is the fallback (see anchor's own comment above).
+		resolutionAnchor := anchor
+		if diagnosedAt != nil {
+			resolutionAnchor = *diagnosedAt
+		}
+		resolutionFrom, resolutionTo, err := ComputeDueDateRange(resolutionAnchor, d.ExpectedResolutionAmountMin, d.ExpectedResolutionAmountMax, d.ExpectedResolutionUnit)
+		if err != nil {
+			addErr("diagnoses[%d] %q: expectedResolution: %w", i, d.Name, err)
+		}
 		result.Diagnoses = append(result.Diagnoses, Diagnosis{
-			ID:          fmt.Sprintf("dx_%s_%d", documentID, i),
-			UserID:      userID,
-			DocumentID:  documentID,
-			Name:        d.Name,
-			Code:        d.Code,
-			CodeSystem:  d.CodeSystem,
-			DiagnosedAt: diagnosedAt,
-			Status:      d.Status,
-			Notes:       d.Notes,
+			ID:                     fmt.Sprintf("dx_%s_%d", documentID, i),
+			UserID:                 userID,
+			DocumentID:             documentID,
+			Name:                   d.Name,
+			Code:                   d.Code,
+			CodeSystem:             d.CodeSystem,
+			DiagnosedAt:            diagnosedAt,
+			Status:                 d.Status,
+			Notes:                  d.Notes,
+			ExpectedResolutionFrom: resolutionFrom,
+			ExpectedResolutionTo:   resolutionTo,
+			StatusReasoning:        d.StatusReasoning,
 		})
 	}
 
@@ -415,17 +457,8 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 	}
 
 	// PlannedActions anchor their relative due-date offsets (see
-	// ComputeDueDateRange) on the document's own date when it's known, and
-	// fall back to the current processing time otherwise — a document with
-	// no printed date but a "repeat in 6 months" recommendation still needs
-	// some reference point, and "processing time" is the only other one
-	// available here (see docs/adr/004-planned-actions.md).
-	anchor := time.Now().UTC()
-	if documentDate, err := parseOptionalDate(extracted.DocumentDate); err != nil {
-		addErr("documentDate %q: %w", extracted.DocumentDate, err)
-	} else if documentDate != nil {
-		anchor = *documentDate
-	}
+	// ComputeDueDateRange) on the same document-level anchor computed above
+	// (docs/adr/004-planned-actions.md).
 	for i, pa := range extracted.PlannedActions {
 		built, err := BuildPlannedAction(ctx, fmt.Sprintf("plan_%s_%d", documentID, i), userID,
 			PlannedActionSourceDocument, documentID, anchor, pa, indicatorAliases)
@@ -480,16 +513,18 @@ func BuildPlannedAction(ctx context.Context, id, userID, sourceType, sourceID st
 }
 
 // ComputeDueDateRange turns a rough relative timeframe (minAmount/maxAmount
-// + unit, as extracted by planning.PlannedAction) into an absolute
-// [from, to] date range anchored at base. See
-// docs/adr/004-planned-actions.md's "Диапазон дат, а не точечная дата" for
-// why this arithmetic is deterministic Go rather than something the LLM is
-// asked to compute itself.
+// + unit — as extracted by planning.PlannedAction's due*, or
+// extraction.Diagnosis's expectedResolution*) into an absolute [from, to]
+// date range anchored at base. See docs/adr/004-planned-actions.md's
+// "Диапазон дат, а не точечная дата" for why this arithmetic is
+// deterministic Go rather than something the LLM is asked to compute
+// itself — the same reasoning applies to a diagnosis's expected-resolution
+// estimate, which is why it reuses this function instead of a second copy.
 //
 // maxAmount <= 0 means no timeframe was stated at all (a legitimate case —
-// e.g. "сдать кровь на глюкозу" with no due date) — returns (nil, nil, nil),
-// not an error; such a PlannedAction simply never expires (see
-// PlannedAction.Overdue). minAmount defaults to maxAmount when omitted (a
+// e.g. "сдать кровь на глюкозу" with no due date, or a diagnosis extraction
+// gave no expected-resolution estimate at all) — returns (nil, nil, nil),
+// not an error. minAmount defaults to maxAmount when omitted (a
 // precise "in 6 months" rather than an approximate "через полгода"
 // range). minAmount > maxAmount, or an unrecognized unit, is an error —
 // non-fatal to the caller, same posture as every other per-entity error

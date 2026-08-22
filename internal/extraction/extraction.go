@@ -79,7 +79,8 @@ Rules:
 - A table row under a header like "Исследование"/"Показатель"/"Анализ" + "Результат" + (optionally) "Норма"/"Референсные значения"/"Комментарий" is a lab result row, no matter how many rows the table has — a table with exactly one row is still a table you must extract, not something to treat as an aside. Columns are separated by " | " (see the transcription's own formatting) — use that to tell where the result value ends and an adjacent comment column begins; do not fold a comment column's text into "qualitativeValue".
 - A document's length or the proportion of it that is patient-facing informational/educational text (safety instructions, legal disclaimers, contact information, general health advice) has no bearing on whether to extract the actual clinical data — a document that is 95% boilerplate and 5% one real lab result must still produce that one labResults entry.
 - If you are not confident you can read a value correctly, omit that specific field rather than guessing.
-- If a recommendation describes a future action — a repeat test, a vaccination, a follow-up visit or examination ("Повторный анализ крови через полгода", "сдать кровь на глюкозу", "прививка от бешенства в течение месяца") — also record it in plannedActions, in addition to recommendations. If the text states a rough timeframe, express it as a relative amount + unit (dueAmountMin/dueAmountMax/dueUnit), never as a calendar date you compute yourself: you don't reliably know "today's date" relative to this document, only the offset the text itself states. If the text states no timeframe at all, omit dueAmountMin/dueAmountMax/dueUnit entirely — the action is still a valid plannedAction, just one with no due date.`
+- If a recommendation describes a future action — a repeat test, a vaccination, a follow-up visit or examination ("Повторный анализ крови через полгода", "сдать кровь на глюкозу", "прививка от бешенства в течение месяца") — also record it in plannedActions, in addition to recommendations. If the text states a rough timeframe, express it as a relative amount + unit (dueAmountMin/dueAmountMax/dueUnit), never as a calendar date you compute yourself: you don't reliably know "today's date" relative to this document, only the offset the text itself states. If the text states no timeframe at all, omit dueAmountMin/dueAmountMax/dueUnit entirely — the action is still a valid plannedAction, just one with no due date.
+- Two of a diagnosis's fields are a deliberate, narrow exception to "never interpret, never infer beyond the text": "status" is your best-fit judgment from reading the whole document (see that field's own schema description for how), and "expectedResolutionAmountMin/Max/Unit" (active diagnoses only) draws on general medical knowledge of the condition's typical course, not the document's text. Every other field of every entity in this schema still follows the strict rules above — as written, only if stated.`
 
 // InstrumentalPrompt is Stage 2b's instruction — a separate, narrowly
 // scoped call from Prompt/Schema (Stage 2a), asked only to extract
@@ -140,9 +141,38 @@ func Schema() map[string]any {
 						"codeSystem":  map[string]any{"type": "string", "description": "e.g. icd10 — only if a code is present."},
 						"diagnosedAt": dateProp,
 						"status": map[string]any{
-							"type":        "string",
-							"enum":        []string{"suspected", "active", "chronic", "resolved"},
-							"description": "Only set if the text's own wording clearly indicates one of these; omit otherwise.",
+							"type": "string",
+							"enum": []string{"suspected", "active", "chronic", "resolved"},
+							"description": "Status is almost never stated in so many words — determine the best fit by reading the *whole* " +
+								"document, not just the sentence naming the diagnosis. In particular: a \"Манипуляция/операция\"/\"Лечение\" " +
+								"section documenting that this specific finding was already treated/removed during this same visit means " +
+								"\"resolved\", even with no separate phrase like \"диагноз снят\" (e.g. diagnosis \"Серная пробка\" + elsewhere " +
+								"\"Выполнено удаление серной пробки\" → resolved for that diagnosis specifically, not for others listed " +
+								"alongside it); the diagnosis's own name containing a qualifying word (e.g. \"хронический\") means \"chronic\" " +
+								"even with no separate qualifying sentence; hedging language (\"предположительно\", \"под вопросом\", \"?\") " +
+								"means \"suspected\". Default to \"active\" when the diagnosis is stated as this document's own current finding " +
+								"(e.g. under a \"Диагноз\"/\"Заключение\" heading or an ICD-10 code table) and nothing else in the document " +
+								"points to one of the other three. Only omit status if the text doesn't actually state this as a diagnosis the " +
+								"patient currently has (e.g. mentioned purely as family or past history, not the document's own finding). " +
+								"Still scoped to this document only — never infer from other documents you may have seen.",
+						},
+						"expectedResolutionAmountMin": map[string]any{
+							"type": "number",
+							"description": "Only when status is \"active\": a rough expected time-to-resolution based on general medical " +
+								"knowledge of this condition's typical course (e.g. ОРВИ → roughly 7-14 days) — this is the one field where " +
+								"drawing on knowledge beyond the document's own text is expected, not a violation of the \"never infer beyond " +
+								"the text\" rule elsewhere in this schema. Omit entirely for chronic/suspected/resolved, or if you have no " +
+								"reasonable estimate for this specific condition. Lower bound, if a range applies.",
+						},
+						"expectedResolutionAmountMax": map[string]any{
+							"type":        "number",
+							"description": "Upper bound, or the single value if expectedResolutionAmountMin is omitted.",
+						},
+						"expectedResolutionUnit": map[string]any{"type": "string", "enum": planning.DueUnits},
+						"statusReasoning": map[string]any{
+							"type": "string",
+							"description": "One short sentence explaining why this status — and, if set, this expected-resolution timeframe — " +
+								"was chosen. Kept only for later review of extraction quality, never shown to the patient.",
 						},
 						"notes": map[string]any{"type": "string"},
 					},
@@ -316,6 +346,20 @@ type Diagnosis struct {
 	DiagnosedAt string `json:"diagnosedAt,omitempty"`
 	Status      string `json:"status,omitempty"`
 	Notes       string `json:"notes,omitempty"`
+	// ExpectedResolutionAmountMin/Max/Unit are the one place a diagnosis
+	// field is deliberately allowed to come from general medical knowledge
+	// rather than the document text — see Schema()'s description on these
+	// fields and StatusReasoning below.
+	ExpectedResolutionAmountMin float64 `json:"expectedResolutionAmountMin,omitempty"`
+	ExpectedResolutionAmountMax float64 `json:"expectedResolutionAmountMax,omitempty"`
+	ExpectedResolutionUnit      string  `json:"expectedResolutionUnit,omitempty"`
+	// StatusReasoning is carried through to normalization.Diagnosis and its
+	// own storage column — deliberately never folded into Notes — so why
+	// the model picked a given status/expected-resolution estimate stays
+	// queryable per-diagnosis for reviewing extraction quality, without
+	// being clinical content medical.ask would ever surface to the user
+	// (see internal/ask/providers.go's DiagnosisProvider, which omits it).
+	StatusReasoning string `json:"statusReasoning,omitempty"`
 }
 
 type Medication struct {

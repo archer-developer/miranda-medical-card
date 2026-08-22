@@ -39,6 +39,28 @@ func TestDiagnosisRepository_AddAndList(t *testing.T) {
 	require.Empty(t, byOtherUser)
 }
 
+func TestDiagnosisRepository_ExpectedResolutionRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC)
+	d := normalization.Diagnosis{
+		ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1",
+		Name: "ОРВИ", Status: "active",
+		ExpectedResolutionFrom: &from, ExpectedResolutionTo: &to,
+		StatusReasoning: "Острое респираторное заболевание, типичный срок разрешения 7-14 дней.",
+	}
+	require.NoError(t, repo.Add(ctx, d))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.True(t, from.Equal(*got[0].ExpectedResolutionFrom))
+	require.True(t, to.Equal(*got[0].ExpectedResolutionTo))
+	require.Equal(t, d.StatusReasoning, got[0].StatusReasoning)
+}
+
 func TestDiagnosisRepository_AddWithNilDiagnosedAtRoundTripsAsNil(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewDiagnosisRepository(newTestStore(t))
@@ -49,6 +71,9 @@ func TestDiagnosisRepository_AddWithNilDiagnosedAtRoundTripsAsNil(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Nil(t, got[0].DiagnosedAt)
+	require.Nil(t, got[0].ExpectedResolutionFrom)
+	require.Nil(t, got[0].ExpectedResolutionTo)
+	require.Empty(t, got[0].StatusReasoning)
 }
 
 func TestDiagnosisRepository_ReplaceForDocument(t *testing.T) {

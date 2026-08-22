@@ -32,9 +32,10 @@ func NewDiagnosisRepository(s *Store) DiagnosisRepository {
 
 func (r *sqliteDiagnosisRepository) Add(ctx context.Context, d normalization.Diagnosis) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.UserID, d.DocumentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
+		nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: add diagnosis: %w", err)
@@ -72,9 +73,10 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	}
 	for _, d := range diagnoses {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			d.ID, d.UserID, documentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
+			nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning,
 		)
 		if err != nil {
 			return fmt.Errorf("storage: replace diagnoses: insert: %w", err)
@@ -86,17 +88,19 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	return nil
 }
 
-const diagnosisSelectColumns = `SELECT id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes`
+const diagnosisSelectColumns = `SELECT id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning`
 
 func scanDiagnoses(rows *sql.Rows) ([]normalization.Diagnosis, error) {
 	var result []normalization.Diagnosis
 	for rows.Next() {
 		var d normalization.Diagnosis
-		var diagnosedAt sql.NullInt64
-		if err := rows.Scan(&d.ID, &d.UserID, &d.DocumentID, &d.Name, &d.Code, &d.CodeSystem, &diagnosedAt, &d.Status, &d.Notes); err != nil {
+		var diagnosedAt, resolutionFrom, resolutionTo sql.NullInt64
+		if err := rows.Scan(&d.ID, &d.UserID, &d.DocumentID, &d.Name, &d.Code, &d.CodeSystem, &diagnosedAt, &d.Status, &d.Notes, &resolutionFrom, &resolutionTo, &d.StatusReasoning); err != nil {
 			return nil, fmt.Errorf("storage: scan diagnosis: %w", err)
 		}
 		d.DiagnosedAt = timePtr(diagnosedAt)
+		d.ExpectedResolutionFrom = timePtr(resolutionFrom)
+		d.ExpectedResolutionTo = timePtr(resolutionTo)
 		result = append(result, d)
 	}
 	if err := rows.Err(); err != nil {
