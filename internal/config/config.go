@@ -116,19 +116,21 @@ type ProviderConfig struct {
 	// Escalation names a fallback provider (by Name, elsewhere in
 	// Providers) this provider can hand off to. Two independent mechanisms
 	// read it, depending on which stage this provider is configured for:
-	//   - LLMConfig.DocumentProvider: content-based — retried once when this
-	//     provider's own Structured result comes back suspiciously empty
-	//     (internal/extraction.StructuredWithRetry's escalate parameter).
+	//   - LLMConfig.OCRProvider/ExtractionProvider: content-based — retried
+	//     once when this provider's own OCR or Structured result comes back
+	//     unusable (see internal/extraction.Extract's ocrEscalate parameter
+	//     for OCR, extraction.StructuredWithRetry's escalate parameter for
+	//     Structured Extraction — a suspiciously empty result, specifically).
 	//     Only TargetProvider is read here; ToolName/Description are unused
-	//     — a one-shot Structured call has no open dialogue for a model to
-	//     reason about handing off mid-generation.
+	//     — a one-shot OCR/Structured call has no open dialogue for a model
+	//     to reason about handing off mid-generation.
 	//   - LLMConfig.AgentProvider: router.Router's own tool-based escalation
 	//     (docs/architecture/05-llm.md §9.1) — when Enabled and ToolName is
 	//     set, the agent model may call ToolName mid-conversation to hand a
 	//     hard question to TargetProvider, and a hard provider failure
 	//     mid-turn falls back to it too. This is a genuinely open multi-turn
-	//     Chat loop, unlike DocumentProvider's one-shot calls, so
-	//     ToolName/Description are functionally read here.
+	//     Chat loop, unlike OCRProvider/ExtractionProvider's one-shot calls,
+	//     so ToolName/Description are functionally read here.
 	Escalation EscalationConfig `yaml:"escalation,omitempty"`
 }
 
@@ -157,13 +159,20 @@ type EscalationConfig struct {
 // chain.
 type LLMConfig struct {
 	Providers []ProviderConfig `yaml:"providers"`
-	// DocumentProvider is used for every Document Pipeline LLM stage: OCR
-	// (Stage 1) and Structured Extraction (Stage 2a/2b, see
-	// internal/extraction.Extract) and Self-Reported Event extraction (see
-	// internal/events) — see internal/extraction.Provider's doc comment for
-	// why OCR and Structured Extraction, though two separate LLM calls,
-	// share one provider instance.
-	DocumentProvider string `yaml:"document_provider"`
+	// OCRProvider runs only Stage 1 (OCR/Vision) of the Document Pipeline —
+	// see internal/extraction.Extract's ocrProvider parameter. Independent
+	// of ExtractionProvider (may name the same or a different configured
+	// provider) so a Structured Extraction schema/prompt change, or a
+	// per-model daily quota running out on one of the two stages, doesn't
+	// force the other stage to move too — see internal/pipeline.Pipeline.New's
+	// own doc comment for the full reasoning.
+	OCRProvider string `yaml:"ocr_provider"`
+	// ExtractionProvider runs every Structured-shaped call the Document
+	// Pipeline makes: Structured Extraction (Stage 2a/2b, see
+	// internal/extraction.Extract's structuredProvider parameter),
+	// Self-Reported Event extraction (internal/events), decline matching
+	// (internal/decline), and title backfill (BackfillStudyTitle).
+	ExtractionProvider string `yaml:"extraction_provider"`
 	// AgentProvider is the default/primary provider for the medical.ask
 	// agent loop (see internal/ask), wired into a router.Router alongside
 	// every other configured provider so any provider's own
@@ -226,8 +235,9 @@ func Default() Config {
 					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
 				},
 			},
-			DocumentProvider: "gemini-document",
-			AgentProvider:    "gemini-agent",
+			OCRProvider:        "gemini-document",
+			ExtractionProvider: "gemini-document",
+			AgentProvider:      "gemini-agent",
 		},
 		Embedding: EmbeddingConfig{
 			APIKeyEnv: "GEMINI_API_KEY_1",
@@ -341,11 +351,14 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.target_provider %q references an unknown provider", i, p.Name, p.Escalation.TargetProvider)
 		}
 	}
-	if c.LLM.DocumentProvider == "" || c.LLM.AgentProvider == "" {
-		return fmt.Errorf("config: llm.document_provider and agent_provider must both be set")
+	if c.LLM.OCRProvider == "" || c.LLM.ExtractionProvider == "" || c.LLM.AgentProvider == "" {
+		return fmt.Errorf("config: llm.ocr_provider, extraction_provider, and agent_provider must all be set")
 	}
-	if !providerNames[c.LLM.DocumentProvider] {
-		return fmt.Errorf("config: llm.document_provider %q references an unknown provider", c.LLM.DocumentProvider)
+	if !providerNames[c.LLM.OCRProvider] {
+		return fmt.Errorf("config: llm.ocr_provider %q references an unknown provider", c.LLM.OCRProvider)
+	}
+	if !providerNames[c.LLM.ExtractionProvider] {
+		return fmt.Errorf("config: llm.extraction_provider %q references an unknown provider", c.LLM.ExtractionProvider)
 	}
 	if !providerNames[c.LLM.AgentProvider] {
 		return fmt.Errorf("config: llm.agent_provider %q references an unknown provider", c.LLM.AgentProvider)

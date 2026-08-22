@@ -858,7 +858,7 @@ type Provider interface {
 // ocrWithEscalation runs OCR against provider; if that hard-errors and
 // escalate is non-nil, retries once against escalate instead of failing
 // Extract outright — found missing in production (2026-08-09): a Gemini
-// 429 on OCR failed the whole pipeline run even though document_provider
+// 429 on OCR failed the whole pipeline run even though the provider
 // had a configured escalation target, because escalate previously wasn't
 // even a ChatProvider (Extract's escalate parameter was typed as the
 // Structured-only StructuredProvider, so there was nothing capable of
@@ -883,27 +883,34 @@ func ocrWithEscalation(ctx context.Context, provider, escalate ChatProvider, ima
 	return text, nil
 }
 
-// Extract runs all stages against one document image: OCR (escalated to
-// escalate on a hard error — see ocrWithEscalation), then
-// StructuredWithRetry (Stage 2a, retried automatically if suspiciously
-// empty, escalated to escalate if that's also exhausted — see
-// StructuredWithRetry). If Stage 2a is *still* suspiciously empty at that
-// point, OCR itself is retried once more against escalate, on the theory
-// that a successful-but-truncated transcription (not a hard error, so
-// ocrWithEscalation's own retry never triggered) looked identical to
-// Structured genuinely finding nothing — see the retry block's own comment
-// below for a real case this was added for. Then InstrumentalStructured
-// (Stage 2b) runs as an independent call over whichever transcribed text
-// ended up being used, merged into one Result. This is the function real
-// Pipeline code should call; the individual stages are exported separately
-// for tests/tooling that want to inspect or reuse an intermediate result
-// (e.g. cmd/extract-test). escalate may be nil to disable escalation
-// entirely for OCR and Stage 2a (Stage 2b, InstrumentalStructuredWithRetry,
-// is never escalated — see its own call below); it's typed as the full
-// Provider (not just StructuredProvider) precisely because it needs to run
-// OCR too, not only Structured. A nil logger falls back to slog.Default()
-// and is threaded into every retrying stage — see StructuredWithRetry's
-// doc comment for what gets logged at which level.
+// Extract runs all stages against one document image: OCR (via ocrProvider,
+// escalated to ocrEscalate on a hard error — see ocrWithEscalation), then
+// StructuredWithRetry (Stage 2a, via structuredProvider, retried
+// automatically if suspiciously empty, escalated to structuredEscalate if
+// that's also exhausted — see StructuredWithRetry). If Stage 2a is *still*
+// suspiciously empty at that point, OCR itself is retried once more against
+// ocrEscalate, on the theory that a successful-but-truncated transcription
+// (not a hard error, so ocrWithEscalation's own retry never triggered)
+// looked identical to Structured genuinely finding nothing — see the retry
+// block's own comment below for a real case this was added for. Then
+// InstrumentalStructured (Stage 2b, also via structuredProvider) runs as an
+// independent call over whichever transcribed text ended up being used,
+// merged into one Result. This is the function real Pipeline code should
+// call; the individual stages are exported separately for tests/tooling
+// that want to inspect or reuse an intermediate result (e.g.
+// cmd/extract-test).
+//
+// OCR and Structured Extraction are deliberately separate provider pairs,
+// not one shared Provider — config.LLMConfig's ocr_provider and
+// extraction_provider name independently configured providers (they may be
+// the same model or different ones; splitting them lets a Structured
+// Extraction schema/prompt change target a different, less quota-constrained
+// model without touching OCR, and vice versa). ocrEscalate/structuredEscalate
+// may each independently be nil to disable escalation for that stage alone
+// (Stage 2b, InstrumentalStructuredWithRetry, is never escalated regardless
+// — see its own call below). A nil logger falls back to slog.Default() and
+// is threaded into every retrying stage — see StructuredWithRetry's doc
+// comment for what gets logged at which level.
 //
 // stillSuspicious mirrors StructuredWithRetry's own internal "suspicious"
 // check (see isSuspiciouslyEmpty) on the final Stage 2a result, after
@@ -918,18 +925,18 @@ func ocrWithEscalation(ctx context.Context, provider, escalate ChatProvider, ima
 // doc comment describes; a genuinely short/sparse document (below
 // minFullTextForSuspicion) or one whose type has no known expected
 // category never sets this.
-func Extract(ctx context.Context, provider Provider, escalate Provider, imageBase64, mimeType string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
+func Extract(ctx context.Context, ocrProvider, ocrEscalate ChatProvider, structuredProvider, structuredEscalate StructuredProvider, imageBase64, mimeType string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	text, err := ocrWithEscalation(ctx, provider, escalate, imageBase64, mimeType, logger)
+	text, err := ocrWithEscalation(ctx, ocrProvider, ocrEscalate, imageBase64, mimeType, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}
 	logger.Debug("extraction: ocr done", "fullTextLen", len(text))
 
-	result, stillSuspicious, err = stage2a(ctx, provider, escalate, text, logger)
+	result, stillSuspicious, err = stage2a(ctx, structuredProvider, structuredEscalate, text, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}
@@ -951,12 +958,12 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 	// only kept if it actually produces a non-suspicious Structured result,
 	// so a retry that doesn't help just falls through to the original
 	// (still suspicious) one below.
-	if stillSuspicious && escalate != nil {
-		retryText, ocrErr := OCR(ctx, escalate, imageBase64, mimeType)
+	if stillSuspicious && ocrEscalate != nil {
+		retryText, ocrErr := OCR(ctx, ocrEscalate, imageBase64, mimeType)
 		if ocrErr != nil {
 			logger.Warn("extraction: ocr retry against escalation provider failed", "error", ocrErr)
 		} else {
-			retryResult, retryStillSuspicious, structErr := stage2a(ctx, provider, escalate, retryText, logger)
+			retryResult, retryStillSuspicious, structErr := stage2a(ctx, structuredProvider, structuredEscalate, retryText, logger)
 			if structErr != nil {
 				logger.Warn("extraction: structured retry after ocr escalation failed", "error", structErr)
 			} else if !retryStillSuspicious {
@@ -974,7 +981,7 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 	// truncated text that's about to be discarded by the OCR-retry path,
 	// which would waste a call and (for imaging_report documents) risk
 	// merging findings transcribed from the wrong pass.
-	result, merged, err = finalizeStage2b(ctx, provider, escalate, text, result, logger)
+	result, merged, err = finalizeStage2b(ctx, structuredProvider, structuredEscalate, text, result, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}

@@ -36,7 +36,7 @@ func newAskTestSession(t *testing.T, fake *llmtest.FakeProvider, users []config.
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
-	pl := pipeline.New(fake, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(fake, nil, fake, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	registry := ask.NewRegistry(ask.NewTimelineProvider(storage.NewTimelineRepository(s)))
 	askRouter, err := router.New([]llm.Provider{fake}, nil, "fake")
 	require.NoError(t, err)

@@ -62,7 +62,7 @@ func (p *Pipeline) ResolveDiagnosis(ctx context.Context, userID, text string) (n
 		candidates[i] = decline.Candidate{ID: d.ID, Description: d.Name, Type: d.Status}
 	}
 
-	matchedID, err := decline.Match(ctx, p.provider,
+	matchedID, err := decline.Match(ctx, p.extractionProvider,
 		"The user is saying one of their current diagnoses has now resolved.", text, candidates)
 	if err != nil {
 		return normalization.Diagnosis{}, fmt.Errorf("pipeline: resolve diagnosis: match: %w", err)

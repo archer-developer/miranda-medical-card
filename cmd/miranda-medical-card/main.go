@@ -218,11 +218,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("main: init llm providers: %w", err)
 	}
-	documentProvider, err := resolveProvider(providers, cfg.LLM.DocumentProvider, "document_provider")
+	ocrProvider, err := resolveProvider(providers, cfg.LLM.OCRProvider, "ocr_provider")
 	if err != nil {
 		return fmt.Errorf("main: %w", err)
 	}
-	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
+	ocrEscalation := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.OCRProvider)
+	extractionProvider, err := resolveProvider(providers, cfg.LLM.ExtractionProvider, "extraction_provider")
+	if err != nil {
+		return fmt.Errorf("main: %w", err)
+	}
+	extractionEscalation := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.ExtractionProvider)
 
 	if _, err := resolveProvider(providers, cfg.LLM.AgentProvider, "agent_provider"); err != nil {
 		return fmt.Errorf("main: %w", err)
@@ -241,7 +246,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("main: init gemini embedder: %w", err)
 	}
 
-	pl := pipeline.New(documentProvider, escalationProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+	pl := pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
 
 	// timelineRepo is shared between TimelineProvider and
 	// SelfReportedEventProvider — both read the same timeline_events table,
@@ -321,9 +326,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	logger.Info("medical-card ready",
 		"database", cfg.Database.Path,
 		"files", cfg.Files.Dir,
-		"documentProvider", cfg.LLM.DocumentProvider,
+		"ocrProvider", cfg.LLM.OCRProvider,
+		"ocrEscalationConfigured", ocrEscalation != nil,
+		"extractionProvider", cfg.LLM.ExtractionProvider,
+		"extractionEscalationConfigured", extractionEscalation != nil,
 		"agentProvider", cfg.LLM.AgentProvider,
-		"escalationConfigured", escalationProvider != nil,
 		"embeddingModel", cfg.Embedding.Model,
 		"publicBaseURL", cfg.PublicBaseURL,
 		"addr", cfg.HTTPAddr,
@@ -336,8 +343,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 }
 
 // buildProviders constructs every configured LLM backend once, keyed by
-// its ProviderConfig.Name, so document_provider/agent_provider (and any
-// provider's escalation.target_provider) can all resolve by name against
+// its ProviderConfig.Name, so ocr_provider/extraction_provider/agent_provider
+// (and any provider's escalation.target_provider) can all resolve by name against
 // the same set of instances — mirrors miranda's own cmd/miranda/main.go
 // buildProviders. extraction.Provider (Chat + Structured) is the return
 // type since every provider type here implements both, and that's a
@@ -402,14 +409,18 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 
 // resolveEscalationProvider looks up providerName's own
 // ProviderConfig.Escalation and, if enabled, resolves its TargetProvider —
-// see extraction.StructuredWithRetry's escalate parameter (and, since
-// escalation now also covers OCR, extraction.Extract's). Returns nil
-// (disabling escalation) when providerName has no escalation configured,
-// which is the default. Only called for document_provider now — the agent
-// loop's escalation (agent_provider and any other router-wired provider)
-// goes through router.EscalationConfig instead (see buildAskRouter), a
-// different mechanism entirely (tool-based, mid-conversation) from this
-// content-based "the result looked suspiciously empty" retry.
+// see extraction.Extract's ocrEscalate/structuredEscalate parameters (and
+// extraction.StructuredWithRetry's escalate parameter, which
+// structuredEscalate feeds). Returns nil (disabling escalation) when
+// providerName has no escalation configured, which is the default. Called
+// once for ocr_provider and once for extraction_provider — each stage's
+// escalation target is independent, since the two providers themselves now
+// are (see LLMConfig.OCRProvider/ExtractionProvider's own doc comments).
+// The agent loop's escalation (agent_provider and any other router-wired
+// provider) goes through router.EscalationConfig instead (see
+// buildAskRouter), a different mechanism entirely (tool-based,
+// mid-conversation) from this content-based "the result looked suspiciously
+// empty" retry.
 func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
 		if c.Name != providerName {
@@ -448,8 +459,8 @@ func buildAskRouter(providers map[string]extraction.Provider, configs []config.P
 		routerProviders = append(routerProviders, lp)
 	}
 
-	// A provider's escalation.tool_name being empty (document_provider's
-	// current config never sets one) keeps it out of router.Router's
+	// A provider's escalation.tool_name being empty (ocr_provider/
+	// extraction_provider's current config never sets one) keeps it out of router.Router's
 	// tool-based escalation entirely — its content-based escalation (see
 	// resolveEscalationProvider) is a separate mechanism this map doesn't
 	// touch.

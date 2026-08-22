@@ -145,7 +145,8 @@ llm:
       type: not_a_real_type
       model: x
       api_key_envs: ["X"]
-  document_provider: bad
+  ocr_provider: bad
+  extraction_provider: bad
   agent_provider: bad
 `)
 	_, err := config.Load(path)
@@ -163,7 +164,8 @@ llm:
       type: gemini
       model: x
       api_key_envs: ["X"]
-  document_provider: gemini-document
+  ocr_provider: gemini-document
+  extraction_provider: gemini-document
   agent_provider: does-not-exist
 `)
 	_, err := config.Load(path)
@@ -184,7 +186,8 @@ llm:
       escalation:
         enabled: true
         target_provider: does-not-exist
-  document_provider: gemini-document
+  ocr_provider: gemini-document
+  extraction_provider: gemini-document
   agent_provider: gemini-document
 `)
 	_, err := config.Load(path)
@@ -206,7 +209,8 @@ llm:
       type: gemini
       model: y
       api_key_envs: ["Y"]
-  document_provider: dup
+  ocr_provider: dup
+  extraction_provider: dup
   agent_provider: dup
 `)
 	_, err := config.Load(path)
@@ -231,7 +235,8 @@ llm:
       type: anthropic
       model: claude-sonnet-5
       api_key_envs: ["ANTHROPIC_API_KEY"]
-  document_provider: gemini-document
+  ocr_provider: gemini-document
+  extraction_provider: gemini-document
   agent_provider: gemini-document
 `)
 	cfg, err := config.Load(path)
@@ -244,7 +249,8 @@ llm:
 // regression now that these two fields are functionally read (by
 // buildAskRouter's router.EscalationConfig, for agent_provider) rather than
 // accepted only for schema fidelity with miranda's format (as they still
-// are for document_provider) — see ProviderConfig.Escalation's doc comment.
+// are for ocr_provider/extraction_provider) — see ProviderConfig.Escalation's
+// doc comment.
 func TestLoad_EscalationToolNameAndDescriptionRoundTrip(t *testing.T) {
 	path := writeYAML(t, `
 users:
@@ -264,7 +270,8 @@ llm:
       type: anthropic
       model: claude-sonnet-5
       api_key_envs: ["ANTHROPIC_API_KEY"]
-  document_provider: gemini-agent
+  ocr_provider: gemini-agent
+  extraction_provider: gemini-agent
   agent_provider: gemini-agent
 `)
 	cfg, err := config.Load(path)

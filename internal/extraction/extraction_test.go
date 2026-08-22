@@ -455,7 +455,7 @@ func TestStructuredWithRetry_UnknownDocumentTypeFallsBackToAllCategoriesEmpty(t 
 
 // TestExtract_EscalatesOCROnPrimaryFailure covers the gap found in
 // production (2026-08-09): a quota-exhausted Gemini failed the whole
-// Extract call outright even with document_provider's escalation
+// Extract call outright even with the provider's escalation
 // configured, because none of OCR, Stage 2a, or Stage 2b's escalate
 // parameters actually accepted or used an escalation provider for a hard
 // error (Stage 2a only escalated a "successful but suspiciously empty"
@@ -478,7 +478,7 @@ func TestExtract_EscalatesOCROnPrimaryFailure(t *testing.T) {
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
 	)
 
-	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, "base64img", "image/png", nil)
+	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, primary, escalate, "base64img", "image/png", nil)
 	require.NoError(t, err)
 	require.False(t, stillSuspicious)
 	require.Len(t, result.LabResults, 1)
@@ -515,21 +515,20 @@ func TestExtract_RetriesOCRAgainstEscalationWhenStructuredStaysSuspicious(t *tes
 		llmtest.StructuredResponse{JSON: mustMarshalStructured(t, extraction.Result{DocumentType: "consultation"})}, // StructuredWithRetry's own escalation attempt, still on the (not yet retried) truncated text
 	)
 
-	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, "base64img", "application/pdf", nil)
+	result, _, stillSuspicious, err := extraction.Extract(context.Background(), primary, escalate, primary, escalate, "base64img", "application/pdf", nil)
 	require.NoError(t, err)
 	require.False(t, stillSuspicious, "the OCR retry against escalate must have recovered a non-suspicious result")
 	require.Len(t, result.Diagnoses, 1)
 	require.Equal(t, completeText, result.FullText, "the recovered, complete transcription must be what's actually used, not the original truncated one")
 }
 
-// TestExtract_OCRFailsOutrightWithoutEscalation confirms a nil escalate
-// (no escalation configured for document_provider in llm.yaml) keeps
-// today's plain "OCR fails, the whole call fails" behavior — not a
-// regression.
+// TestExtract_OCRFailsOutrightWithoutEscalation confirms a nil ocrEscalate
+// (no escalation configured for ocr_provider in llm.yaml) keeps today's
+// plain "OCR fails, the whole call fails" behavior — not a regression.
 func TestExtract_OCRFailsOutrightWithoutEscalation(t *testing.T) {
 	primary := llmtest.New("fake-primary", llmtest.Response{Err: errors.New("boom: 429 quota exceeded")})
 
-	_, _, _, err := extraction.Extract(context.Background(), primary, nil, "base64img", "image/png", nil)
+	_, _, _, err := extraction.Extract(context.Background(), primary, nil, primary, nil, "base64img", "image/png", nil)
 	require.Error(t, err)
 }
 

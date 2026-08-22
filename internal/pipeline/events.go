@@ -73,7 +73,7 @@ func (p *Pipeline) LogEvent(ctx context.Context, userID, text string, occurredAt
 		return LogEventResult{}, fmt.Errorf("pipeline: log event: %w", err)
 	}
 
-	extracted, extractErr := events.Extract(ctx, p.provider, text)
+	extracted, extractErr := events.Extract(ctx, p.extractionProvider, text)
 	// extractErr is deliberately not returned — see this function's doc
 	// comment. extracted stays its zero value (empty category/description,
 	// nil MedicationIntake) when extraction failed, which is exactly the

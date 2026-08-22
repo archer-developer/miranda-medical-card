@@ -39,7 +39,7 @@ func (p *Pipeline) BackfillStudyTitle(ctx context.Context, userID, documentID st
 		return false, "", nil
 	}
 
-	result, _, err := extraction.StructuredWithRetry(ctx, p.provider, p.escalationProvider, doc.RecognizedText, p.logger)
+	result, _, err := extraction.StructuredWithRetry(ctx, p.extractionProvider, p.extractionEscalation, doc.RecognizedText, p.logger)
 	if err != nil {
 		return false, "", fmt.Errorf("pipeline: backfill study title: structured: %w", err)
 	}

@@ -48,7 +48,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
-	pl := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(storage.NewTimelineRepository(s)),
@@ -276,7 +276,7 @@ func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
-	pl := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	registry := ask.NewRegistry(ask.NewTimelineProvider(storage.NewTimelineRepository(s)))
 	askRouter, err := router.New([]llm.Provider{provider}, nil, "fake")
 	require.NoError(t, err)

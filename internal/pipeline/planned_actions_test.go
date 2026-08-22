@@ -32,7 +32,7 @@ func TestDeclinePlannedAction_HappyPath(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"matchId":"` + rabies.ID + `"}`),
 	})
-	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	declined, err := p.DeclinePlannedAction(ctx, "user1", "отмени прививку от бешенства")
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestDeclinePlannedAction_HappyPath(t *testing.T) {
 func TestDeclinePlannedAction_NoPendingActionsAtAll(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.DeclinePlannedAction(ctx, "user1", "отмени что угодно")
 	require.Error(t, err)
@@ -75,7 +75,7 @@ func TestDeclinePlannedAction_NoConfidentMatchListsPendingDescriptions(t *testin
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{}`), // model found no confident match
 	})
-	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err = p.DeclinePlannedAction(ctx, "user1", "отмени что-то непонятное")
 	require.Error(t, err)
@@ -91,7 +91,7 @@ func TestDeclinePlannedAction_NoConfidentMatchListsPendingDescriptions(t *testin
 func TestDeclinePlannedAction_EmptyTextRejected(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.DeclinePlannedAction(ctx, "user1", "   ")
 	require.Error(t, err)

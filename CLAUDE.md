@@ -33,7 +33,9 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
 - **Document Pipeline** (`internal/pipeline`, `internal/extraction`, `internal/normalization`) —
   `medical.upload_document`'s synchronous OCR → Structured Extraction → Normalization → Timeline/Profile/
   Embeddings/FTS chain (docs/architecture/02-processing-pipeline.md). One-shot `llm.Provider.Structured`/
-  `Chat` calls, no open dialogue. Configured via `llm.document_provider`.
+  `Chat` calls, no open dialogue. OCR (Stage 1) and Structured Extraction (Stage 2a/2b, plus
+  Self-Reported Event extraction and decline matching) are independently configured via
+  `llm.ocr_provider`/`llm.extraction_provider` — they may name the same or different providers.
 - **Agent Loop** (`internal/ask`) — `medical.ask`'s internal agent (docs/architecture/05-llm.md §3,
   docs/adr/001-internal-agent-loop-implementation.md): a single open `llm.Provider.Chat` dialogue,
   wrapped in a `*router.Router` (reliability fallback + tool-based escalation), where the model

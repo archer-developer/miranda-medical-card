@@ -400,8 +400,8 @@ medical-dev pipeline doc_01J8... --user alex --stage normalization
 medical-dev pipeline --all --user alex --stage extraction
 ```
 
-Флаг `--provider NAME` подменяет `llm.document_provider` на другого сконфигурированного
-провайдера — тот же приём, что и у `medical-dev backfill-titles` (одноразовая миграция,
+Флаг `--provider NAME` подменяет и `llm.ocr_provider`, и `llm.extraction_provider` на
+другого сконфигурированного провайдера — тот же приём, что и у `medical-dev backfill-titles` (одноразовая миграция,
 не входящая в этот документ — см. её собственный doc comment в `cmd/medical-dev/main.go`),
 полезен, когда у провайдера по умолчанию исчерпана дневная квота, но у другого
 сконфигурированного провайдера ещё есть запас (не имеет эффекта для `--stage normalization`,

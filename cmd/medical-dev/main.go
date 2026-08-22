@@ -178,12 +178,17 @@ func newPipelineWithLogger(cfg config.Config, store *storage.Store, logger *slog
 }
 
 // newPipelineWithLoggerAndProvider is newPipelineWithLogger plus an optional
-// providerOverride in place of cfg.LLM.DocumentProvider — see
-// runPipeline's --provider flag (mirroring runBackfillTitles's own): a
-// configured model's free-tier daily quota is per-model, not shared across a
-// project's other models, so a bulk operation can keep going against a
-// differently-named model once the default one starts returning 429
-// RESOURCE_EXHAUSTED. Unlike runBackfillTitles's own hand-rolled Pipeline
+// providerOverride in place of both cfg.LLM.OCRProvider and
+// cfg.LLM.ExtractionProvider — see runPipeline's --provider flag (mirroring
+// runBackfillTitles's own): a configured model's free-tier daily quota is
+// per-model, not shared across a project's other models, so a bulk
+// operation can keep going against a differently-named model once the
+// default one starts returning 429 RESOURCE_EXHAUSTED. Applied to both
+// roles uniformly rather than requiring two separate flags — the realistic
+// use case is "send everything to a fresh model," not retargeting OCR and
+// Structured Extraction independently (config/llm.yaml itself is the tool
+// for that, see LLMConfig.OCRProvider/ExtractionProvider's own doc
+// comments). Unlike runBackfillTitles's own hand-rolled Pipeline
 // construction, this still wires escalation (via resolveEscalationProvider)
 // for whichever provider ends up named — a real Structured Extraction run
 // should get the same escalation behavior production wiring gives it,
@@ -195,15 +200,22 @@ func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, l
 	if err != nil {
 		return nil, err
 	}
-	name := cfg.LLM.DocumentProvider
+	ocrName := cfg.LLM.OCRProvider
+	extractionName := cfg.LLM.ExtractionProvider
 	if providerOverride != "" {
-		name = providerOverride
+		ocrName = providerOverride
+		extractionName = providerOverride
 	}
-	provider, err := resolveProvider(providers, name, "document_provider")
+	ocrProvider, err := resolveProvider(providers, ocrName, "ocr_provider")
 	if err != nil {
 		return nil, err
 	}
-	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, name)
+	ocrEscalation := resolveEscalationProvider(providers, cfg.LLM.Providers, ocrName)
+	extractionProvider, err := resolveProvider(providers, extractionName, "extraction_provider")
+	if err != nil {
+		return nil, err
+	}
+	extractionEscalation := resolveEscalationProvider(providers, cfg.LLM.Providers, extractionName)
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
@@ -213,7 +225,7 @@ func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, l
 	if err != nil {
 		return nil, err
 	}
-	return pipeline.New(provider, escalationProvider, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
+	return pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
 }
 
 // buildProviders, firstAPIKey, resolveProvider, and resolveEscalationProvider
@@ -271,8 +283,8 @@ func resolveProvider(providers map[string]extraction.Provider, name, field strin
 
 // resolveEscalationProvider mirrors cmd/miranda-medical-card/main.go's
 // helper of the same name — see that copy's doc comment. providerName is
-// any configured role (document_provider, agent_provider), not just the
-// document one — each has its own independent escalation target.
+// any configured role (ocr_provider, extraction_provider, agent_provider),
+// not just one of them — each has its own independent escalation target.
 func resolveEscalationProvider(providers map[string]extraction.Provider, configs []config.ProviderConfig, providerName string) extraction.Provider {
 	for _, c := range configs {
 		if c.Name != providerName {
@@ -495,15 +507,18 @@ var pipelineStages = map[string]bool{
 // so a wrapping script can tell "some documents didn't finish" from "all
 // done."
 //
-// --provider overrides llm.document_provider, same escape hatch as
-// backfill-titles's own --provider flag; harmlessly unused for
-// --stage=normalization, which never calls an LLM at all.
+// --provider overrides both llm.ocr_provider and llm.extraction_provider
+// with the same named provider, same escape hatch as backfill-titles's own
+// --provider flag; harmlessly unused for --stage=normalization, which never
+// calls an LLM at all (and, for --stage=extraction, only extraction_provider
+// is actually resolved — see newPipelineWithLoggerAndProvider's own doc
+// comment for why the override still applies uniformly to both roles).
 func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 	fs := flag.NewFlagSet("pipeline", flag.ExitOnError)
 	user := fs.String("user", "", "user id")
 	stage := fs.String("stage", "ocr", "resume from this stage: ocr (default, full run) | extraction (skip OCR) | normalization (skip OCR and Structured Extraction, zero LLM calls)")
 	all := fs.Bool("all", false, "run every document --user has instead of a single documentId")
-	providerName := fs.String("provider", "", "override llm.document_provider with this configured provider name")
+	providerName := fs.String("provider", "", "override llm.ocr_provider and llm.extraction_provider with this configured provider name")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -581,7 +596,9 @@ func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 // (Structured) against each document's already-stored RecognizedText.
 //
 // --provider overrides which configured llm.providers entry to use instead
-// of llm.document_provider — useful when the default model's free-tier
+// of llm.extraction_provider (BackfillStudyTitle never calls OCR, only
+// Stage 2a — see its own doc comment — so llm.ocr_provider is irrelevant
+// here and left unresolved) — useful when the default model's free-tier
 // daily quota (per-model, not shared across a project's models) is
 // exhausted but a differently-named model still has budget, e.g.
 // --provider gemini-agent when gemini-document returns 429
@@ -593,7 +610,7 @@ func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) error {
 	fs := flag.NewFlagSet("backfill-titles", flag.ExitOnError)
 	user := fs.String("user", "", "user id")
-	providerName := fs.String("provider", "", "override llm.document_provider with this configured provider name")
+	providerName := fs.String("provider", "", "override llm.extraction_provider with this configured provider name")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -608,11 +625,11 @@ func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) e
 	if err != nil {
 		return err
 	}
-	name := cfg.LLM.DocumentProvider
+	name := cfg.LLM.ExtractionProvider
 	if *providerName != "" {
 		name = *providerName
 	}
-	provider, err := resolveProvider(providers, name, "provider")
+	provider, err := resolveProvider(providers, name, "extraction_provider")
 	if err != nil {
 		return err
 	}
@@ -625,7 +642,7 @@ func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) e
 	if err != nil {
 		return err
 	}
-	pl := pipeline.New(provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+	pl := pipeline.New(nil, nil, provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
 
 	docs, err := pl.ListDocuments(ctx, *user)
 	if err != nil {
@@ -659,7 +676,8 @@ func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) e
 // in line with it — no LLM calls, no re-OCR, just a plain rebuild from
 // what's already stored. Unlike backfill-titles, needs no --provider
 // override: ReindexDocumentFTS never touches an LLM provider at all, so
-// newPipeline's default llm.document_provider is never even called.
+// newPipeline's default llm.ocr_provider/extraction_provider are never even
+// called.
 func runReindexFTS(args []string, cfg config.Config, store *storage.Store) error {
 	fs := flag.NewFlagSet("reindex-fts", flag.ExitOnError)
 	user := fs.String("user", "", "user id")

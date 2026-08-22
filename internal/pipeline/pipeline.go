@@ -75,9 +75,22 @@ type Result struct {
 // repositories and bypass the orchestration this type exists to enforce
 // (e.g. "an Extraction row is never active except via Activate").
 type Pipeline struct {
-	provider           extraction.Provider
-	escalationProvider extraction.Provider
-	files              *filestore.Store
+	// ocrProvider/ocrEscalation and extractionProvider/extractionEscalation
+	// are independently configured (config.LLMConfig's ocr_provider and
+	// extraction_provider) — see New's doc comment for why they're split
+	// rather than one shared pair. Each field is typed as the full
+	// extraction.Provider (not the narrower ChatProvider/StructuredProvider
+	// each call site actually needs) purely so both pairs can be built the
+	// same way in main.go/cmd/medical-dev — every concrete provider
+	// (gemini/anthropic/openai_compat) implements both capabilities anyway,
+	// and Go satisfies the narrower interface implicitly at each call site
+	// (extraction.Extract's ocrProvider param, decline.Match/events.Extract's
+	// StructuredProvider param, etc.) with no explicit cast needed.
+	ocrProvider          extraction.Provider
+	ocrEscalation        extraction.Provider
+	extractionProvider   extraction.Provider
+	extractionEscalation extraction.Provider
+	files                *filestore.Store
 
 	fileRepo         storage.FileRepository
 	documentRepo     storage.DocumentRepository
@@ -110,22 +123,29 @@ type Pipeline struct {
 	logger            *slog.Logger
 }
 
-// New builds a Pipeline. provider supplies both OCR (Chat) and Structured
-// Extraction calls (see extraction.Provider); escalationProvider, if
-// non-nil, is tried once for OCR (on any hard error) and once for
-// Structured Extraction (see extraction.StructuredWithRetry, when
-// provider's own attempts are exhausted and still suspiciously empty) —
-// nil disables both entirely (see config.LLMConfig.EscalationModel). Typed
-// as the full extraction.Provider, not just StructuredProvider, precisely
-// because it needs to run OCR too. embedder generates Embedding Search
-// vectors (see docs/architecture/04-search.md §14), tagged with
-// embeddingProvider/embeddingModel on every stored row (see
+// New builds a Pipeline. ocrProvider runs Stage 1 (OCR/Vision) calls;
+// extractionProvider runs every Structured-shaped call the Document
+// Pipeline makes — Stage 2a/2b (Structured Extraction, Instrumental
+// Structured), Self-Reported Event extraction (internal/events), decline
+// matching (internal/decline), and title backfill
+// (BackfillStudyTitle). They're independently configured
+// (config.LLMConfig's ocr_provider/extraction_provider) rather than one
+// shared provider — see extraction.Extract's own doc comment for why: OCR
+// and Structured Extraction can each need a different model (a different
+// quota budget, a schema/prompt change that only touches Structured
+// Extraction) without the other stage moving too. ocrEscalation/
+// extractionEscalation, if non-nil, are each tried once for their own stage
+// on a hard error or (for Structured Extraction) a suspiciously empty
+// result (see extraction.StructuredWithRetry) — either may independently be
+// nil to disable escalation for that stage alone. embedder generates
+// Embedding Search vectors (see docs/architecture/04-search.md §14), tagged
+// with embeddingProvider/embeddingModel on every stored row (see
 // storage.Embedding.Provider/ModelVersion — the latter is what
 // EmbeddingRepository.ListByUser scopes a search to, so it must stay
 // consistent for vectors to remain comparable). files and s are opened once
 // at process startup and shared across every request. A nil logger falls
 // back to slog.Default().
-func New(provider extraction.Provider, escalationProvider extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
+func New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -138,9 +158,11 @@ func New(provider extraction.Provider, escalationProvider extraction.Provider, e
 	documentRepo := storage.NewDocumentRepository(s)
 
 	return &Pipeline{
-		provider:           provider,
-		escalationProvider: escalationProvider,
-		files:              files,
+		ocrProvider:          ocrProvider,
+		ocrEscalation:        ocrEscalation,
+		extractionProvider:   extractionProvider,
+		extractionEscalation: extractionEscalation,
+		files:                files,
 
 		fileRepo:         storage.NewFileRepository(s),
 		documentRepo:     documentRepo,
@@ -284,7 +306,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		if err != nil {
 			return extraction.Result{}, nil, false, fmt.Errorf("read file: %w", err)
 		}
-		return extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
+		return extraction.Extract(ctx, p.ocrProvider, p.ocrEscalation, p.extractionProvider, p.extractionEscalation, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
 	})
 }
 
@@ -329,7 +351,7 @@ func (p *Pipeline) ReextractDocument(ctx context.Context, userID, documentID str
 	}
 
 	return p.process(ctx, userID, documentID, len(versions)+1, func() (extraction.Result, json.RawMessage, bool, error) {
-		return extraction.ExtractFromText(ctx, p.provider, p.escalationProvider, doc.RecognizedText, p.logger)
+		return extraction.ExtractFromText(ctx, p.extractionProvider, p.extractionEscalation, doc.RecognizedText, p.logger)
 	})
 }
 

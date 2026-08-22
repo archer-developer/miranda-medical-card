@@ -44,7 +44,7 @@ func TestPlannedAction_AutoCompletesFromLaterDocument_AndRevertsOnReprocessWitho
 
 	// 1. Upload document A: a consultation recommending a glucose recheck.
 	providerA := scriptedConsultationWithPlannedAction()
-	pipelineA := pipeline.New(providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineA := pipeline.New(providerA, nil, providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileA, err := pipelineA.UploadFile(ctx, "user1", "consult.pdf", "application/pdf", []byte("a"))
 	require.NoError(t, err)
 	resultA, err := pipelineA.UploadDocument(ctx, "user1", fileA.ID)
@@ -68,7 +68,7 @@ func TestPlannedAction_AutoCompletesFromLaterDocument_AndRevertsOnReprocessWitho
 	// 2. Upload document B: a lab report with a matching glucose result —
 	// the pending action must auto-complete with a backlink to it.
 	providerB := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Глюкоза","value":5.2,"unit":"ммоль/л"}]}`)
-	pipelineB := pipeline.New(providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineB := pipeline.New(providerB, nil, providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileB, err := pipelineB.UploadFile(ctx, "user1", "glucose.pdf", "application/pdf", []byte("b"))
 	require.NoError(t, err)
 	resultB, err := pipelineB.UploadDocument(ctx, "user1", fileB.ID)
@@ -90,7 +90,7 @@ func TestPlannedAction_AutoCompletesFromLaterDocument_AndRevertsOnReprocessWitho
 	// glucose result — the completion must revert to pending rather than
 	// staying permanently "completed" by data that no longer exists.
 	providerB2 := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Холестерин","value":4.1,"unit":"ммоль/л"}]}`)
-	pipelineB2 := pipeline.New(providerB2, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineB2 := pipeline.New(providerB2, nil, providerB2, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	_, err = pipelineB2.ReprocessDocument(ctx, "user1", resultB.DocumentID)
 	require.NoError(t, err)
 
@@ -108,7 +108,7 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 
 	// Document A creates the planned action.
 	providerA := scriptedConsultationWithPlannedAction()
-	pipelineA := pipeline.New(providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineA := pipeline.New(providerA, nil, providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileA, err := pipelineA.UploadFile(ctx, "user1", "consult.pdf", "application/pdf", []byte("a"))
 	require.NoError(t, err)
 	resultA, err := pipelineA.UploadDocument(ctx, "user1", fileA.ID)
@@ -122,7 +122,7 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 
 	// Document B completes it.
 	providerB := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"Глюкоза","value":5.2,"unit":"ммоль/л"}]}`)
-	pipelineB := pipeline.New(providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineB := pipeline.New(providerB, nil, providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileB, err := pipelineB.UploadFile(ctx, "user1", "glucose.pdf", "application/pdf", []byte("b"))
 	require.NoError(t, err)
 	resultB, err := pipelineB.UploadDocument(ctx, "user1", fileB.ID)
@@ -150,7 +150,7 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 		}`)},
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
 	)
-	pipelineA2 := pipeline.New(providerA2, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineA2 := pipeline.New(providerA2, nil, providerA2, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	_, err = pipelineA2.ReprocessDocument(ctx, "user1", resultA.DocumentID)
 	require.NoError(t, err)
 
@@ -198,14 +198,14 @@ func TestPlannedAction_CrossDocumentDuplicateRecommendationCollapsesToOneRow(t *
 	s, fs := newTestBackend(t)
 
 	providerA := scriptedConsultationRecommendingEndocrinologist("Жалобы на утомляемость. Рекомендована консультация эндокринолога.")
-	pipelineA := pipeline.New(providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineA := pipeline.New(providerA, nil, providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileA, err := pipelineA.UploadFile(ctx, "user1", "consult1.pdf", "application/pdf", []byte("a"))
 	require.NoError(t, err)
 	_, err = pipelineA.UploadDocument(ctx, "user1", fileA.ID)
 	require.NoError(t, err)
 
 	providerB := scriptedConsultationRecommendingEndocrinologist("Повторный приём терапевта. Рекомендована консультация эндокринолога.")
-	pipelineB := pipeline.New(providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pipelineB := pipeline.New(providerB, nil, providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	fileB, err := pipelineB.UploadFile(ctx, "user1", "consult2.pdf", "application/pdf", []byte("b"))
 	require.NoError(t, err)
 	_, err = pipelineB.UploadDocument(ctx, "user1", fileB.ID)
@@ -223,7 +223,7 @@ func TestPlannedAction_CrossDocumentDuplicateRecommendationCollapsesToOneRow(t *
 	declineProvider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"matchId":"` + pending[0].ID + `"}`),
 	})
-	declinePipeline := pipeline.New(declineProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	declinePipeline := pipeline.New(declineProvider, nil, declineProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 	declined, err := declinePipeline.DeclinePlannedAction(ctx, "user1", "Консультация эндокринолога")
 	require.NoError(t, err)
 	require.Equal(t, pending[0].ID, declined.ID)

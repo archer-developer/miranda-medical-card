@@ -48,24 +48,33 @@
 #   max_size_bytes: 52428800
 
 # llm: every configured model backend (providers), and which one each of the
-# two stages uses by name — document_provider covers both OCR and Structured
-# Extraction; agent_provider is the default/primary provider for the
-# medical.ask agent loop (see internal/config.LLMConfig's doc comment).
-# Mirrors miranda's own config/llm.yaml providers/default_provider shape
-# (see internal/config.ProviderConfig's doc comment) so the two formats stay
+# three stages uses by name — ocr_provider runs Stage 1 (OCR/Vision) of the
+# Document Pipeline; extraction_provider runs every Structured-shaped call
+# the Document Pipeline makes (Structured Extraction Stage 2a/2b,
+# Self-Reported Event extraction, decline matching, title backfill);
+# agent_provider is the default/primary provider for the medical.ask agent
+# loop (see internal/config.LLMConfig's doc comment). ocr_provider and
+# extraction_provider are independent — they may name the same provider (the
+# default below) or two different ones, e.g. to keep a Structured Extraction
+# schema/prompt change off OCR's quota budget, or vice versa. Mirrors
+# miranda's own config/llm.yaml providers/default_provider shape (see
+# internal/config.ProviderConfig's doc comment) so the two formats stay
 # directly comparable. api_key_envs supports several environment variables
 # for automatic key rotation on rate limits (gemini only — useful on
 # free-tier keys) — list as many as you have.
 #
 # escalation means two different things depending on which stage the
 # provider is configured for:
-#   - document_provider: content-based retry. If Structured Extraction's own
-#     retries are exhausted and the result still looks suspiciously empty
-#     (see internal/extraction.StructuredWithRetry), one attempt is made
-#     against escalation.target_provider instead of retrying
-#     document_provider again — e.g. falling back from Gemini to Claude on a
-#     document Gemini keeps missing. Only target_provider is read here;
-#     tool_name/description are ignored for this stage.
+#   - ocr_provider/extraction_provider: content-based retry. For
+#     extraction_provider, if Structured Extraction's own retries are
+#     exhausted and the result still looks suspiciously empty (see
+#     internal/extraction.StructuredWithRetry), one attempt is made against
+#     escalation.target_provider instead of retrying extraction_provider
+#     again — e.g. falling back from Gemini to Claude on a document Gemini
+#     keeps missing. For ocr_provider, any hard OCR error retries once
+#     against escalation.target_provider (see extraction.Extract's
+#     ocrProvider/ocrEscalate parameters). Only target_provider is read
+#     here; tool_name/description are ignored for these two stages.
 #   - agent_provider (and every provider wired into its router.Router — see
 #     cmd/miranda-medical-card/main.go, which builds the router over ALL
 #     configured providers, not just this one): miranda-llm's tool-based Chat
@@ -73,7 +82,7 @@
 #     tool_name mid-conversation to hand a hard question off to
 #     target_provider, and a hard provider failure mid-turn falls back to it
 #     too — this now applies, since medical.ask is a genuine open multi-turn
-#     Chat loop, unlike the one-shot Structured calls document_provider makes.
+#     Chat loop, unlike ocr_provider/extraction_provider's one-shot calls.
 # llm:
 #   providers:
 #     - name: gemini-document
@@ -102,7 +111,8 @@
 #       type: anthropic
 #       model: "claude-sonnet-5"
 #       api_key_envs: ["ANTHROPIC_API_KEY"]
-#   document_provider: "gemini-document"
+#   ocr_provider: "gemini-document"
+#   extraction_provider: "gemini-document"
 #   agent_provider: "gemini-agent"
 
 # embedding:

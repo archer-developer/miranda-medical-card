@@ -28,7 +28,7 @@ func TestResolveDiagnosis_HappyPath(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"matchId":"dx_doc1_1"}`),
 	})
-	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	resolved, err := p.ResolveDiagnosis(ctx, "user1", "да, ОРВИ прошла")
 	require.NoError(t, err)
@@ -51,7 +51,7 @@ func TestResolveDiagnosis_HappyPath(t *testing.T) {
 func TestResolveDiagnosis_NoNonResolvedDiagnosesAtAll(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.ResolveDiagnosis(ctx, "user1", "да, всё прошло")
 	require.Error(t, err)
@@ -67,7 +67,7 @@ func TestResolveDiagnosis_AlreadyResolvedDiagnosesAreNeverCandidates(t *testing.
 	require.NoError(t, dxRepo.Add(ctx, normalization.Diagnosis{
 		ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "Серная пробка", Status: "resolved",
 	}))
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.ResolveDiagnosis(ctx, "user1", "да, всё прошло")
 	require.Error(t, err)
@@ -87,7 +87,7 @@ func TestResolveDiagnosis_NoConfidentMatchListsCurrentNames(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{}`), // model found no confident match
 	})
-	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.ResolveDiagnosis(ctx, "user1", "что-то непонятное прошло")
 	require.Error(t, err)
@@ -103,7 +103,7 @@ func TestResolveDiagnosis_NoConfidentMatchListsCurrentNames(t *testing.T) {
 func TestResolveDiagnosis_EmptyTextRejected(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.ResolveDiagnosis(ctx, "user1", "   ")
 	require.Error(t, err)
