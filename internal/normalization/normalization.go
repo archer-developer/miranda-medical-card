@@ -296,14 +296,17 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		if err != nil {
 			addErr("diagnoses[%d] %q: diagnosedAt: %w", i, d.Name, err)
 		}
-		// A diagnosis's own diagnosedAt is the more precise anchor for its
-		// expected-resolution estimate when we have it; the document-level
-		// anchor is the fallback (see anchor's own comment above).
-		resolutionAnchor := anchor
-		if diagnosedAt != nil {
-			resolutionAnchor = *diagnosedAt
+		// A diagnosis is often stated under a document's own date (e.g. a
+		// consultation's conclusion) without repeating that date next to
+		// each individual diagnosis, so Extraction correctly leaves
+		// diagnosedAt unset in that case — fall back to the document-level
+		// anchor here rather than leaving the diagnosis undated. Mirrors
+		// timeline.Build's resolveDate, which needs the same fallback for
+		// TimelineEvent.date.
+		if diagnosedAt == nil {
+			diagnosedAt = &anchor
 		}
-		resolutionFrom, resolutionTo, err := ComputeDueDateRange(resolutionAnchor, d.ExpectedResolutionAmountMin, d.ExpectedResolutionAmountMax, d.ExpectedResolutionUnit)
+		resolutionFrom, resolutionTo, err := ComputeDueDateRange(*diagnosedAt, d.ExpectedResolutionAmountMin, d.ExpectedResolutionAmountMax, d.ExpectedResolutionUnit)
 		if err != nil {
 			addErr("diagnoses[%d] %q: expectedResolution: %w", i, d.Name, err)
 		}

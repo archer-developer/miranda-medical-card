@@ -74,6 +74,26 @@ func TestNormalize_Diagnosis_NoExpectedResolutionStatedLeavesFieldsNil(t *testin
 	require.Nil(t, result.Diagnoses[0].ExpectedResolutionTo)
 }
 
+func TestNormalize_Diagnosis_DiagnosedAtFallsBackToDocumentDate(t *testing.T) {
+	extracted := extraction.Result{
+		DocumentType: "consultation",
+		DocumentDate: "2026-01-19",
+		FullText:     "some text",
+		Diagnoses: []extraction.Diagnosis{
+			{Name: "Гиперхолестеринемия", Status: "active"},
+		},
+	}
+
+	result, errs := normalization.Normalize(context.Background(), "user_1", "doc_1", extracted, nil, nil)
+	require.Empty(t, errs)
+	require.Len(t, result.Diagnoses, 1)
+
+	documentDate := time.Date(2026, 1, 19, 0, 0, 0, 0, time.UTC)
+	require.NotNil(t, result.Diagnoses[0].DiagnosedAt,
+		"a diagnosis stated under a document's own date without its own explicit date must still get a date")
+	require.Equal(t, documentDate, *result.Diagnoses[0].DiagnosedAt)
+}
+
 func TestDiagnosis_Overdue(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	past := now.AddDate(0, 0, -1)
