@@ -57,6 +57,20 @@ Pipeline проектируется исходя из следующих при�
 
 Без повторного выполнения остальных этапов.
 
+На практике единственная граница этапов, которая реально имеет значение —
+между OCR и Structured Extraction: OCR — фиксированная стоимость
+распознавания изображения, которую изменение схемы/промпта Structured
+Extraction никогда не требует повторять, тогда как любой этап начиная со
+Structured Extraction может измениться на том же самом уже распознанном
+тексте. `internal/pipeline.Pipeline.ReextractDocument` — единственная
+конкретная реализация "повторно выполнить Extraction без повторного OCR":
+переиспользует уже сохранённый `MedicalDocument.RecognizedText`, заново
+выполняет Structured Extraction и все нижестоящие этапы (Normalization,
+Timeline, Medical Profile, Embeddings, FTS). Доступна как
+`medical-dev reextract <documentId> --user <id>` (или `--all --user <id>`
+для всех документов пользователя) — см. docs/cli/medical_dev.md §14. Соседняя
+команда `pipeline` (§13) делает полный прогон, включая OCR.
+
 ---
 
 ## Идемпотентность

@@ -80,6 +80,16 @@ var commandCatalog = []commandHelp{
 		},
 	},
 	{
+		Name:    "reextract",
+		Summary: "Re-run Structured Extraction and everything downstream against an already-imported document's stored recognized text, skipping OCR",
+		Usage:   "reextract <documentId> --user <id> [--provider NAME]  |  reextract --all --user <id> [--provider NAME]",
+		Examples: []string{
+			`reextract doc_01J8EXAMPLE --user alex`,
+			`reextract --all --user alex`,
+			`reextract --all --user alex --provider gemini-agent`,
+		},
+	},
+	{
 		Name:    "backfill-titles",
 		Summary: "One-off migration: backfill Document.Title from extraction.Schema's studyTitle for documents imported before it existed",
 		Usage:   "backfill-titles --user <id> [--provider NAME]",

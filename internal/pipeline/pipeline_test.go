@@ -499,6 +499,59 @@ func TestReprocessDocument_AddsNewExtractionVersionAndReplacesEntities(t *testin
 	require.Len(t, labResults, 2, "document-scoped replace: the old single result must be gone, not appended to")
 }
 
+// TestReextractDocument_SkipsOCRReusesStoredRecognizedTextAndAddsNewVersion
+// mirrors TestReprocessDocument_AddsNewExtractionVersionAndReplacesEntities
+// but through ReextractDocument: the second provider is scripted with only
+// Structured (Stage 2a/2b) responses, no Chat (OCR) response at all — if
+// ReextractDocument tried to OCR again instead of reusing
+// MedicalDocument.RecognizedText, llmtest would panic on an unscripted Chat
+// call, so a passing test is itself proof OCR was skipped.
+func TestReextractDocument_SkipsOCRReusesStoredRecognizedTextAndAddsNewVersion(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+
+	firstProvider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)
+	first := pipeline.New(firstProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := first.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	firstResult, err := first.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, firstResult.ExtractedCounts.LabResults)
+
+	secondProvider := llmtest.New("fake").WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3},{"name":"АСТ","value":21.5}]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+	second := pipeline.New(secondProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	secondResult, err := second.ReextractDocument(ctx, "user1", firstResult.DocumentID)
+	require.NoError(t, err)
+	require.Equal(t, 2, secondResult.ExtractedCounts.LabResults)
+	require.Equal(t, firstResult.DocumentID, secondResult.DocumentID)
+
+	versions, err := storage.NewExtractionRepository(s).ListVersions(ctx, firstResult.DocumentID)
+	require.NoError(t, err)
+	require.Len(t, versions, 2, "ReextractDocument must add a new Extraction version, same as ReprocessDocument")
+}
+
+// TestReextractDocument_NoStoredRecognizedTextFails covers a document that
+// was never through a full run (e.g. a row created directly, or one that
+// predates ReextractDocument) — ReprocessDocument, not ReextractDocument, is
+// the only way to populate RecognizedText for the first time.
+func TestReextractDocument_NoStoredRecognizedTextFails(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	doc, err := storage.NewDocumentRepository(s).Add(ctx, storage.MedicalDocument{UserID: "user1", FileID: "file1"})
+	require.NoError(t, err)
+
+	_, err = p.ReextractDocument(ctx, "user1", doc.ID)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, storage.ErrNotFound))
+}
+
 func TestUploadDocument_SecondDocumentConvertsToFirstDocumentsCanonicalUnit(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)

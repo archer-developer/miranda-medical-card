@@ -10,10 +10,15 @@
 // deployment's data, plus pipeline for re-running Processing Pipeline
 // against an already-imported document with full Debug-level tracing to
 // stderr — docs/cli/medical_dev.md
-// §12), backfill-titles and reindex-fts — not part of that doc (both are
-// one-off data migrations, not standing diagnostic commands), see
-// pipeline.Pipeline.BackfillStudyTitle's and .ReindexDocumentFTS's own doc
-// comments — and llm-trace (see llm_trace.go), also not part of that doc: a
+// §12), reextract (re-running Structured Extraction and everything
+// downstream against an already-imported document's already-stored
+// RecognizedText, skipping OCR — see pipeline.Pipeline.ReextractDocument's
+// own doc comment; also not part of that doc, same reasoning as
+// backfill-titles/reindex-fts below), backfill-titles and reindex-fts — not
+// part of that doc (both are one-off data migrations, not standing
+// diagnostic commands), see pipeline.Pipeline.BackfillStudyTitle's and
+// .ReindexDocumentFTS's own doc comments — and llm-trace (see
+// llm_trace.go), also not part of that doc: a
 // reader for logs/llm.log (only ever produced when logging.level: debug —
 // written by cmd/miranda-medical-card/main.go's buildLLMTraceWriter for a
 // real medical.ask MCP call, and identically by this file's own
@@ -21,7 +26,7 @@
 // llm-trace command cover a question asked either way) rather than
 // anything Application-Service-shaped.
 // Not implemented: planner, provider, search, prompt, llm (see
-// docs/cli/medical_dev.md §5-8, §14) — each would need its own
+// docs/cli/medical_dev.md §5-8, §15) — each would need its own
 // intermediate-result plumbing (e.g. exposing the Planner's raw selections,
 // or a single Provider's raw output, independent of a full Ask) that
 // internal/ask doesn't expose today.
@@ -46,6 +51,8 @@
 //	medical-dev document <documentId> --user alex
 //	medical-dev ask --user alex "question"
 //	medical-dev pipeline <documentId> --user alex
+//	medical-dev reextract <documentId> --user alex [--provider gemini-agent]
+//	medical-dev reextract --all --user alex [--provider gemini-agent]
 //	medical-dev backfill-titles --user alex [--provider gemini-agent]
 //	medical-dev reindex-fts --user alex
 //	medical-dev llm-trace [--file logs/llm.log] [--conversation ID | --latest]
@@ -134,6 +141,8 @@ func run(args []string) error {
 		return runAsk(args, cfg, store, logger)
 	case "pipeline":
 		return runPipeline(args, cfg, store)
+	case "reextract":
+		return runReextract(args, cfg, store)
 	case "backfill-titles":
 		return runBackfillTitles(args, cfg, store)
 	case "reindex-fts":
@@ -169,16 +178,36 @@ func newPipeline(cfg config.Config, store *storage.Store) (*pipeline.Pipeline, e
 }
 
 func newPipelineWithLogger(cfg config.Config, store *storage.Store, logger *slog.Logger) (*pipeline.Pipeline, error) {
+	return newPipelineWithLoggerAndProvider(cfg, store, logger, "")
+}
+
+// newPipelineWithLoggerAndProvider is newPipelineWithLogger plus an optional
+// providerOverride in place of cfg.LLM.DocumentProvider — see
+// runReextract's --provider flag (mirroring runBackfillTitles's own): a
+// configured model's free-tier daily quota is per-model, not shared across a
+// project's other models, so a bulk operation can keep going against a
+// differently-named model once the default one starts returning 429
+// RESOURCE_EXHAUSTED. Unlike runBackfillTitles's own hand-rolled Pipeline
+// construction, this still wires escalation (via resolveEscalationProvider)
+// for whichever provider ends up named — a real Structured Extraction run
+// should get the same escalation behavior production wiring gives it,
+// unlike backfill-titles's one-off metadata patch which deliberately opts
+// out (see that function's own doc comment).
+func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, logger *slog.Logger, providerOverride string) (*pipeline.Pipeline, error) {
 	ctx := context.Background()
 	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := resolveProvider(providers, cfg.LLM.DocumentProvider, "document_provider")
+	name := cfg.LLM.DocumentProvider
+	if providerOverride != "" {
+		name = providerOverride
+	}
+	provider, err := resolveProvider(providers, name, "document_provider")
 	if err != nil {
 		return nil, err
 	}
-	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, cfg.LLM.DocumentProvider)
+	escalationProvider := resolveEscalationProvider(providers, cfg.LLM.Providers, name)
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
@@ -452,6 +481,85 @@ func runPipeline(args []string, cfg config.Config, store *storage.Store) error {
 	}
 
 	result, err := pl.ReprocessDocument(context.Background(), *user, documentID)
+	if err != nil {
+		return err
+	}
+	return printJSON(result)
+}
+
+// --- reextract ---
+
+// runReextract re-runs Structured Extraction and every downstream stage
+// against an already-imported document's already-stored RecognizedText,
+// skipping OCR (Pipeline.ReextractDocument — see its own doc comment for why
+// this is the one stage boundary worth exposing here, not "any stage": OCR
+// is a flat per-document cost a Structured Extraction schema/prompt change
+// never needs to redo). Useful after a Structured Extraction schema fix
+// (e.g. Diagnosis.status/expectedResolution) that every existing document
+// should pick up without burning an OCR call it doesn't need.
+//
+// Either a single documentId, or --all to loop over every document --user
+// has (skipping/reporting whichever ones ReextractDocument itself rejects —
+// e.g. one that was never through a full run and has no stored
+// RecognizedText yet) — continuing past one document's failure rather than
+// aborting the whole batch, since a per-model daily quota running out
+// partway through is the realistic failure mode (see --provider below); a
+// non-zero final exit status still reports how many failed, so a wrapping
+// script can tell "some documents did not get reextracted" from "all done".
+//
+// --provider overrides llm.document_provider, same escape hatch as
+// backfill-titles's own --provider flag.
+func runReextract(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("reextract", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	all := fs.Bool("all", false, "reextract every document --user has instead of a single documentId")
+	providerName := fs.String("provider", "", "override llm.document_provider with this configured provider name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+	if !*all && fs.NArg() < 1 {
+		return fmt.Errorf("usage: medical-dev reextract <documentId> --user <user>  (or --all --user <user>)")
+	}
+
+	if *all {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		pl, err := newPipelineWithLoggerAndProvider(cfg, store, logger, *providerName)
+		if err != nil {
+			return err
+		}
+		ctx := context.Background()
+		docs, err := pl.ListDocuments(ctx, *user)
+		if err != nil {
+			return err
+		}
+		var failed int
+		for _, doc := range docs {
+			result, err := pl.ReextractDocument(ctx, *user, doc.ID)
+			if err != nil {
+				failed++
+				fmt.Printf("%s: error: %v\n", doc.ID, err)
+				continue
+			}
+			fmt.Printf("%s: ok (diagnoses=%d, medications=%d, labResults=%d, instrumentalFindings=%d)\n",
+				doc.ID, result.ExtractedCounts.Diagnoses, result.ExtractedCounts.Medications,
+				result.ExtractedCounts.LabResults, result.ExtractedCounts.InstrumentalFindings)
+		}
+		if failed > 0 {
+			return fmt.Errorf("%d/%d document(s) failed to reextract — rerun 'medical-dev reextract --all --user %s' to retry (already-succeeded documents get a harmless extra Extraction version)", failed, len(docs), *user)
+		}
+		return nil
+	}
+
+	documentID := fs.Arg(0)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	pl, err := newPipelineWithLoggerAndProvider(cfg, store, logger, *providerName)
+	if err != nil {
+		return err
+	}
+	result, err := pl.ReextractDocument(context.Background(), *user, documentID)
 	if err != nil {
 		return err
 	}

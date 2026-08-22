@@ -11,6 +11,7 @@ package pipeline
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -274,31 +275,86 @@ func (p *Pipeline) ReprocessDocument(ctx context.Context, userID, documentID str
 	return p.run(ctx, userID, documentID, file, len(versions)+1)
 }
 
-// run is the shared core of UploadDocument and ReprocessDocument — from
-// "a MedicalDocument row and its File exist" through OCR, Structured
-// Extraction, Normalization, and persisting every derived entity. On any
-// failure it best-effort marks the document FAILED (see docs/domain/11-value-objects.md
+// run is UploadDocument/ReprocessDocument's extractFunc for process: OCR the
+// File's bytes, then run Structured Extraction against the transcription
+// (extraction.Extract does both).
+func (p *Pipeline) run(ctx context.Context, userID, documentID string, file storage.File, version int) (Result, error) {
+	return p.process(ctx, userID, documentID, version, func() (extraction.Result, json.RawMessage, bool, error) {
+		data, err := p.files.Read(file.StoragePath)
+		if err != nil {
+			return extraction.Result{}, nil, false, fmt.Errorf("read file: %w", err)
+		}
+		return extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
+	})
+}
+
+// ReextractDocument re-runs Structured Extraction (Stage 2a/2b) and every
+// downstream stage — Normalization, Timeline, Medical Profile, Embeddings,
+// FTS — against an already-imported document's already-stored
+// RecognizedText (MedicalDocument.RecognizedText, persisted by an earlier
+// full run/ReprocessDocument), skipping OCR entirely.
+//
+// This is docs/architecture/02-processing-pipeline.md §2's "Независимость
+// этапов" ("можно ... повторно выполнить Extraction ... без повторного
+// выполнения остальных этапов") applied to the one stage boundary that
+// actually matters in practice: OCR is a flat per-document image-transcription
+// cost a Structured Extraction schema/prompt change never needs to redo,
+// while every stage from Structured Extraction onward can change behavior
+// against the exact same recognized text (e.g. Diagnosis.status/
+// expectedResolution/statusReasoning are a Structured Extraction judgment
+// call, see extraction.Schema — a schema fix there needs a fresh Structured
+// Extraction call per document, but never a fresh OCR pass). Adds a new
+// Extraction version, same as ReprocessDocument (Extraction is immutable
+// once created, see docs/domain/03-files-and-documents.md §4). Beyond how it
+// obtains its Structured Extraction result (extraction.ExtractFromText
+// against stored text, instead of run's extraction.Extract against a
+// freshly-OCR'd file), it is process's extractFunc exactly like run — no
+// separate persistence/downstream path.
+//
+// Returns a storage.ErrNotFound-wrapping error if the document has no stored
+// RecognizedText yet (e.g. it predates this method and never went through a
+// full run) — ReprocessDocument is the only way to populate RecognizedText
+// for the first time.
+func (p *Pipeline) ReextractDocument(ctx context.Context, userID, documentID string) (Result, error) {
+	doc, err := p.documentRepo.Get(ctx, documentID, userID)
+	if err != nil {
+		return Result{}, fmt.Errorf("pipeline: reextract document: %w", err)
+	}
+	if strings.TrimSpace(doc.RecognizedText) == "" {
+		return Result{}, fmt.Errorf("pipeline: reextract document: no stored recognized text (never went through a full run): %w", storage.ErrNotFound)
+	}
+	versions, err := p.extractionRepo.ListVersions(ctx, documentID)
+	if err != nil {
+		return Result{}, fmt.Errorf("pipeline: reextract document: list extraction versions: %w", err)
+	}
+
+	return p.process(ctx, userID, documentID, len(versions)+1, func() (extraction.Result, json.RawMessage, bool, error) {
+		return extraction.ExtractFromText(ctx, p.provider, p.escalationProvider, doc.RecognizedText, p.logger)
+	})
+}
+
+// process is the shared core of run and ReextractDocument — the actual
+// Pipeline orchestration from "a MedicalDocument row exists" through
+// Structured Extraction (however extractFunc chooses to produce it: fresh
+// OCR + Structured for run, stored text + Structured for ReextractDocument),
+// Normalization, and persisting every derived entity. On any failure it
+// best-effort marks the document FAILED (see docs/domain/11-value-objects.md
 // §7's status semantics) before returning the real error — the status
 // update's own failure is deliberately not what gets returned to the
 // caller, since the original error is more actionable.
-func (p *Pipeline) run(ctx context.Context, userID, documentID string, file storage.File, version int) (Result, error) {
+func (p *Pipeline) process(ctx context.Context, userID, documentID string, version int, extractFunc func() (extraction.Result, json.RawMessage, bool, error)) (Result, error) {
 	fail := func(err error) (Result, error) {
 		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
 		return Result{}, err
 	}
 
-	p.logger.Debug("pipeline: run start", "documentId", documentID, "userId", userID, "version", version, "fileId", file.ID, "size", file.Size)
+	p.logger.Debug("pipeline: run start", "documentId", documentID, "userId", userID, "version", version)
 
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
 		return Result{}, fmt.Errorf("pipeline: run: %w", err)
 	}
 
-	data, err := p.files.Read(file.StoragePath)
-	if err != nil {
-		return fail(fmt.Errorf("pipeline: run: read file: %w", err))
-	}
-
-	extracted, raw, stillSuspicious, err := extraction.Extract(ctx, p.provider, p.escalationProvider, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
+	extracted, raw, stillSuspicious, err := extractFunc()
 	if err != nil {
 		return fail(fmt.Errorf("pipeline: run: extract: %w", err))
 	}

@@ -929,11 +929,10 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 	}
 	logger.Debug("extraction: ocr done", "fullTextLen", len(text))
 
-	result, _, err = StructuredWithRetry(ctx, provider, escalate, text, logger)
+	result, stillSuspicious, err = stage2a(ctx, provider, escalate, text, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}
-	stillSuspicious = isSuspiciouslyEmpty(result)
 
 	// A successful-but-truncated OCR transcription (no error, so
 	// ocrWithEscalation above never kicked in) looks identical to
@@ -957,10 +956,10 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 		if ocrErr != nil {
 			logger.Warn("extraction: ocr retry against escalation provider failed", "error", ocrErr)
 		} else {
-			retryResult, _, structErr := StructuredWithRetry(ctx, provider, escalate, retryText, logger)
+			retryResult, retryStillSuspicious, structErr := stage2a(ctx, provider, escalate, retryText, logger)
 			if structErr != nil {
 				logger.Warn("extraction: structured retry after ocr escalation failed", "error", structErr)
-			} else if !isSuspiciouslyEmpty(retryResult) {
+			} else if !retryStillSuspicious {
 				logger.Warn("extraction: recovered via ocr retry against escalation provider after primary stayed suspicious",
 					"originalFullTextLen", len(text), "retryFullTextLen", len(retryText))
 				text = retryText
@@ -970,22 +969,78 @@ func Extract(ctx context.Context, provider Provider, escalate Provider, imageBas
 		}
 	}
 
-	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, escalate, text, result.DocumentType == "imaging_report", logger)
+	// Stage 2b (Instrumental Structured) runs exactly once, against
+	// whichever text Stage 2a ultimately settled on above — never on a
+	// truncated text that's about to be discarded by the OCR-retry path,
+	// which would waste a call and (for imaging_report documents) risk
+	// merging findings transcribed from the wrong pass.
+	result, merged, err = finalizeStage2b(ctx, provider, escalate, text, result, logger)
 	if err != nil {
 		return Result{}, nil, false, err
 	}
+
+	return result, merged, stillSuspicious, nil
+}
+
+// ExtractFromText runs Stage 2a (Structured Extraction) and Stage 2b
+// (Instrumental Structured) against already-transcribed text, skipping OCR
+// entirely — for reprocessing an already-imported document whose
+// MedicalDocument.RecognizedText a prior full Extract call already
+// persisted, when only Structured Extraction's schema/prompt changed and
+// the OCR transcription itself doesn't need to be redone (see
+// internal/pipeline.Pipeline.ReextractDocument, the caller this exists
+// for). Unlike Extract, there is no OCR-retry-on-suspicious fallback (see
+// Extract's own doc comment for what that recovers from) — without the
+// original image bytes there's nothing to re-OCR, so a suspicious result
+// here is simply reported as such via stillSuspicious.
+func ExtractFromText(ctx context.Context, provider StructuredProvider, escalate StructuredProvider, text string, logger *slog.Logger) (result Result, merged json.RawMessage, stillSuspicious bool, err error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	result, stillSuspicious, err = stage2a(ctx, provider, escalate, text, logger)
+	if err != nil {
+		return Result{}, nil, false, err
+	}
+	result, merged, err = finalizeStage2b(ctx, provider, escalate, text, result, logger)
+	if err != nil {
+		return Result{}, nil, false, err
+	}
+	return result, merged, stillSuspicious, nil
+}
+
+// stage2a runs Stage 2a (StructuredWithRetry) alone against already-
+// transcribed text — split out from Stage 2b/merge (finalizeStage2b) so
+// Extract's OCR-retry-on-suspicious path (see its own doc comment) can run
+// Stage 2a against a candidate text without paying for Stage 2b until a
+// final text is settled on.
+func stage2a(ctx context.Context, provider, escalate StructuredProvider, text string, logger *slog.Logger) (result Result, stillSuspicious bool, err error) {
+	result, _, err = StructuredWithRetry(ctx, provider, escalate, text, logger)
+	if err != nil {
+		return Result{}, false, err
+	}
+	return result, isSuspiciouslyEmpty(result), nil
+}
+
+// finalizeStage2b runs Stage 2b (InstrumentalStructuredWithRetry) against
+// text, merges its findings into result, and marshals the merged Result —
+// the shared tail of Extract (after settling on a final text) and
+// ExtractFromText.
+func finalizeStage2b(ctx context.Context, provider, escalate StructuredProvider, text string, result Result, logger *slog.Logger) (Result, json.RawMessage, error) {
+	findings, _, err := InstrumentalStructuredWithRetry(ctx, provider, escalate, text, result.DocumentType == "imaging_report", logger)
+	if err != nil {
+		return Result{}, nil, err
+	}
 	result.InstrumentalFindings = findings
 
-	merged, err = json.Marshal(result)
+	merged, err := json.Marshal(result)
 	if err != nil {
-		return Result{}, nil, false, fmt.Errorf("extraction: marshal merged result: %w", err)
+		return Result{}, nil, fmt.Errorf("extraction: marshal merged result: %w", err)
 	}
 	logger.Debug("extraction: done",
 		"documentType", result.DocumentType, "diagnoses", len(result.Diagnoses),
 		"medications", len(result.Medications), "labResults", len(result.LabResults),
 		"instrumentalFindings", len(result.InstrumentalFindings), "procedures", len(result.Procedures),
 		"allergies", len(result.Allergies), "vitalSigns", len(result.VitalSigns),
-		"recommendations", len(result.Recommendations), "plannedActions", len(result.PlannedActions),
-		"stillSuspicious", stillSuspicious)
-	return result, merged, stillSuspicious, nil
+		"recommendations", len(result.Recommendations), "plannedActions", len(result.PlannedActions))
+	return result, merged, nil
 }
