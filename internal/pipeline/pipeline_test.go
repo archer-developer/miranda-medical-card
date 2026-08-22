@@ -552,6 +552,53 @@ func TestReextractDocument_NoStoredRecognizedTextFails(t *testing.T) {
 	require.True(t, errors.Is(err, storage.ErrNotFound))
 }
 
+// TestRenormalizeDocument_NoLLMCallsAndKeepsSameExtractionVersion proves
+// RenormalizeDocument's whole point: rerunning Normalization off the
+// already-stored active Extraction never touches an LLM (the Pipeline here
+// is built with a bare llmtest.New("fake") scripted with zero Chat/
+// Structured responses — any call at all would panic) and never adds a new
+// Extraction version, unlike ReprocessDocument/ReextractDocument (see
+// RenormalizeDocument's own doc comment for why: the Extraction itself
+// didn't change).
+func TestRenormalizeDocument_NoLLMCallsAndKeepsSameExtractionVersion(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+
+	provider := scriptedLabReportProvider(`{"documentType":"lab_report","labResults":[{"name":"АЛТ","value":28.3}]}`)
+	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "cbc.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	firstResult, err := p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, firstResult.ExtractedCounts.LabResults)
+
+	noLLMPipeline := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	result, err := noLLMPipeline.RenormalizeDocument(ctx, "user1", firstResult.DocumentID)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.ExtractedCounts.LabResults, "renormalizing the same stored Extraction must reproduce the same entities")
+	require.Equal(t, firstResult.DocumentID, result.DocumentID)
+
+	versions, err := storage.NewExtractionRepository(s).ListVersions(ctx, firstResult.DocumentID)
+	require.NoError(t, err)
+	require.Len(t, versions, 1, "RenormalizeDocument must not add a new Extraction version")
+}
+
+// TestRenormalizeDocument_NoActiveExtractionFails covers a document that was
+// never through a full run — there is no active Extraction to replay.
+func TestRenormalizeDocument_NoActiveExtractionFails(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	doc, err := storage.NewDocumentRepository(s).Add(ctx, storage.MedicalDocument{UserID: "user1", FileID: "file1"})
+	require.NoError(t, err)
+
+	_, err = p.RenormalizeDocument(ctx, "user1", doc.ID)
+	require.Error(t, err)
+}
+
 func TestUploadDocument_SecondDocumentConvertsToFirstDocumentsCanonicalUnit(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)

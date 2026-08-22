@@ -385,6 +385,57 @@ func (p *Pipeline) process(ctx context.Context, userID, documentID string, versi
 		return fail(fmt.Errorf("pipeline: run: activate extraction: %w", err))
 	}
 
+	return p.normalizeAndPersist(ctx, userID, documentID, extracted)
+}
+
+// RenormalizeDocument re-runs Normalization and every downstream stage —
+// domain entities, Timeline, Medical Profile, FTS, Embeddings — against an
+// already-imported document's current active Extraction, without calling
+// any LLM at all: no OCR, no Structured Extraction, just a fresh pass of
+// internal/normalization.Normalize over the same already-stored
+// Extraction.Raw JSON, unmarshaled back into extraction.Result (round-trips
+// cleanly — Raw is exactly what an earlier Extract/ExtractFromText call
+// itself marshaled, see finalizeStage2b).
+//
+// This is docs/architecture/02-processing-pipeline.md §2's "Независимость
+// этапов" one step further than ReextractDocument: useful when only
+// Normalization's own logic changed (a unit-conversion fix, a date-parsing
+// fix) and neither the OCR transcription nor the Structured Extraction
+// judgment call (diagnosis status, etc.) needs to change at all. Unlike run
+// and ReextractDocument, this never adds a new Extraction version — see
+// docs/architecture/02-processing-pipeline.md §2 "Идемпотентность"
+// ("повторный запуск Normalize() должен заменить существующие сущности, а
+// не создать новые"): the Extraction itself didn't change, only what was
+// derived from it, so there is nothing new to version.
+func (p *Pipeline) RenormalizeDocument(ctx context.Context, userID, documentID string) (Result, error) {
+	record, err := p.extractionRepo.GetActive(ctx, documentID)
+	if err != nil {
+		return Result{}, fmt.Errorf("pipeline: renormalize document: get active extraction: %w", err)
+	}
+	var extracted extraction.Result
+	if err := json.Unmarshal(record.Raw, &extracted); err != nil {
+		return Result{}, fmt.Errorf("pipeline: renormalize document: unmarshal stored extraction: %w", err)
+	}
+
+	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
+		return Result{}, fmt.Errorf("pipeline: renormalize document: %w", err)
+	}
+
+	return p.normalizeAndPersist(ctx, userID, documentID, extracted)
+}
+
+// normalizeAndPersist is the shared tail of process and RenormalizeDocument:
+// from a Structured Extraction result (freshly produced or replayed from
+// storage) through Normalization and persisting every derived entity to
+// marking the document READY. On any failure it best-effort marks the
+// document FAILED before returning the real error, same contract as
+// process's own doc comment describes.
+func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID string, extracted extraction.Result) (Result, error) {
+	fail := func(err error) (Result, error) {
+		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
+		return Result{}, err
+	}
+
 	normalized, normErrs := normalization.Normalize(ctx, userID, documentID, extracted, p.canonicalUnits, p.indicatorAliases)
 	// A bad date or unresolvable unit on one entity (see Normalize's own
 	// doc comment) is not fatal to the whole document — every

@@ -73,20 +73,12 @@ var commandCatalog = []commandHelp{
 	},
 	{
 		Name:    "pipeline",
-		Summary: "Re-run the Processing Pipeline on an already-imported document (OCR + Extraction + Normalization + ...), with full Debug-level tracing to stderr",
-		Usage:   "pipeline <documentId> --user <id>",
+		Summary: "Re-run the Processing Pipeline on an already-imported document, resuming from --stage (ocr/extraction/normalization), with full Debug-level tracing to stderr",
+		Usage:   "pipeline <documentId> --user <id> [--stage ocr|extraction|normalization] [--provider NAME]  |  pipeline --all --user <id> [--stage ...] [--provider NAME]",
 		Examples: []string{
 			`pipeline doc_01J8EXAMPLE --user alex`,
-		},
-	},
-	{
-		Name:    "reextract",
-		Summary: "Re-run Structured Extraction and everything downstream against an already-imported document's stored recognized text, skipping OCR",
-		Usage:   "reextract <documentId> --user <id> [--provider NAME]  |  reextract --all --user <id> [--provider NAME]",
-		Examples: []string{
-			`reextract doc_01J8EXAMPLE --user alex`,
-			`reextract --all --user alex`,
-			`reextract --all --user alex --provider gemini-agent`,
+			`pipeline doc_01J8EXAMPLE --user alex --stage extraction --provider gemini-agent`,
+			`pipeline --all --user alex --stage normalization`,
 		},
 	},
 	{

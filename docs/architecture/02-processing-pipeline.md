@@ -57,19 +57,37 @@ Pipeline проектируется исходя из следующих при�
 
 Без повторного выполнения остальных этапов.
 
-На практике единственная граница этапов, которая реально имеет значение —
-между OCR и Structured Extraction: OCR — фиксированная стоимость
-распознавания изображения, которую изменение схемы/промпта Structured
-Extraction никогда не требует повторять, тогда как любой этап начиная со
-Structured Extraction может измениться на том же самом уже распознанном
-тексте. `internal/pipeline.Pipeline.ReextractDocument` — единственная
-конкретная реализация "повторно выполнить Extraction без повторного OCR":
-переиспользует уже сохранённый `MedicalDocument.RecognizedText`, заново
-выполняет Structured Extraction и все нижестоящие этапы (Normalization,
-Timeline, Medical Profile, Embeddings, FTS). Доступна как
-`medical-dev reextract <documentId> --user <id>` (или `--all --user <id>`
-для всех документов пользователя) — см. docs/cli/medical_dev.md §14. Соседняя
-команда `pipeline` (§13) делает полный прогон, включая OCR.
+На практике для документо-ориентированной части Pipeline (OCR → Structured
+Extraction → Normalization → Timeline/Domain Entities/Summary → FTS/Embeddings)
+есть две конкретные границы, с которых можно возобновить обработку одного
+документа, не выполняя предыдущие этапы заново:
+
+- между OCR и Structured Extraction — OCR - фиксированная стоимость
+  распознавания изображения, которую изменение схемы/промпта Structured
+  Extraction никогда не требует повторять. `internal/pipeline.Pipeline.ReextractDocument`
+  переиспользует уже сохранённый `MedicalDocument.RecognizedText`, заново
+  выполняет Structured Extraction и всё нижестоящее (LLM-вызов есть, но без OCR).
+- между Structured Extraction и Normalization — если изменилась только логика
+  Normalization (единицы измерения, разбор дат), сам Structured Extraction
+  результат переделывать не нужно. `internal/pipeline.Pipeline.RenormalizeDocument`
+  переигрывает уже сохранённый `Extraction.Raw` текущего активного Extraction
+  через Normalization и всё нижестоящее — без единого LLM-вызова. В отличие от
+  ReprocessDocument/ReextractDocument новая версия Extraction при этом не
+  создаётся (см. "Идемпотентность" ниже — Extraction не изменился, изменилось
+  только то, что из него выведено).
+
+Обе границы доступны через один и тот же CLI-флаг:
+`medical-dev pipeline <documentId> --user <id> --stage ocr|extraction|normalization`
+(`--stage ocr` — значение по умолчанию, полный прогон; `--all` вместо
+`documentId` — для всех документов пользователя) — см. docs/cli/medical_dev.md §13.
+
+Profile и Embeddings из того же списка выше — другого рода: Profile
+пересобирается для пользователя целиком (`rebuildProfile`, не документо-
+ориентирован — нет отдельного "документа", с которого возобновлять), а
+Embeddings уже сейчас использует только сохранённый `MedicalDocument.Summary`
+(`generateDocumentEmbedding`) — при смене embedding-модели понадобится не
+граница этапов внутри пайплайна одного документа, а массовая операция по всем
+документам пользователя, той же формы, что `medical-dev backfill-titles`.
 
 ---
 

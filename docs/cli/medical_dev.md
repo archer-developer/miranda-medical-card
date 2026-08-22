@@ -342,12 +342,21 @@ medical-dev document doc_01J8...
 
 # 13. Команда: pipeline
 
-Запускает Processing Pipeline с подробным логом выполнения.
+Запускает Processing Pipeline для уже импортированного документа с подробным логом
+выполнения, начиная с этапа, указанного флагом `--stage` (см.
+`../architecture/02-processing-pipeline.md` §2 "Независимость этапов" — это
+конкретная реализация того принципа для документо-ориентированной части Pipeline):
+
+| `--stage` | Что пропускается | LLM-вызовы | Когда использовать |
+|-----------|-------------------|------------|---------------------|
+| `ocr` (по умолчанию) | ничего — полный прогон | OCR + Structured Extraction | обычный `medical.reprocess_document` |
+| `extraction` | OCR (переиспользуется сохранённый `MedicalDocument.RecognizedText`) | только Structured Extraction | изменилась схема/промпт Structured Extraction (например, `Diagnosis.status`/`expectedResolution`), а распознавание текста переделывать не нужно |
+| `normalization` | OCR и Structured Extraction (переигрывается сохранённый `Extraction.Raw` текущего активного Extraction) | ни одного | изменилась только логика Normalization (единицы измерения, разбор дат) — новая версия Extraction при этом не создаётся, см. §2 "Идемпотентность" |
 
 ## Пример
 
 ```bash
-medical-dev pipeline doc_01J8...
+medical-dev pipeline doc_01J8... --user alex
 ```
 
 ## Пример вывода
@@ -376,53 +385,37 @@ Embeddings
 Finished
 ```
 
-Используется при разработке Pipeline и диагностике ошибок обработки документов.
-
----
-
-# 14. Команда: reextract
-
-Повторно выполняет Structured Extraction и все нижестоящие этапы (Normalization,
-Timeline, Medical Profile, Embeddings, FTS Index) для уже импортированного документа,
-**без повторного OCR** — использует уже сохранённый `MedicalDocument.RecognizedText`
-(см. `../architecture/02-processing-pipeline.md` §2 "Независимость этапов").
-
-В отличие от `pipeline` (§13), который всегда начинает с OCR, `reextract` подходит,
-когда изменилась только схема/промпт Structured Extraction (например,
-`Diagnosis.status`/`expectedResolution`), а само распознавание текста документа
-переделывать не нужно.
-
-## Пример
-
 ```bash
-medical-dev reextract doc_01J8... --user alex
+medical-dev pipeline doc_01J8... --user alex --stage extraction
+medical-dev pipeline doc_01J8... --user alex --stage normalization
 ```
 
-Флаг `--all` вместо конкретного `documentId` перезапускает Extraction для всех
-документов пользователя подряд, продолжая при ошибке на отдельном документе
-(например, при исчерпании дневной квоты одной конкретной модели) и печатая
-итоговое количество неудачных документов:
+Флаг `--all` вместо конкретного `documentId` перезапускает выбранный `--stage` для всех
+документов пользователя подряд, продолжая при ошибке на отдельном документе (например,
+при исчерпании дневной квоты одной конкретной модели — только для `--stage ocr` или
+`extraction`, поскольку `normalization` вообще не вызывает LLM) и печатая итоговое
+количество неудачных документов:
 
 ```bash
-medical-dev reextract --all --user alex
+medical-dev pipeline --all --user alex --stage extraction
 ```
 
 Флаг `--provider NAME` подменяет `llm.document_provider` на другого сконфигурированного
 провайдера — тот же приём, что и у `medical-dev backfill-titles` (одноразовая миграция,
 не входящая в этот документ — см. её собственный doc comment в `cmd/medical-dev/main.go`),
 полезен, когда у провайдера по умолчанию исчерпана дневная квота, но у другого
-сконфигурированного провайдера ещё есть запас:
+сконфигурированного провайдера ещё есть запас (не имеет эффекта для `--stage normalization`,
+которая не вызывает LLM вовсе):
 
 ```bash
-medical-dev reextract --all --user alex --provider gemini-agent
+medical-dev pipeline --all --user alex --stage extraction --provider gemini-agent
 ```
 
-Используется при разработке Structured Extraction (изменение схемы/промпта) — обновляет
-уже импортированные документы без затрат на повторный OCR.
+Используется при разработке Pipeline и диагностике ошибок обработки документов.
 
 ---
 
-# 15. Команда: llm
+# 14. Команда: llm
 
 Проверяет доступность всех LLM-провайдеров.
 
@@ -462,7 +455,7 @@ OpenAI Compatible
 
 ---
 
-# 16. Форматы вывода
+# 15. Форматы вывода
 
 Все команды должны поддерживать единый механизм форматирования.
 
@@ -475,7 +468,7 @@ OpenAI Compatible
 
 ---
 
-# 17. Общие параметры
+# 16. Общие параметры
 
 Большинство команд используют одинаковые параметры.
 
@@ -485,7 +478,7 @@ OpenAI Compatible
 
 ---
 
-# 18. Архитектурные принципы
+# 17. Архитектурные принципы
 
 Команды `medical-dev` не должны содержать собственной бизнес-логики.
 
@@ -495,7 +488,7 @@ OpenAI Compatible
 
 ---
 
-# 19. Будущие расширения
+# 18. Будущие расширения
 
 В дальнейшем раздел `medical-dev` может быть дополнен новыми командами.
 
