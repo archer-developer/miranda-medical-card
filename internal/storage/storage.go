@@ -132,8 +132,7 @@ CREATE TABLE IF NOT EXISTS medications (
     ended_at      INTEGER,
     status        TEXT NOT NULL DEFAULT '',
     reason        TEXT NOT NULL DEFAULT '',
-    prescribed_by TEXT NOT NULL DEFAULT '',
-    confirmed_ended_at INTEGER
+    prescribed_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_medications_user_id     ON medications(user_id);
 CREATE INDEX IF NOT EXISTS idx_medications_document_id ON medications(document_id);
@@ -382,7 +381,6 @@ var schemaMigrations = []string{
 	`ALTER TABLE diagnoses ADD COLUMN expected_resolution_to INTEGER`,
 	`ALTER TABLE diagnoses ADD COLUMN status_reasoning TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE diagnoses ADD COLUMN actual_resolution_at INTEGER`,
-	`ALTER TABLE medications ADD COLUMN confirmed_ended_at INTEGER`,
 }
 
 // Store is the shared SQLite connection every entity's repository is built

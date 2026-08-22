@@ -189,11 +189,17 @@ func Schema() map[string]any {
 						"doseUnit":   map[string]any{"type": "string", "description": "e.g. mg, ml, IU"},
 						"frequency":  map[string]any{"type": "string", "description": "Free text as written, e.g. '1 раз в день'."},
 						"route":      map[string]any{"type": "string", "description": "e.g. oral, injection, topical — only if stated."},
-						"startedAt":  dateProp,
-						"endedAt":    dateProp,
+						"startedAt": map[string]any{
+							"type":        "string",
+							"description": "ISO 8601 date (YYYY-MM-DD) the patient actually began taking this — only if the text explicitly confirms intake already started (e.g. 'принимает с ...'), not merely the date it was prescribed/ordered.",
+						},
+						"endedAt": dateProp,
 						"status": map[string]any{
 							"type": "string",
-							"enum": []string{"active", "discontinued", "completed"},
+							"enum": []string{"prescribed", "active", "discontinued", "completed"},
+							"description": "'prescribed' — the text only says the drug was ordered/prescribed, with no confirmation intake has actually begun (the default for a plain prescription). " +
+								"'active' — the text explicitly confirms the patient is already taking it (startedAt should then be set to that confirmed date). " +
+								"'discontinued'/'completed' — the text says it was stopped/the course finished.",
 						},
 						"reason":       map[string]any{"type": "string"},
 						"prescribedBy": map[string]any{"type": "string"},

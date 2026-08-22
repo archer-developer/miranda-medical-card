@@ -44,14 +44,13 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 	require.Equal(t, "med_doc1_1", completed.ID)
 	require.Equal(t, normalization.MedicationStatusCompleted, completed.Status)
 	require.NotNil(t, completed.EndedAt)
-	require.NotNil(t, completed.ConfirmedEndedAt)
 
 	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
 	require.NoError(t, err)
 	for _, m := range all {
 		if m.ID == "med_doc1_1" {
 			require.Equal(t, normalization.MedicationStatusCompleted, m.Status)
-			require.NotNil(t, m.ConfirmedEndedAt)
+			require.NotNil(t, m.EndedAt)
 		} else {
 			require.Equal(t, normalization.MedicationStatusDiscontinued, m.Status, "the other medication must be untouched")
 		}
@@ -124,6 +123,103 @@ func TestCompleteMedication_EmptyTextRejected(t *testing.T) {
 	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
 	_, err := p.CompleteMedication(ctx, "user1", "   ")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.NotErrorAs(t, err, &notFound, "empty text must be its own plain error, not MedicationNotFoundError")
+}
+
+func TestStartMedication_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Аспирин", Status: normalization.MedicationStatusActive,
+	}))
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_1", UserID: "user1", DocumentID: "doc1", DrugName: "Амоксициллин", Status: normalization.MedicationStatusPrescribed,
+	}))
+
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"matchId":"med_doc1_1"}`),
+	})
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	started, err := p.StartMedication(ctx, "user1", "я начал принимать амоксициллин")
+	require.NoError(t, err)
+	require.Equal(t, "med_doc1_1", started.ID)
+	require.Equal(t, normalization.MedicationStatusActive, started.Status)
+	require.NotNil(t, started.StartedAt)
+
+	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
+	require.NoError(t, err)
+	for _, m := range all {
+		if m.ID == "med_doc1_1" {
+			require.Equal(t, normalization.MedicationStatusActive, m.Status)
+			require.NotNil(t, m.StartedAt)
+		} else {
+			require.Equal(t, normalization.MedicationStatusActive, m.Status, "the other medication must be untouched")
+		}
+	}
+}
+
+func TestStartMedication_NoPrescribedMedicationsAtAll(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.StartMedication(ctx, "user1", "я начал курс")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Empty(t, notFound.CurrentDrugNames)
+}
+
+func TestStartMedication_AlreadyActiveMedicationIsNeverACandidate(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Розувастатин", Status: normalization.MedicationStatusActive,
+	}))
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.StartMedication(ctx, "user1", "начал розувастатин")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Empty(t, notFound.CurrentDrugNames, "an already-active drug must never be offered as a candidate to start")
+}
+
+func TestStartMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Периндоприл", Status: normalization.MedicationStatusPrescribed,
+	}))
+
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{}`), // model found no confident match
+	})
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.StartMedication(ctx, "user1", "что-то непонятное начал")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Equal(t, []string{"Периндоприл"}, notFound.CurrentDrugNames)
+
+	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
+	require.NoError(t, err)
+	require.Equal(t, normalization.MedicationStatusPrescribed, all[0].Status, "no match must leave the medication untouched")
+}
+
+func TestStartMedication_EmptyTextRejected(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.StartMedication(ctx, "user1", "   ")
 	require.Error(t, err)
 	var notFound *pipeline.MedicationNotFoundError
 	require.NotErrorAs(t, err, &notFound, "empty text must be its own plain error, not MedicationNotFoundError")

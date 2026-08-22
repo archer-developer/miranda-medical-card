@@ -158,24 +158,53 @@ func TestDiagnosisRepository_ReplaceForDocument_PreservesUserResolvedRow(t *test
 
 	// Reprocess doc1 — a fresh extraction still reports the same diagnosis
 	// (e.g. the document itself never said it resolved), which must not
-	// overwrite the user's own confirmation.
+	// overwrite the user's own confirmation nor duplicate the row for the
+	// same diagnosis name.
 	require.NoError(t, repo.ReplaceForDocument(ctx, "doc1", []normalization.Diagnosis{
-		{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"},
+		{ID: "dx_doc1_1", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"},
 	}))
 
 	got, err := repo.ListByDocument(ctx, "doc1")
 	require.NoError(t, err)
-	require.Len(t, got, 2, "the user-resolved row is left alone, and the fresh extraction is inserted as its own row — no reconciliation between them")
-	var resolved, fresh normalization.Diagnosis
-	for _, d := range got {
-		if d.Status == "resolved" {
-			resolved = d
-		} else {
-			fresh = d
-		}
-	}
-	require.Equal(t, "dx_doc1_0", resolved.ID, "the resolved row's id must survive untouched")
-	require.True(t, resolvedAt.Equal(*resolved.ActualResolutionAt))
-	require.Equal(t, "active", fresh.Status)
-	require.Nil(t, fresh.ActualResolutionAt)
+	require.Len(t, got, 1, "the resolved row must not be duplicated by a fresh extraction of the same diagnosis name")
+	require.Equal(t, "dx_doc1_0", got[0].ID, "the resolved row's id must survive untouched")
+	require.Equal(t, "resolved", got[0].Status)
+	require.True(t, resolvedAt.Equal(*got[0].ActualResolutionAt))
+}
+
+func TestDiagnosisRepository_ReplaceForDocument_DedupIsCaseAndWhitespaceInsensitive(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "  ОРВИ  ", Status: "active"}))
+	resolvedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repo.MarkResolved(ctx, "dx_doc1_0", "user1", resolvedAt, "Пользователь подтвердил разрешение в диалоге."))
+
+	require.NoError(t, repo.ReplaceForDocument(ctx, "doc1", []normalization.Diagnosis{
+		{ID: "dx_doc1_1", UserID: "user1", DocumentID: "doc1", Name: "орви", Status: "active"},
+	}))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "case/whitespace-only differences in diagnosis name must still count as the same diagnosis for dedup")
+	require.Equal(t, "dx_doc1_0", got[0].ID)
+}
+
+func TestDiagnosisRepository_ReplaceForDocument_InsertsDifferentDiagnosisAlongsideSurvivor(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"}))
+	require.NoError(t, repo.MarkResolved(ctx, "dx_doc1_0", "user1", time.Now(), "Пользователь подтвердил разрешение в диалоге."))
+
+	require.NoError(t, repo.ReplaceForDocument(ctx, "doc1", []normalization.Diagnosis{
+		{ID: "dx_doc1_1", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"},
+		{ID: "dx_doc1_2", UserID: "user1", DocumentID: "doc1", Name: "Гайморит", Status: "active"},
+	}))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "a genuinely different diagnosis must still be inserted even though another diagnosis in the same document survived")
+	names := []string{got[0].Name, got[1].Name}
+	require.ElementsMatch(t, []string{"ОРВИ", "Гайморит"}, names)
 }

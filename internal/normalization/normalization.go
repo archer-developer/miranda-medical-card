@@ -88,10 +88,17 @@ func (d Diagnosis) Overdue(asOf time.Time) bool {
 // docs/domain/06-medication.md §2. A named type (rather than the plain
 // string PlannedAction.Status/Diagnosis.Status use) so a stray literal from
 // the wrong domain (e.g. Diagnosis's "resolved") can't silently compile as a
-// Medication status.
+// Medication status. MedicationStatusPrescribed is the default — set by
+// Normalization whenever Extraction leaves Status unset (see below) — and is
+// also the one status ReplaceForDocument treats as "still untouched": once a
+// Medication has moved past it (to any other value, whether Extraction said
+// so or a user confirmed it via medical.start_medication/complete_medication),
+// a reprocess of its source document leaves that row alone rather than
+// silently resetting it (see storage.MedicationRepository.ReplaceForDocument).
 type MedicationStatus string
 
 const (
+	MedicationStatusPrescribed   MedicationStatus = "prescribed"
 	MedicationStatusActive       MedicationStatus = "active"
 	MedicationStatusDiscontinued MedicationStatus = "discontinued"
 	MedicationStatusCompleted    MedicationStatus = "completed"
@@ -107,20 +114,19 @@ type Medication struct {
 	DoseUnit     string
 	Frequency    string
 	Route        string
+	// StartedAt is when intake actually began — left nil while Status is
+	// MedicationStatusPrescribed (a prescription alone doesn't mean the
+	// patient has started taking it), populated either by Extraction (only
+	// when the text explicitly confirms intake already started, see
+	// extraction.Schema's medications.startedAt) or by
+	// medical.start_medication's confirmation. Deliberately not a separate
+	// "date prescribed" field: nothing in this domain currently needs that
+	// date once intake is confirmed, so it isn't tracked.
 	StartedAt    *time.Time
 	EndedAt      *time.Time
 	Status       MedicationStatus
 	Reason       string
 	PrescribedBy string
-	// ConfirmedEndedAt is when the user themselves confirmed, in dialogue,
-	// that this course has finished (see
-	// storage.MedicationRepository.MarkEndedManually, medical.complete_medication)
-	// — never set by Extraction. nil means Status/EndedAt reflect only what
-	// a document said; non-nil means the user said so directly, regardless
-	// of what any document says. Status is always plain "completed" either
-	// way — this field alone carries the "who said so" provenance, mirroring
-	// Diagnosis.ActualResolutionAt's role for medical.resolve_diagnosis.
-	ConfirmedEndedAt *time.Time
 }
 
 // LabResult mirrors docs/domain/09-lab-result-and-vital-sign.md §2.
@@ -357,6 +363,15 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		if err != nil {
 			addErr("medications[%d] %q: endedAt: %w", i, m.Name, err)
 		}
+		status := MedicationStatus(m.Status)
+		if status == "" {
+			// Extraction leaves Status unset whenever the text doesn't say
+			// enough to justify any of the more specific values — a plain
+			// prescription with no confirmation intake has begun is exactly
+			// this domain's default state, not an extraction gap to warn
+			// about (see MedicationStatusPrescribed's doc comment).
+			status = MedicationStatusPrescribed
+		}
 		result.Medications = append(result.Medications, Medication{
 			ID:           fmt.Sprintf("med_%s_%d", documentID, i),
 			UserID:       userID,
@@ -368,7 +383,7 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 			Route:        m.Route,
 			StartedAt:    startedAt,
 			EndedAt:      endedAt,
-			Status:       MedicationStatus(m.Status),
+			Status:       status,
 			Reason:       m.Reason,
 			PrescribedBy: m.PrescribedBy,
 		})

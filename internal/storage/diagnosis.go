@@ -26,7 +26,16 @@ type DiagnosisRepository interface {
 	// document it came from — mirrors PlannedAction.ReplaceForSource's
 	// status-based rule (docs/adr/004-planned-actions.md §4), simplified to
 	// the same "delete only what's still default" shape rather than
-	// reconciling by content key.
+	// reconciling by content key. Deliberately keyed on ActualResolutionAt,
+	// not Status directly (unlike MedicationRepository.ReplaceForDocument):
+	// Diagnosis.Status can reach "resolved" from Extraction alone, with no
+	// user involvement, so a pure status check would wrongly freeze such a
+	// diagnosis from ever being corrected by a smarter reprocess.
+	// diagnoses whose (canonicalized) Name still has a surviving row for
+	// this document are skipped rather than inserted again — the surviving
+	// row already represents that diagnosis for this document, and a fresh
+	// extraction re-describing the same diagnosis must not produce a
+	// duplicate.
 	ReplaceForDocument(ctx context.Context, documentID string, diagnoses []normalization.Diagnosis) error
 	// MarkResolved sets id's status to "resolved" and ActualResolutionAt to
 	// at — medical.resolve_diagnosis's write, the one way Diagnosis.Status
@@ -90,7 +99,32 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnoses WHERE document_id = ? AND actual_resolution_at IS NULL`, documentID); err != nil {
 		return fmt.Errorf("storage: replace diagnoses: delete: %w", err)
 	}
+
+	// Whatever's left for this document (only user-resolved rows) must not
+	// be duplicated by the fresh extraction below.
+	survivingRows, err := tx.QueryContext(ctx, `SELECT name FROM diagnoses WHERE document_id = ?`, documentID)
+	if err != nil {
+		return fmt.Errorf("storage: replace diagnoses: list surviving: %w", err)
+	}
+	surviving := make(map[string]bool)
+	for survivingRows.Next() {
+		var name string
+		if err := survivingRows.Scan(&name); err != nil {
+			_ = survivingRows.Close()
+			return fmt.Errorf("storage: replace diagnoses: scan surviving: %w", err)
+		}
+		surviving[dedupKey(name)] = true
+	}
+	if err := survivingRows.Err(); err != nil {
+		_ = survivingRows.Close()
+		return fmt.Errorf("storage: replace diagnoses: iterate surviving: %w", err)
+	}
+	_ = survivingRows.Close()
+
 	for _, d := range diagnoses {
+		if surviving[dedupKey(d.Name)] {
+			continue
+		}
 		// Always mint a fresh id, ignoring whatever id normalization
 		// assigned (its deterministic "dx_<documentID>_<i>" scheme) — a
 		// user-resolved row from the same document may still occupy that

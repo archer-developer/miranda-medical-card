@@ -244,6 +244,52 @@ func TestPlannedActionRepository_ReplaceForSource_PreservesCompletedRowAndInsert
 	require.Equal(t, "Контроль глюкозы крови через 6 месяцев", pending.Description)
 }
 
+func TestPlannedActionRepository_ReplaceForSource_SkipsExactDescriptionDuplicateOnReprocess(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "lab_test", Description: "Повторный анализ глюкозы через полгода", MatchIndicatorName: "Глюкоза"},
+	}))
+	first, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.NoError(t, repo.MarkCompleted(ctx, first[0].ID, "doc2", "lab_9", *mustDate("2026-06-01")))
+
+	// Reprocess doc1 — the fresh extraction re-describes the exact same
+	// recommendation verbatim (only whitespace/case differ), which must not
+	// be inserted as a second, indistinguishable pending row.
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "lab_test", Description: "  повторный анализ глюкозы через полгода  ", MatchIndicatorName: "Глюкоза"},
+	}))
+
+	got, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "an exact (case/whitespace-insensitive) description match against the surviving completed row must not be duplicated")
+	require.Equal(t, first[0].ID, got[0].ID)
+	require.Equal(t, normalization.PlannedActionStatusCompleted, got[0].Status)
+}
+
+func TestPlannedActionRepository_ReplaceForSource_InsertsDifferentDescriptionAlongsideSurvivor(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "lab_test", Description: "Повторный анализ глюкозы через полгода", MatchIndicatorName: "Глюкоза"},
+	}))
+	first, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.NoError(t, repo.MarkCompleted(ctx, first[0].ID, "doc2", "lab_9", *mustDate("2026-06-01")))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "vaccination", Description: "Прививка от бешенства"},
+	}))
+
+	got, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "a genuinely different recommendation must still be inserted even though another one from the same source survived")
+}
+
 func TestPlannedActionRepository_ReplaceForSource_DeletesStalePendingOnReprocess(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))

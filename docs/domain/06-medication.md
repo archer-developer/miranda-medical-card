@@ -35,12 +35,11 @@
 | `dose` | `Dosage` (VO) | ❌ | Дозировка. |
 | `frequency` | string | ❌ | Схема приёма в свободной форме (например "1 раз в день") — не структурируется дальше без явной необходимости. |
 | `route` | string | ❌ | Способ приёма (`oral`, `injection`, `topical`, ...), если указан в документе. |
-| `startedAt` | date | ❌ | Дата начала приёма. |
-| `endedAt` | date | ❌ | Дата отмены/завершения. `null`, пока препарат считается активным. |
-| `status` | `MedicationStatus` (VO) | ✅ | `active` \| `discontinued` \| `completed`. |
+| `startedAt` | date | ❌ | Дата, когда приём **фактически начался** — не дата назначения. `null`, пока `status = prescribed`. Заполняется либо Extraction (только когда документ прямо подтверждает, что приём уже начат), либо `medical.start_medication`. Отдельного поля для даты назначения нет — если оно когда-нибудь понадобится, вводится отдельно, не задним числом переопределяя смысл `startedAt`. |
+| `endedAt` | date | ❌ | Дата отмены/завершения. `null`, пока препарат считается активным или ещё не начат. |
+| `status` | `MedicationStatus` (VO) | ✅ | `prescribed` \| `active` \| `discontinued` \| `completed` — см. §3. |
 | `reason` | string | ❌ | Причина назначения, если указана. |
 | `prescribedBy` | string | ❌ | Врач, назначивший препарат. |
-| `confirmedEndedAt` | timestamp | ❌ | Момент, когда пользователь сам подтвердил в диалоге, что курс завершён (`medical.complete_medication`, см. §3.1). `null`, пока это не сделано ни разу. |
 
 ---
 
@@ -48,21 +47,20 @@
 
 `status` устанавливается Normalization на основе того, что явно сказано **в этом документе** — не путём сопоставления с другими документами (см. `../architecture/02-processing-pipeline.md` §6 "Почему нет постоянных междокументных связей"):
 
-- документ явно говорит "назначен"/"начат" → `active`, `endedAt = null`;
+- документ говорит только, что препарат назначен/выписан, без подтверждения, что приём уже начат → `prescribed`, `startedAt = null`. Это же значение — **дефолт**: Normalization подставляет его сама, если Extraction ничего не сказало про статус вовсе (плохо структурированный текст, документ не медицинского типа и т.п.) — отсутствие сигнала не повод показывать пустую строку, "просто назначено, начало не подтверждено" уже и есть самый частый случай.
+- документ явно подтверждает, что пациент уже принимает препарат ("принимает с ...") → `active`, `startedAt` = подтверждённая документом дата.
 - документ явно говорит "отменён"/"завершён курс" → `discontinued`/`completed`, `endedAt` = дата из документа.
 
 Определение **текущего** статуса приёма конкретного препарата на уровне всей истории пользователя (например, был ли более поздний документ, отменивший его) — задача `Medication Resolver` при пересборке `MedicalProfile`, а не поле, хранимое на самой сущности `Medication` (см. `05-medical-profile.md` §3 и `04-timeline.md` §4).
 
-## 3.1. Подтверждение пользователем (`medical.complete_medication`)
+## 3.1. Подтверждение пользователем (`medical.start_medication`, `medical.complete_medication`)
 
-В отличие от `Diagnosis`/`PlannedAction`, у `Medication` долгое время не было ручного пути изменения статуса — только Extraction. `medical.complete_medication` (`../mcp/10-medications.md`) — единственное исключение: пользователь может напрямую подтвердить, что курс завершён ("я закончил принимать курс антибиотиков"), не дожидаясь нового документа, который бы это подтвердил. Кандидатами выступают только записи из текущего (`Medication Resolver`-агрегированного) набора активных препаратов — устаревшая `active`-запись, которую более поздний документ уже отменил, никогда не предлагается.
+В отличие от `Diagnosis`/`PlannedAction`, у `Medication` долгое время не было ручного пути изменения статуса — только Extraction. Два tool'а (`../mcp/10-medications.md`) — единственное исключение, оба следуют принципу "текст на входе, сервис сам разбирает":
 
-При подтверждении `status` становится обычным `completed` — отдельного статуса для "пользователь сам завершил" не вводится. Источник записывается отдельно, в `confirmedEndedAt`:
+- `medical.start_medication` — пользователь подтверждает, что фактически начал принимать препарат, который до этого был только назначен (`prescribed → active`, `startedAt` = момент вызова). Кандидатами выступают только записи из текущего (`Medication Resolver`-агрегированного) набора со статусом `prescribed`.
+- `medical.complete_medication` — пользователь подтверждает, что курс завершён (`active → completed`, `endedAt` = момент вызова). Кандидатами выступают только записи со статусом `active`.
 
-- `confirmedEndedAt == null` — `status`/`endedAt` отражают то, что сказал документ (Extraction);
-- `confirmedEndedAt` задан — пользователь подтвердил это сам в диалоге, независимо от того, что говорит документ.
-
-`confirmedEndedAt` защищает запись при повторной обработке исходного документа — см. §5.
+В обоих случаях зафиксированная дата — момент вызова tool'а, а не дата из документа: весь смысл этих tool'ов в том, что фактическая дата (начала или конца приёма) может не совпадать с тем, что успел зафиксировать документ. Отдельного статуса или поля для "изменено пользователем, а не документом" не вводится — как только `status` уходит дальше `prescribed`, запись защищена от переобработки документа независимо от того, кто именно её туда перевёл (см. §5).
 
 ---
 
@@ -72,16 +70,20 @@ Medication порождает как минимум одно `TimelineEvent`:
 
 | `Medication.status` (при создании) | `TimelineEvent.type` |
 |---|---|
+| `prescribed` | — (нет события: нет даты, на которую его поставить — `startedAt` ещё `null`) |
 | `active` (впервые встречен `startedAt`) | `medication_started` |
 | `discontinued`/`completed` | `medication_stopped` |
 
 Изменение дозировки в рамках того же документа — `medication_changed`.
 
+Это относится только к событиям, порождаемым Normalization при обработке документа. `medical.start_medication`/`medical.complete_medication` меняют `status`/`startedAt`/`endedAt` напрямую в хранилище, без пересборки Timeline — как и `medical.resolve_diagnosis`/`medical.complete_planned_action`, ручное подтверждение в диалоге не порождает отдельного `TimelineEvent` (оно видно через `medical.profile`/`medical.ask`, а не через хронологию документов).
+
 ---
 
 # 5. Инварианты
 
-- Принадлежит ровно одному документу; повторная обработка документа удаляет и пересоздаёт его `Medication`-записи, **кроме** тех, что пользователь уже подтвердил завершёнными (`confirmedEndedAt` задан, см. §3.1) — та запись остаётся нетронутой, а свежая экстракция вставляется отдельной строкой, без попытки согласования между ними (тот же принцип, что и у `Diagnosis`/`PlannedAction`, см. `07-diagnosis-and-allergy.md` §5, `14-planned-action.md` §4).
+- Принадлежит ровно одному документу; повторная обработка документа удаляет и пересоздаёт его `Medication`-записи, **кроме** тех, чей `status` уже не `prescribed` (см. §3.1) — та запись остаётся нетронутой, а свежая экстракция вставляется отдельной строкой, без попытки согласования между ними (тот же принцип, что и у `Diagnosis`/`PlannedAction`, см. `07-diagnosis-and-allergy.md` §5, `14-planned-action.md` §4). Защита определяется как "статус не входит в {active, discontinued, completed}", а не как равенство `prescribed` — старые записи без указанного статуса (до появления этого значения) точно так же подлежат замене, а не считаются защищёнными по ошибке.
+- При повторной обработке документа препарат с тем же (без учёта регистра/пробелов) `drugName`, уже присутствующий среди защищённых записей этого документа, не создаётся заново — свежая экстракция для этого препарата отбрасывается, а не дублируется рядом с защищённой записью.
 - `endedAt`, если задан, не раньше `startedAt`.
 - `drugName` обязателен даже если `tradeName` отсутствует — Extraction должен уметь определить хотя бы одно из двух названий, иначе факт не считается извлечённым.
 
@@ -95,6 +97,7 @@ Medication порождает как минимум одно `TimelineEvent`:
 Add(m Medication) error
 ListByUser(userId string, filter MedicationFilter) ([]Medication, error)
 ListByDocument(documentId string) ([]Medication, error)
-ReplaceForDocument(documentId string, meds []Medication) error // документ-скоуп replace, сохраняет confirmedEndedAt-записи
-MarkEndedManually(id string, userId string, at timestamp) error // medical.complete_medication: status="completed", endedAt=at, confirmedEndedAt=at
+ReplaceForDocument(documentId string, meds []Medication) error // документ-скоуп replace, сохраняет записи со статусом не из {active, discontinued, completed}, не дублирует по drugName
+MarkStartedManually(id string, userId string, at timestamp) error // medical.start_medication: status="active", startedAt=at
+MarkEndedManually(id string, userId string, at timestamp) error   // medical.complete_medication: status="completed", endedAt=at
 ```

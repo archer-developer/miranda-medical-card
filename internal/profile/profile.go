@@ -246,19 +246,21 @@ func resolveActiveMedications(meds []normalization.Medication) []MedicationSumma
 	return result
 }
 
-// ResolveActiveMedications is the Medication Resolver (docs/domain/01-overview.md
-// §7): groups by canonicalized drug name, keeps the entity with the latest
-// date per group (StartedAt, falling back to EndedAt when a discontinued/
-// completed Medication has no StartedAt), and includes it only if that
-// latest snapshot's Status is "active" — an earlier document saying "active"
-// for a drug a later document says was discontinued must not still show up
-// here. Exported (full entities, not MedicationSummary) so
-// internal/pipeline.CompleteMedication can offer the same currently-active
-// set as candidates for medical.complete_medication, rather than
+// ResolveLatestMedications is the Medication Resolver's core grouping
+// (docs/domain/01-overview.md §7): groups by canonicalized drug name and
+// keeps the entity with the latest date per group (StartedAt, falling back
+// to EndedAt when a discontinued/completed Medication has no StartedAt),
+// regardless of that entity's Status — one row per drug, whichever
+// document's account of it is most recent. Exported (full entities, not
+// MedicationSummary) so internal/pipeline's CompleteMedication/StartMedication
+// can each filter this same "what's the current word on this drug" set down
+// to their own status of interest (active, prescribed), rather than
 // duplicating this grouping logic against a raw storage.MedicationFilter{Status:
-// "active"} listing (which alone can't tell a superseded "active" row from
-// the real latest one).
-func ResolveActiveMedications(meds []normalization.Medication) []normalization.Medication {
+// ...} listing (which alone can't tell a superseded row from the real
+// latest one — a drug can have an old "active" row a later document already
+// discontinued, or an old "prescribed" row a later document already
+// confirmed started).
+func ResolveLatestMedications(meds []normalization.Medication) []normalization.Medication {
 	type candidate struct {
 		med     normalization.Medication
 		date    time.Time
@@ -274,14 +276,26 @@ func ResolveActiveMedications(meds []normalization.Medication) []normalization.M
 		}
 	}
 
-	var result []normalization.Medication
+	result := make([]normalization.Medication, 0, len(groups))
 	for _, c := range groups {
-		if c.med.Status != normalization.MedicationStatusActive {
-			continue
-		}
 		result = append(result, c.med)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].DrugName < result[j].DrugName })
+	return result
+}
+
+// ResolveActiveMedications is ResolveLatestMedications narrowed to drugs
+// whose latest snapshot's Status is "active" — an earlier document saying
+// "active" for a drug a later document says was discontinued must not still
+// show up here.
+func ResolveActiveMedications(meds []normalization.Medication) []normalization.Medication {
+	latest := ResolveLatestMedications(meds)
+	result := make([]normalization.Medication, 0, len(latest))
+	for _, m := range latest {
+		if m.Status == normalization.MedicationStatusActive {
+			result = append(result, m)
+		}
+	}
 	return result
 }
 

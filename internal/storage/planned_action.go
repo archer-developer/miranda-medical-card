@@ -32,14 +32,22 @@ type PlannedActionRepository interface {
 	// every action is inserted fresh as a new pending row; a row that's
 	// moved past pending (completed/declined) is left alone, untouched,
 	// rather than reconciled against the new extraction. This deliberately
-	// does not try to match an existing row to a new one by content (e.g.
-	// (Type, MatchIndicatorName|MatchProcedureName)) — Structured
+	// does not try to match an existing row to a new one by the stronger
+	// (Type, MatchIndicatorName|MatchProcedureName) content key — Structured
 	// Extraction's output for the same document isn't guaranteed identical
 	// across runs (see docs/architecture/02-processing-pipeline.md §11), so
-	// a content key is not a reliable identity to reconcile on; status is.
-	// The cost is a rare, harmless-looking duplicate (an old completed row
-	// sitting next to a freshly re-extracted pending row for the same
-	// recommendation) instead of silent data loss or a fragile match.
+	// that key is not a reliable identity to reconcile on; status is.
+	//
+	// It does, however, skip inserting a fresh action whose Description
+	// (case/whitespace-insensitive) matches a surviving row's for this same
+	// (sourceType, sourceID) — Description is just as unstable across
+	// Extraction runs as the content key above in principle, but simple, and
+	// catches the common case (the document's own text didn't change, only
+	// its extraction was rerun) cheaply enough to be worth doing anyway. A
+	// genuinely reworded re-extraction of the same recommendation can still
+	// slip past this and land as a harmless-looking duplicate next to the
+	// surviving row — accepted the same way ADR 004 §4 already accepts it,
+	// just less often than before this check existed.
 	//
 	// Also skips creating a new row when userID already has a *different*
 	// source's still-pending row with the same key (see
@@ -189,12 +197,41 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 		return fmt.Errorf("storage: replace planned actions: delete: %w", err)
 	}
 
+	// Whatever's left for this exact source (completed/declined rows) must
+	// not be duplicated by a fresh extraction re-describing the same
+	// recommendation — see ReplaceForSource's doc comment for why this is a
+	// simple Description-text match, not the stronger content-key
+	// reconciliation deliberately rejected for this purpose.
+	survivingRows, err := tx.QueryContext(ctx, `SELECT description FROM planned_actions WHERE source_type = ? AND source_id = ?`, sourceType, sourceID)
+	if err != nil {
+		return fmt.Errorf("storage: replace planned actions: list surviving: %w", err)
+	}
+	survivingDescriptions := make(map[string]bool)
+	for survivingRows.Next() {
+		var description string
+		if err := survivingRows.Scan(&description); err != nil {
+			_ = survivingRows.Close()
+			return fmt.Errorf("storage: replace planned actions: scan surviving: %w", err)
+		}
+		survivingDescriptions[dedupKey(description)] = true
+	}
+	if err := survivingRows.Err(); err != nil {
+		_ = survivingRows.Close()
+		return fmt.Errorf("storage: replace planned actions: iterate surviving: %w", err)
+	}
+	_ = survivingRows.Close()
+
 	// dedupKeys is userID's other-source pending keys — see
 	// docs/adr/005-planned-action-cross-source-dedup.md. Fetched once,
 	// lazily, only when there's actually something to insert.
 	var dedupKeys map[string]bool
 
 	for _, a := range actions {
+		if survivingDescriptions[dedupKey(a.Description)] {
+			// A row for this exact source already covers this
+			// recommendation — don't mint a second, textually-identical one.
+			continue
+		}
 		if hasKeyIdentity(a) {
 			if dedupKeys == nil {
 				dedupKeys, err = pendingKeysFromOtherSources(ctx, tx, a.UserID, sourceType, sourceID)

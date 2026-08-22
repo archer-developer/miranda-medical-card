@@ -98,6 +98,29 @@ func TestResolveActiveMedications_ReturnsFullEntityWithID(t *testing.T) {
 	require.Equal(t, "Розувастатин", active[0].DrugName)
 }
 
+func TestResolveLatestMedications_IncludesEveryStatusOnePerDrug(t *testing.T) {
+	meds := []normalization.Medication{
+		{ID: "med_1", UserID: "user1", DrugName: "Розувастатин", Status: normalization.MedicationStatusActive, StartedAt: mustDate("2025-05-14")},
+		{ID: "med_2", UserID: "user1", DrugName: "Аспирин", Status: normalization.MedicationStatusPrescribed},
+	}
+
+	latest := profile.ResolveLatestMedications(meds)
+	require.Len(t, latest, 2, "unlike ResolveActiveMedications, every status is included — StartMedication needs prescribed drugs too")
+	names := []string{latest[0].DrugName, latest[1].DrugName}
+	require.ElementsMatch(t, []string{"Розувастатин", "Аспирин"}, names)
+}
+
+func TestResolveLatestMedications_LaterDocumentWinsRegardlessOfStatus(t *testing.T) {
+	meds := []normalization.Medication{
+		{ID: "med_1", UserID: "user1", DrugName: "Аспирин", Status: normalization.MedicationStatusPrescribed},
+		{ID: "med_2", UserID: "user1", DrugName: "аспирин", Status: normalization.MedicationStatusDiscontinued, EndedAt: mustDate("2026-01-01")},
+	}
+
+	latest := profile.ResolveLatestMedications(meds)
+	require.Len(t, latest, 1, "case/whitespace-insensitive grouping must treat both rows as the same drug")
+	require.Equal(t, "med_2", latest[0].ID, "the later (dated) row wins even though its status differs from the earlier one")
+}
+
 func TestBuilder_DiagnosisResolver_GroupsByCodeAndSplitsChronic(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
