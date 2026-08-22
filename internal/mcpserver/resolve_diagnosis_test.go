@@ -1,8 +1,8 @@
 package mcpserver_test
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/archer-developer/miranda-medical-card/internal/config"
+	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
 
 func TestServer_ResolveDiagnosis_HappyPath(t *testing.T) {
@@ -21,7 +22,7 @@ func TestServer_ResolveDiagnosis_HappyPath(t *testing.T) {
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"consultation","diagnoses":[{"name":"ОРВИ","status":"active"}]}`)},
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
 	)
-	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+	session, store := newTestSessionWithStore(t, provider, []config.UserConfig{{ID: "alex"}})
 
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -35,13 +36,17 @@ func TestServer_ResolveDiagnosis_HappyPath(t *testing.T) {
 	uploadOut := requireContentMirrorsStructured[struct {
 		DocumentID string `json:"documentId"`
 	}](t, uploadResult)
-	// normalization.Normalize assigns Diagnosis.ID deterministically as
-	// dx_<documentId>_<index> — no MCP tool surfaces a raw diagnosisId (by
-	// design: Miranda always passes free text, never an id, to
-	// medical.resolve_diagnosis, same as medical.decline_planned_action),
-	// so the test reconstructs it the same way normalization.go does
-	// rather than needing a new id-exposing field just for this test.
-	diagnosisID := fmt.Sprintf("dx_%s_0", uploadOut.DocumentID)
+	// No MCP tool surfaces a raw diagnosisId (by design: Miranda always
+	// passes free text, never an id, to medical.resolve_diagnosis, same as
+	// medical.decline_planned_action), and storage — not
+	// normalization.Normalize — is what actually assigns Diagnosis.ID (a
+	// fresh uuid minted in ReplaceForDocument, see
+	// internal/storage/diagnosis.go), so the test reads the real id
+	// straight out of the store rather than reconstructing it.
+	diagnoses, err := storage.NewDiagnosisRepository(store).ListByDocument(context.Background(), uploadOut.DocumentID)
+	require.NoError(t, err)
+	require.Len(t, diagnoses, 1)
+	diagnosisID := diagnoses[0].ID
 
 	provider.WithStructured(
 		llmtest.StructuredResponse{}, // index 0, already consumed by upload's OCR/structured calls, never re-read

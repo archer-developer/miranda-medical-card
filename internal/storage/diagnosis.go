@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 )
 
@@ -14,11 +16,17 @@ type DiagnosisRepository interface {
 	Add(ctx context.Context, d normalization.Diagnosis) error
 	ListByUser(ctx context.Context, userID string) ([]normalization.Diagnosis, error)
 	ListByDocument(ctx context.Context, documentID string) ([]normalization.Diagnosis, error)
-	// ReplaceForDocument atomically deletes every existing Diagnosis for
-	// documentID and inserts diagnoses in its place — the document-scoped
-	// replace invariant every domain doc describes (see e.g.
-	// docs/domain/07-diagnosis-and-allergy.md §4), implemented as one
-	// transaction so a caller never observes a partially-replaced set.
+	// ReplaceForDocument deletes every existing Diagnosis for documentID
+	// that's still in its default, untouched-by-the-user state
+	// (ActualResolutionAt == nil) and inserts diagnoses in its place, all
+	// in one transaction. A diagnosis the user has directly confirmed
+	// resolved via medical.resolve_diagnosis (ActualResolutionAt set — see
+	// docs/domain/07-diagnosis-and-allergy.md §"actualResolutionAt") is left
+	// untouched rather than being silently reset by a reprocess of the
+	// document it came from — mirrors PlannedAction.ReplaceForSource's
+	// status-based rule (docs/adr/004-planned-actions.md §4), simplified to
+	// the same "delete only what's still default" shape rather than
+	// reconciling by content key.
 	ReplaceForDocument(ctx context.Context, documentID string, diagnoses []normalization.Diagnosis) error
 	// MarkResolved sets id's status to "resolved" and ActualResolutionAt to
 	// at — medical.resolve_diagnosis's write, the one way Diagnosis.Status
@@ -79,14 +87,20 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnoses WHERE document_id = ?`, documentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnoses WHERE document_id = ? AND actual_resolution_at IS NULL`, documentID); err != nil {
 		return fmt.Errorf("storage: replace diagnoses: delete: %w", err)
 	}
 	for _, d := range diagnoses {
+		// Always mint a fresh id, ignoring whatever id normalization
+		// assigned (its deterministic "dx_<documentID>_<i>" scheme) — a
+		// user-resolved row from the same document may still occupy that
+		// same deterministic id (see the delete above), so reusing it here
+		// could collide with that surviving row's primary key.
+		id := "dx_" + uuid.New().String()
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning, actual_resolution_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			d.ID, d.UserID, documentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
+			id, d.UserID, documentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
 			nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning, nullUnix(d.ActualResolutionAt),
 		)
 		if err != nil {

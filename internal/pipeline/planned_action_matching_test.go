@@ -102,7 +102,7 @@ func TestPlannedAction_AutoCompletesFromLaterDocument_AndRevertsOnReprocessWitho
 	require.Empty(t, reverted[0].MatchedDocumentID)
 }
 
-func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *testing.T) {
+func TestPlannedAction_CompletedRowSurvivesReprocessOfItsOwnSourceDocumentAlongsideFreshPending(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
 
@@ -134,7 +134,8 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 
 	// Reprocess A itself — same match key (relatedIndicatorName still
 	// resolves to "Глюкоза"), just reworded — must not lose the
-	// already-established completion.
+	// already-established completion, even though ReplaceForSource no
+	// longer tries to reconcile the fresh extraction onto that same row.
 	providerA2 := llmtest.New("fake",
 		llmtest.Response{Text: "Жалобы на общее недомогание. Рекомендуется контроль глюкозы крови в динамике через 6 месяцев."},
 	).WithStructured(
@@ -156,11 +157,16 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 
 	afterReprocess, err := planRepo.ListByUser(ctx, "user1")
 	require.NoError(t, err)
-	require.Len(t, afterReprocess, 1, "must reconcile onto the same row, not duplicate")
-	require.Equal(t, planID, afterReprocess[0].ID)
-	require.Equal(t, normalization.PlannedActionStatusCompleted, afterReprocess[0].Status, "completion must survive an unrelated reprocess of its own source document")
-	require.Equal(t, resultB.DocumentID, afterReprocess[0].MatchedDocumentID)
-	require.Equal(t, "Контроль глюкозы крови в динамике", afterReprocess[0].Description, "description should still update to the reworded text")
+	require.Len(t, afterReprocess, 2, "the completed row is left alone, and the reworded reprocess is inserted as its own fresh pending row")
+	completedRow, freshPending := afterReprocess[0], afterReprocess[1]
+	if completedRow.Status != normalization.PlannedActionStatusCompleted {
+		completedRow, freshPending = freshPending, completedRow
+	}
+	require.Equal(t, planID, completedRow.ID, "the completed row's id must survive untouched")
+	require.Equal(t, normalization.PlannedActionStatusCompleted, completedRow.Status, "completion must survive an unrelated reprocess of its own source document")
+	require.Equal(t, resultB.DocumentID, completedRow.MatchedDocumentID)
+	require.Equal(t, normalization.PlannedActionStatusPending, freshPending.Status)
+	require.Equal(t, "Контроль глюкозы крови в динамике", freshPending.Description)
 }
 
 // scriptedConsultationRecommendingEndocrinologist scripts a document whose

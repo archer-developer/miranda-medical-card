@@ -40,6 +40,17 @@ const testPublicBaseURL = "https://medical-card.test:8791"
 // exercises the same request/response marshaling a real client would hit.
 func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config.UserConfig) *mcp.ClientSession {
 	t.Helper()
+	session, _ := newTestSessionWithStore(t, provider, users)
+	return session
+}
+
+// newTestSessionWithStore is newTestSession plus the underlying Store, for
+// the rare test that needs to read something no MCP tool surfaces (e.g.
+// resolve_diagnosis_test.go's real, storage-assigned Diagnosis.ID — storage
+// mints that id itself now rather than trusting normalization's
+// deterministic one, see internal/storage/diagnosis.go's ReplaceForDocument).
+func newTestSessionWithStore(t *testing.T, provider *llmtest.FakeProvider, users []config.UserConfig) (*mcp.ClientSession, *storage.Store) {
+	t.Helper()
 	ctx := context.Background()
 
 	s, err := storage.Open(":memory:")
@@ -70,7 +81,7 @@ func newTestSession(t *testing.T, provider *llmtest.FakeProvider, users []config
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = clientSession.Close() })
 
-	return clientSession
+	return clientSession, s
 }
 
 func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {

@@ -174,7 +174,7 @@ func TestPlannedActionRepository_ReplaceForSource_InsertsFreshOnFirstUpload(t *t
 	require.Equal(t, normalization.PlannedActionStatusPending, got[0].Status)
 }
 
-func TestPlannedActionRepository_ReplaceForSource_PreservesCompletedStateOnMatchingKey(t *testing.T) {
+func TestPlannedActionRepository_ReplaceForSource_PreservesCompletedRowAndInsertsFreshPendingOnReprocess(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))
 
@@ -193,14 +193,20 @@ func TestPlannedActionRepository_ReplaceForSource_PreservesCompletedStateOnMatch
 
 	got, err := repo.ListByUser(ctx, "user1")
 	require.NoError(t, err)
-	require.Len(t, got, 1, "must reconcile onto the same row, not insert a second one")
-	require.Equal(t, first[0].ID, got[0].ID, "id must survive the reprocess")
-	require.Equal(t, normalization.PlannedActionStatusCompleted, got[0].Status, "completed state must survive an unrelated reprocess")
-	require.Equal(t, "doc2", got[0].MatchedDocumentID)
-	require.Equal(t, "Контроль глюкозы крови через 6 месяцев", got[0].Description, "description itself should still update")
+	require.Len(t, got, 2, "the completed row is left alone, and the new extraction is inserted as its own fresh pending row — no attempt to reconcile them by content")
+	completed, pending := got[0], got[1]
+	if completed.Status != normalization.PlannedActionStatusCompleted {
+		completed, pending = pending, completed
+	}
+	require.Equal(t, first[0].ID, completed.ID, "the completed row's id must survive untouched")
+	require.Equal(t, normalization.PlannedActionStatusCompleted, completed.Status)
+	require.Equal(t, "doc2", completed.MatchedDocumentID)
+	require.Equal(t, "Повторный анализ глюкозы через полгода", completed.Description, "the completed row's own description is not rewritten by the reprocess")
+	require.Equal(t, normalization.PlannedActionStatusPending, pending.Status)
+	require.Equal(t, "Контроль глюкозы крови через 6 месяцев", pending.Description)
 }
 
-func TestPlannedActionRepository_ReplaceForSource_DeletesStalePendingWhoseKeyDisappeared(t *testing.T) {
+func TestPlannedActionRepository_ReplaceForSource_DeletesStalePendingOnReprocess(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))
 
@@ -213,10 +219,10 @@ func TestPlannedActionRepository_ReplaceForSource_DeletesStalePendingWhoseKeyDis
 
 	got, err := repo.ListByUser(ctx, "user1")
 	require.NoError(t, err)
-	require.Empty(t, got, "a still-pending row whose key vanished must be deleted")
+	require.Empty(t, got, "a still-pending row must be discarded on reprocess regardless of what the new extraction contains")
 }
 
-func TestPlannedActionRepository_ReplaceForSource_NeverDeletesCompletedWhoseKeyDisappeared(t *testing.T) {
+func TestPlannedActionRepository_ReplaceForSource_NeverDeletesCompletedOnReprocess(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))
 
@@ -238,20 +244,16 @@ func TestPlannedActionRepository_ReplaceForSource_NeverDeletesCompletedWhoseKeyD
 }
 
 // TestPlannedActionRepository_ReplaceForSource_NewRowIDNeverCollidesWithStaleRow
-// guards against a bug /code-review found and this test reproduced directly
-// against the real repository: Normalize assigns every document-scoped
-// entity, PlannedAction included, a deterministic id
-// ("plan_<documentID>_<index>", see normalization.go's PlannedActions
-// loop). ReplaceForSource reconciles by (Type, MatchIndicatorName/
-// MatchProcedureName), not by id, and only deletes stale rows *after* the
-// insert/update loop — so if a reprocess's new item at some index gets a
-// different key than the old item that occupied that same index (plausible
-// Structured Extraction non-determinism, see
-// docs/architecture/02-processing-pipeline.md §11), the insert branch used
-// to reuse that deterministic id, colliding with the still-present old
-// row's primary key and failing the whole INSERT (and, through
-// matchPlannedActions, the whole pipeline.run()). Fixed by always minting a
-// fresh id for a newly-inserted row instead of trusting the caller's id.
+// guards id-collision safety for ReplaceForSource's delete-then-insert
+// shape: Normalize assigns every document-scoped entity, PlannedAction
+// included, a deterministic id ("plan_<documentID>_<index>", see
+// normalization.go's PlannedActions loop), but ReplaceForSource always
+// mints its own fresh id for every row it inserts rather than trusting the
+// caller's — even across a reprocess where Structured Extraction's output
+// for the same document changes between runs (plausible non-determinism,
+// see docs/architecture/02-processing-pipeline.md §11), so two calls
+// passing the same caller-supplied id for unrelated recommendations must
+// never collide.
 func TestPlannedActionRepository_ReplaceForSource_NewRowIDNeverCollidesWithStaleRow(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))
@@ -263,16 +265,15 @@ func TestPlannedActionRepository_ReplaceForSource_NewRowIDNeverCollidesWithStale
 	}))
 
 	// Reprocess: the extraction is non-deterministic and this time index 0
-	// is a *different* recommendation (different key) — Normalize still
-	// assigns it the same id "plan_doc1_0" since it's still index 0 of the
-	// same document.
+	// is a *different* recommendation — Normalize still assigns it the same
+	// id "plan_doc1_0" since it's still index 0 of the same document.
 	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
 		{ID: "plan_doc1_0", UserID: "user1", Type: "vaccination", Description: "flu shot", MatchProcedureName: "Грипп"},
 	}))
 
 	got, err := repo.ListByUser(ctx, "user1")
 	require.NoError(t, err)
-	require.Len(t, got, 1, "the old glucose row must be replaced by the new one, not left duplicated or erroring")
+	require.Len(t, got, 1, "the old glucose row (still pending) must be replaced by the new one, not left duplicated or erroring")
 	require.Equal(t, "flu shot", got[0].Description)
 	require.Equal(t, "Грипп", got[0].MatchProcedureName)
 }

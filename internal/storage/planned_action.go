@@ -22,18 +22,24 @@ type PlannedActionRepository interface {
 	// ID when a.ID is empty.
 	Add(ctx context.Context, a normalization.PlannedAction) (normalization.PlannedAction, error)
 	// ReplaceForSource reconciles (documentID, "document") sourced actions
-	// with actions — NOT a blind delete+reinsert like every other entity's
-	// ReplaceForDocument, because PlannedAction.Status/MatchedDocumentID
-	// carries state that must survive a reprocess of the document that
-	// created it (see docs/adr/004-planned-actions.md §4). Matched by
-	// (Type, MatchIndicatorName|MatchProcedureName): a matched existing row
-	// keeps its ID/Status/MatchedDocumentID/MatchedEntityID/MatchedAt and
-	// only has Description/ReferenceText/DueDateFrom/DueDateTo updated; an
-	// existing row whose key no longer appears is deleted only if still
-	// pending — a completed row is left alone rather than erased by a
-	// merely-reworded re-extraction; a new key is inserted fresh as
-	// pending. Two actions in the same call sharing a key degrade to
-	// positional matching (documented limitation, see ADR).
+	// with actions by status, not by matching individual rows — NOT a blind
+	// delete+reinsert like every other entity's ReplaceForDocument, because
+	// PlannedAction.Status/MatchedDocumentID carries state that must survive
+	// a reprocess of the document that created it (see
+	// docs/adr/004-planned-actions.md §4). Every still-pending row for
+	// (sourceType, sourceID) — i.e. every row still in its default,
+	// untouched-by-the-user-or-by-automatic-matching state — is deleted and
+	// every action is inserted fresh as a new pending row; a row that's
+	// moved past pending (completed/declined) is left alone, untouched,
+	// rather than reconciled against the new extraction. This deliberately
+	// does not try to match an existing row to a new one by content (e.g.
+	// (Type, MatchIndicatorName|MatchProcedureName)) — Structured
+	// Extraction's output for the same document isn't guaranteed identical
+	// across runs (see docs/architecture/02-processing-pipeline.md §11), so
+	// a content key is not a reliable identity to reconcile on; status is.
+	// The cost is a rare, harmless-looking duplicate (an old completed row
+	// sitting next to a freshly re-extracted pending row for the same
+	// recommendation) instead of silent data loss or a fragile match.
 	//
 	// Also skips creating a new row when userID already has a *different*
 	// source's still-pending row with the same key (see
@@ -167,27 +173,14 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	existingRows, err := tx.QueryContext(ctx, plannedActionSelectColumns+` FROM planned_actions WHERE source_type = ? AND source_id = ?`, sourceType, sourceID)
-	if err != nil {
-		return fmt.Errorf("storage: replace planned actions: list existing: %w", err)
+	// Only a still-pending row is in the default state ReplaceForSource is
+	// free to discard — a completed/declined row is left untouched as
+	// historical fact (see ReplaceForSource's doc comment).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM planned_actions WHERE source_type = ? AND source_id = ? AND status = ?`,
+		sourceType, sourceID, normalization.PlannedActionStatusPending,
+	); err != nil {
+		return fmt.Errorf("storage: replace planned actions: delete: %w", err)
 	}
-	existing, err := scanPlannedActions(existingRows)
-	_ = existingRows.Close()
-	if err != nil {
-		return fmt.Errorf("storage: replace planned actions: list existing: %w", err)
-	}
-
-	// byKey queues existing rows per key (front-consumed on match) so two
-	// actions sharing a key in the same document degrade to positional
-	// matching rather than both colliding on the same row (see
-	// ReplaceForSource's doc comment).
-	byKey := make(map[string][]normalization.PlannedAction, len(existing))
-	for _, e := range existing {
-		key := planActionKey(e)
-		byKey[key] = append(byKey[key], e)
-	}
-
-	consumed := make(map[string]bool, len(existing)) // by ID
 
 	// dedupKeys is userID's other-source pending keys — see
 	// docs/adr/005-planned-action-cross-source-dedup.md. Fetched once,
@@ -195,23 +188,6 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 	var dedupKeys map[string]bool
 
 	for _, a := range actions {
-		key := planActionKey(a)
-		queue := byKey[key]
-		if len(queue) > 0 {
-			match := queue[0]
-			byKey[key] = queue[1:]
-			consumed[match.ID] = true
-			_, err := tx.ExecContext(ctx, `
-				UPDATE planned_actions
-				SET description = ?, reference_text = ?, due_date_from = ?, due_date_to = ?
-				WHERE id = ?`,
-				a.Description, a.ReferenceText, nullUnix(a.DueDateFrom), nullUnix(a.DueDateTo), match.ID,
-			)
-			if err != nil {
-				return fmt.Errorf("storage: replace planned actions: update: %w", err)
-			}
-			continue
-		}
 		if hasKeyIdentity(a) {
 			if dedupKeys == nil {
 				dedupKeys, err = pendingKeysFromOtherSources(ctx, tx, a.UserID, sourceType, sourceID)
@@ -219,7 +195,7 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 					return fmt.Errorf("storage: replace planned actions: %w", err)
 				}
 			}
-			if dedupKeys[key] {
+			if dedupKeys[planActionKey(a)] {
 				// A different source already has a pending row for this
 				// exact recommendation — don't mint a second,
 				// textually-indistinguishable one (see ADR 005).
@@ -227,24 +203,13 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 			}
 		}
 		a.SourceType, a.SourceID = sourceType, sourceID
-		// Always mint a fresh id here, ignoring whatever id normalization
+		// Always mint a fresh id, ignoring whatever id normalization
 		// assigned (its deterministic "plan_<documentID>_<i>" scheme,
-		// shared with every other document-scoped entity) — a stale row
-		// occupying that same id may still exist in this table and not be
-		// deleted until the cleanup loop below, since reconciliation here
-		// is keyed by (Type, MatchIndicatorName|MatchProcedureName), not by
-		// id. Reusing the caller's id would then collide with that
-		// not-yet-deleted row's primary key. Found via /code-review after
-		// reproducing it directly: reprocessing a document whose
-		// plannedActions extraction changes key at the same array index
-		// (plausible non-determinism, see
-		// docs/architecture/02-processing-pipeline.md §11) failed the
-		// INSERT with "UNIQUE constraint failed: planned_actions.id" and
-		// took down the whole pipeline.run(), not just this step.
+		// shared with every other document-scoped entity) — every row this
+		// loop inserts is a brand-new pending row, so there's no existing
+		// row's id to preserve.
 		a.ID = "plan_" + uuid.New().String()
-		if a.Status == "" {
-			a.Status = normalization.PlannedActionStatusPending
-		}
+		a.Status = normalization.PlannedActionStatusPending
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO planned_actions (id, user_id, source_type, source_id, type, description, reference_text,
 				match_indicator_name, match_procedure_name, due_date_from, due_date_to, status,
@@ -256,21 +221,6 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 		)
 		if err != nil {
 			return fmt.Errorf("storage: replace planned actions: insert: %w", err)
-		}
-	}
-
-	// Any existing row never consumed by a match above is gone from the
-	// fresh extraction — delete it only if it's still pending; a completed
-	// row is left as historical fact (see ReplaceForSource's doc comment).
-	for _, e := range existing {
-		if consumed[e.ID] {
-			continue
-		}
-		if e.Status != normalization.PlannedActionStatusPending {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM planned_actions WHERE id = ?`, e.ID); err != nil {
-			return fmt.Errorf("storage: replace planned actions: delete stale: %w", err)
 		}
 	}
 

@@ -147,3 +147,35 @@ func TestDiagnosisRepository_ReplaceForDocument_EmptySliceClearsExisting(t *test
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
+
+func TestDiagnosisRepository_ReplaceForDocument_PreservesUserResolvedRow(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"}))
+	resolvedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repo.MarkResolved(ctx, "dx_doc1_0", "user1", resolvedAt, "Пользователь подтвердил разрешение в диалоге."))
+
+	// Reprocess doc1 — a fresh extraction still reports the same diagnosis
+	// (e.g. the document itself never said it resolved), which must not
+	// overwrite the user's own confirmation.
+	require.NoError(t, repo.ReplaceForDocument(ctx, "doc1", []normalization.Diagnosis{
+		{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"},
+	}))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "the user-resolved row is left alone, and the fresh extraction is inserted as its own row — no reconciliation between them")
+	var resolved, fresh normalization.Diagnosis
+	for _, d := range got {
+		if d.Status == "resolved" {
+			resolved = d
+		} else {
+			fresh = d
+		}
+	}
+	require.Equal(t, "dx_doc1_0", resolved.ID, "the resolved row's id must survive untouched")
+	require.True(t, resolvedAt.Equal(*resolved.ActualResolutionAt))
+	require.Equal(t, "active", fresh.Status)
+	require.Nil(t, fresh.ActualResolutionAt)
+}

@@ -96,15 +96,16 @@
 тексту документа (см. пример с "Серная пробка" выше): `actualResolutionAt` — специфично для *пользовательского*
 подтверждения, а не для любого способа получить `resolved`.
 
-**Известное ограничение**: `ReplaceForDocument` (см. `../architecture/02-processing-pipeline.md` §6, документ-скоуп
-replace) при повторной обработке документа полностью удаляет и заново вставляет все `Diagnosis` этого `documentId` —
-включая те, что были вручную помечены `resolved` через `medical.resolve_diagnosis` после первой обработки. В отличие
-от `PlannedAction.ReplaceForSource`, которая сохраняет `completed`/`declined` через сопоставление по ключу (см.
-`14-planned-action.md`), `Diagnosis.ReplaceForDocument` такого сопоставления не делает — `medical.reprocess_document`
-на документе, диагноз из которого пользователь уже подтвердил разрешённым, отменит это подтверждение обратно на то,
-что вернёт новая Extraction. Не решается в рамках текущей реализации `medical.resolve_diagnosis`; тот же класс
-проблемы, что `PlannedAction` уже разбирал в `../adr/004-planned-actions.md`, просто ещё не перенесённый на
-`Diagnosis`.
+`ReplaceForDocument` (см. `../architecture/02-processing-pipeline.md` §6, документ-скоуп replace) при повторной
+обработке документа удаляет и заново вставляет только те `Diagnosis` этого `documentId`, у которых `actualResolutionAt`
+всё ещё пусто — строка, вручную помеченная `resolved` через `medical.resolve_diagnosis`, остаётся нетронутой, а не
+переписывается тем, что вернёт новая Extraction. Реализовано так же просто, как `PlannedAction.ReplaceForSource`
+(`14-planned-action.md`, `../adr/004-planned-actions.md` §4) — оба репозитория ориентируются на то, ушла ли запись из
+своего дефолтного состояния, а не пытаются сопоставить старую и новую запись по содержимому (имя диагноза, ключ
+рекомендации и т.п.), поскольку результат Structured Extraction не гарантированно одинаков между запусками (см.
+`../architecture/02-processing-pipeline.md` §11). Цена этого — новая Extraction того же документа может вставить рядом
+свежую `active`-запись с тем же именем, что и уже подтверждённая `resolved`-запись; сопоставления между ними
+намеренно нет.
 
 ## `Overdue` — вычисляется, не хранится
 
