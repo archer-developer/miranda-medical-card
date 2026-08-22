@@ -71,7 +71,7 @@ func TestMedicationRepository_MarkEndedManually(t *testing.T) {
 	got, err := repo.ListByDocument(ctx, "doc1")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	require.Equal(t, "completed", got[0].Status)
+	require.Equal(t, normalization.MedicationStatusCompleted, got[0].Status)
 	require.True(t, endedAt.Equal(*got[0].EndedAt))
 	require.True(t, endedAt.Equal(*got[0].ConfirmedEndedAt))
 }
@@ -88,7 +88,7 @@ func TestMedicationRepository_MarkEndedManually_ScopedToOwningUser(t *testing.T)
 	got, err := repo.ListByDocument(ctx, "doc1")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	require.Equal(t, "active", got[0].Status, "MarkEndedManually for a different user must be a no-op")
+	require.Equal(t, normalization.MedicationStatusActive, got[0].Status, "MarkEndedManually for a different user must be a no-op")
 }
 
 func TestMedicationRepository_ReplaceForDocument_PreservesConfirmedRow(t *testing.T) {
@@ -119,7 +119,7 @@ func TestMedicationRepository_ReplaceForDocument_PreservesConfirmedRow(t *testin
 			fresh = m
 		}
 	}
-	require.Equal(t, "completed", confirmed.Status)
+	require.Equal(t, normalization.MedicationStatusCompleted, confirmed.Status)
 	require.True(t, endedAt.Equal(*confirmed.ConfirmedEndedAt))
-	require.Equal(t, "active", fresh.Status)
+	require.Equal(t, normalization.MedicationStatusActive, fresh.Status)
 }

@@ -19,8 +19,8 @@ import (
 // speculatively.
 type MedicationFilter struct {
 	// Status, if non-empty, restricts results to that exact
-	// normalization.Medication.Status value (e.g. "active").
-	Status string
+	// normalization.Medication.Status value.
+	Status normalization.MedicationStatus
 }
 
 // MedicationRepository mirrors docs/domain/06-medication.md §6.
@@ -36,7 +36,7 @@ type MedicationRepository interface {
 	// reset by a reprocess of the document it came from — mirrors
 	// DiagnosisRepository.ReplaceForDocument's rule.
 	ReplaceForDocument(ctx context.Context, documentID string, meds []normalization.Medication) error
-	// MarkEndedManually sets id's status to "completed" and both EndedAt and
+	// MarkEndedManually sets id's status to MedicationStatusCompleted and both EndedAt and
 	// ConfirmedEndedAt to at — medical.complete_medication's write, the one
 	// way Medication.Status changes outside of Extraction. Unlike
 	// DiagnosisRepository.MarkResolved there's no reasoning parameter:
@@ -61,7 +61,7 @@ func (r *sqliteMedicationRepository) Add(ctx context.Context, m normalization.Me
 		INSERT INTO medications (id, user_id, document_id, drug_name, dose_amount, dose_unit, frequency, route, started_at, ended_at, status, reason, prescribed_by, confirmed_ended_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.UserID, m.DocumentID, m.DrugName, m.DoseAmount, m.DoseUnit, m.Frequency, m.Route,
-		nullUnix(m.StartedAt), nullUnix(m.EndedAt), m.Status, m.Reason, m.PrescribedBy, nullUnix(m.ConfirmedEndedAt),
+		nullUnix(m.StartedAt), nullUnix(m.EndedAt), string(m.Status), m.Reason, m.PrescribedBy, nullUnix(m.ConfirmedEndedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("storage: add medication: %w", err)
@@ -74,7 +74,7 @@ func (r *sqliteMedicationRepository) ListByUser(ctx context.Context, userID stri
 	args := []any{userID}
 	if filter.Status != "" {
 		query += ` AND status = ?`
-		args = append(args, filter.Status)
+		args = append(args, string(filter.Status))
 	}
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -114,7 +114,7 @@ func (r *sqliteMedicationRepository) ReplaceForDocument(ctx context.Context, doc
 			INSERT INTO medications (id, user_id, document_id, drug_name, dose_amount, dose_unit, frequency, route, started_at, ended_at, status, reason, prescribed_by, confirmed_ended_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, m.UserID, documentID, m.DrugName, m.DoseAmount, m.DoseUnit, m.Frequency, m.Route,
-			nullUnix(m.StartedAt), nullUnix(m.EndedAt), m.Status, m.Reason, m.PrescribedBy, nullUnix(m.ConfirmedEndedAt),
+			nullUnix(m.StartedAt), nullUnix(m.EndedAt), string(m.Status), m.Reason, m.PrescribedBy, nullUnix(m.ConfirmedEndedAt),
 		)
 		if err != nil {
 			return fmt.Errorf("storage: replace medications: insert: %w", err)
@@ -149,8 +149,8 @@ func scanMedications(rows *sql.Rows) ([]normalization.Medication, error) {
 // MarkEndedManually implements MedicationRepository.MarkEndedManually.
 func (r *sqliteMedicationRepository) MarkEndedManually(ctx context.Context, id, userID string, at time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE medications SET status = 'completed', ended_at = ?, confirmed_ended_at = ? WHERE id = ? AND user_id = ?`,
-		at.Unix(), at.Unix(), id, userID,
+		UPDATE medications SET status = ?, ended_at = ?, confirmed_ended_at = ? WHERE id = ? AND user_id = ?`,
+		string(normalization.MedicationStatusCompleted), at.Unix(), at.Unix(), id, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: mark medication ended manually: %w", err)

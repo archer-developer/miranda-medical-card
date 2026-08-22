@@ -60,7 +60,7 @@ func (p *Pipeline) CompleteMedication(ctx context.Context, userID, text string) 
 	candidates := make([]decline.Candidate, len(current))
 	for i, m := range current {
 		names[i] = m.DrugName
-		candidates[i] = decline.Candidate{ID: m.ID, Description: m.DrugName, Type: m.Status}
+		candidates[i] = decline.Candidate{ID: m.ID, Description: m.DrugName, Type: string(m.Status)}
 	}
 
 	matchedID, err := decline.Match(ctx, p.extractionProvider,
@@ -75,7 +75,7 @@ func (p *Pipeline) CompleteMedication(ctx context.Context, userID, text string) 
 			if err := p.medications.MarkEndedManually(ctx, m.ID, userID, now); err != nil {
 				return normalization.Medication{}, fmt.Errorf("pipeline: complete medication: %w", err)
 			}
-			m.Status = "completed"
+			m.Status = normalization.MedicationStatusCompleted
 			m.EndedAt = &now
 			m.ConfirmedEndedAt = &now
 			return m, nil

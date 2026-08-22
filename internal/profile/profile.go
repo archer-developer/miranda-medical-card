@@ -276,7 +276,7 @@ func ResolveActiveMedications(meds []normalization.Medication) []normalization.M
 
 	var result []normalization.Medication
 	for _, c := range groups {
-		if c.med.Status != "active" {
+		if c.med.Status != normalization.MedicationStatusActive {
 			continue
 		}
 		result = append(result, c.med)

@@ -84,6 +84,19 @@ func (d Diagnosis) Overdue(asOf time.Time) bool {
 	return d.Status == "active" && d.ExpectedResolutionTo != nil && d.ExpectedResolutionTo.Before(asOf)
 }
 
+// MedicationStatus is Medication.Status's value type — see
+// docs/domain/06-medication.md §2. A named type (rather than the plain
+// string PlannedAction.Status/Diagnosis.Status use) so a stray literal from
+// the wrong domain (e.g. Diagnosis's "resolved") can't silently compile as a
+// Medication status.
+type MedicationStatus string
+
+const (
+	MedicationStatusActive       MedicationStatus = "active"
+	MedicationStatusDiscontinued MedicationStatus = "discontinued"
+	MedicationStatusCompleted    MedicationStatus = "completed"
+)
+
 // Medication mirrors docs/domain/06-medication.md §2.
 type Medication struct {
 	ID           string
@@ -96,7 +109,7 @@ type Medication struct {
 	Route        string
 	StartedAt    *time.Time
 	EndedAt      *time.Time
-	Status       string
+	Status       MedicationStatus
 	Reason       string
 	PrescribedBy string
 	// ConfirmedEndedAt is when the user themselves confirmed, in dialogue,
@@ -355,7 +368,7 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 			Route:        m.Route,
 			StartedAt:    startedAt,
 			EndedAt:      endedAt,
-			Status:       m.Status,
+			Status:       MedicationStatus(m.Status),
 			Reason:       m.Reason,
 			PrescribedBy: m.PrescribedBy,
 		})

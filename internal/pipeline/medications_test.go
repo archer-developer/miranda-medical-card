@@ -28,10 +28,10 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 	s, fs := newTestBackend(t)
 	medRepo := storage.NewMedicationRepository(s)
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
-		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Аспирин", Status: "chronic",
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Аспирин", Status: normalization.MedicationStatusDiscontinued,
 	}))
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
-		ID: "med_doc1_1", UserID: "user1", DocumentID: "doc1", DrugName: "Амоксициллин", Status: "active",
+		ID: "med_doc1_1", UserID: "user1", DocumentID: "doc1", DrugName: "Амоксициллин", Status: normalization.MedicationStatusActive,
 	}))
 
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
@@ -42,7 +42,7 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 	completed, err := p.CompleteMedication(ctx, "user1", "я закончил принимать антибиотик")
 	require.NoError(t, err)
 	require.Equal(t, "med_doc1_1", completed.ID)
-	require.Equal(t, "completed", completed.Status)
+	require.Equal(t, normalization.MedicationStatusCompleted, completed.Status)
 	require.NotNil(t, completed.EndedAt)
 	require.NotNil(t, completed.ConfirmedEndedAt)
 
@@ -50,10 +50,10 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	for _, m := range all {
 		if m.ID == "med_doc1_1" {
-			require.Equal(t, "completed", m.Status)
+			require.Equal(t, normalization.MedicationStatusCompleted, m.Status)
 			require.NotNil(t, m.ConfirmedEndedAt)
 		} else {
-			require.Equal(t, "chronic", m.Status, "the other medication must be untouched")
+			require.Equal(t, normalization.MedicationStatusDiscontinued, m.Status, "the other medication must be untouched")
 		}
 	}
 }
@@ -115,7 +115,7 @@ func TestCompleteMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) 
 
 	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
 	require.NoError(t, err)
-	require.Equal(t, "active", all[0].Status, "no match must leave the medication untouched")
+	require.Equal(t, normalization.MedicationStatusActive, all[0].Status, "no match must leave the medication untouched")
 }
 
 func TestCompleteMedication_EmptyTextRejected(t *testing.T) {

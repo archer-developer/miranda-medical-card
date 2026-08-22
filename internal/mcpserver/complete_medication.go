@@ -54,7 +54,7 @@ func completeMedicationHandler(pl *pipeline.Pipeline, gate *userGate, logger *sl
 
 		logger.Info("complete_medication", "userId", in.UserID, "medicationId", completed.ID)
 		out := CompleteMedicationOutput{
-			MedicationID: completed.ID, DrugName: completed.DrugName, Status: completed.Status,
+			MedicationID: completed.ID, DrugName: completed.DrugName, Status: string(completed.Status),
 			EndedAt: formatOptionalDate(completed.EndedAt),
 		}
 		// Content deliberately left nil — see logEventHandler in events.go.
