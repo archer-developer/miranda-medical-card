@@ -114,6 +114,40 @@ func TestBuilder_DiagnosisResolver_GroupsByCodeAndSplitsChronic(t *testing.T) {
 	require.Len(t, p.ChronicConditions, 1)
 }
 
+func TestBuilder_DiagnosisResolver_OverdueFlagsPastExpectedResolution(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	dx := storage.NewDiagnosisRepository(s)
+	require.NoError(t, dx.Add(ctx, normalization.Diagnosis{
+		ID: "dx_1", UserID: "user1", DocumentID: "doc1",
+		Name: "ОРВИ (просрочен)", Status: "active", ExpectedResolutionTo: mustDate("2020-01-01"),
+	}))
+	require.NoError(t, dx.Add(ctx, normalization.Diagnosis{
+		ID: "dx_2", UserID: "user1", DocumentID: "doc2",
+		Name: "ОРВИ (в сроке)", Status: "active", ExpectedResolutionTo: mustDate("2099-01-01"),
+	}))
+	require.NoError(t, dx.Add(ctx, normalization.Diagnosis{
+		ID: "dx_3", UserID: "user1", DocumentID: "doc3",
+		Name: "Без оценки срока", Status: "active",
+	}))
+
+	b := profile.NewBuilder(
+		storage.NewMedicationRepository(s), dx, storage.NewProcedureRepository(s),
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
+	)
+	p, err := b.Build(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, p.ActiveDiagnoses, 3)
+
+	byName := map[string]profile.DiagnosisSummary{}
+	for _, d := range p.ActiveDiagnoses {
+		byName[d.Name] = d
+	}
+	require.True(t, byName["ОРВИ (просрочен)"].Overdue)
+	require.False(t, byName["ОРВИ (в сроке)"].Overdue)
+	require.False(t, byName["Без оценки срока"].Overdue)
+}
+
 func TestBuilder_AllergiesDeduped(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

@@ -43,6 +43,11 @@ type DiagnosisSummary struct {
 	Code        string
 	CodeSystem  string
 	DiagnosedAt *time.Time
+	// Overdue mirrors normalization.Diagnosis.Overdue(now) as of this
+	// Profile's RebuiltAt — always false for a chronic condition (see
+	// ChronicConditions) or an active diagnosis with no expected-resolution
+	// estimate.
+	Overdue bool
 }
 
 type MedicationSummary struct {
@@ -192,7 +197,7 @@ func (b *Builder) Build(ctx context.Context, userID string) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile: latest vital signs: %w", err)
 	}
 
-	activeDiagnoses, chronic := resolveActiveDiagnoses(diagnoses)
+	activeDiagnoses, chronic := resolveActiveDiagnoses(diagnoses, b.now())
 	activeMedications := resolveActiveMedications(meds)
 
 	labSummaries, err := b.toLabResultSummaries(ctx, userID, latestLabs)
@@ -276,8 +281,12 @@ func medicationDate(m normalization.Medication) (time.Time, bool) {
 // present (more reliable than free-text name matching across documents),
 // otherwise by canonicalized name, keeps the latest by DiagnosedAt, and
 // splits the result into activeDiagnoses (status active or chronic, per
-// docs/domain/05-medical-profile.md §2) and its chronic-only subset.
-func resolveActiveDiagnoses(diagnoses []normalization.Diagnosis) (active, chronic []DiagnosisSummary) {
+// docs/domain/05-medical-profile.md §2) and its chronic-only subset. now is
+// the Profile's own RebuiltAt, threaded through to each summary's Overdue
+// (normalization.Diagnosis.Overdue) rather than each summary computing its
+// own "current time" — a Profile's Overdue flags must all be consistent
+// with the single instant it claims to be a snapshot of.
+func resolveActiveDiagnoses(diagnoses []normalization.Diagnosis, now time.Time) (active, chronic []DiagnosisSummary) {
 	type candidate struct {
 		dx      normalization.Diagnosis
 		date    time.Time
@@ -306,7 +315,10 @@ func resolveActiveDiagnoses(diagnoses []normalization.Diagnosis) (active, chroni
 		if c.dx.Status != "active" && c.dx.Status != "chronic" {
 			continue
 		}
-		summary := DiagnosisSummary{Name: c.dx.Name, Code: c.dx.Code, CodeSystem: c.dx.CodeSystem, DiagnosedAt: c.dx.DiagnosedAt}
+		summary := DiagnosisSummary{
+			Name: c.dx.Name, Code: c.dx.Code, CodeSystem: c.dx.CodeSystem, DiagnosedAt: c.dx.DiagnosedAt,
+			Overdue: c.dx.Overdue(now),
+		}
 		activeList = append(activeList, summary)
 		if c.dx.Status == "chronic" {
 			chronicList = append(chronicList, summary)

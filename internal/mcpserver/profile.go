@@ -27,6 +27,11 @@ type DiagnosisSummaryOutput struct {
 	Name        string `json:"name"`
 	Code        string `json:"code,omitempty"`
 	DiagnosedAt string `json:"diagnosedAt,omitempty"`
+	// Overdue mirrors normalization.Diagnosis.Overdue — true when this
+	// diagnosis is still "active" but its expected-resolution estimate has
+	// already passed. Always false for a chronic condition or an active
+	// diagnosis with no estimate.
+	Overdue bool `json:"overdue"`
 }
 
 type MedicationSummaryOutput struct {
@@ -122,10 +127,10 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 		LatestVitalSigns:  make([]VitalSignSummaryOutput, len(p.LatestVitalSigns)),
 	}
 	for i, d := range p.ActiveDiagnoses {
-		out.ActiveDiagnoses[i] = DiagnosisSummaryOutput{Name: d.Name, Code: d.Code, DiagnosedAt: formatOptionalDate(d.DiagnosedAt)}
+		out.ActiveDiagnoses[i] = DiagnosisSummaryOutput{Name: d.Name, Code: d.Code, DiagnosedAt: formatOptionalDate(d.DiagnosedAt), Overdue: d.Overdue}
 	}
 	for i, d := range p.ChronicConditions {
-		out.ChronicConditions[i] = DiagnosisSummaryOutput{Name: d.Name, Code: d.Code, DiagnosedAt: formatOptionalDate(d.DiagnosedAt)}
+		out.ChronicConditions[i] = DiagnosisSummaryOutput{Name: d.Name, Code: d.Code, DiagnosedAt: formatOptionalDate(d.DiagnosedAt), Overdue: d.Overdue}
 	}
 	for i, m := range p.ActiveMedications {
 		dose := ""

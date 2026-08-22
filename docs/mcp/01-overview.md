@@ -193,7 +193,7 @@ medical.get_document
 
 ## Events
 
-Медицинские факты, зафиксированные пользователем напрямую, без исходного документа — см. `07-events.md`. `medical.decline_planned_action` (`08-planned-actions.md` §4) — тот же принцип "текст на входе, сервис сам разбирает" применённый к отмене пункта плана, а не к его созданию.
+Медицинские факты, зафиксированные пользователем напрямую, без исходного документа — см. `07-events.md`. `medical.decline_planned_action` (`08-planned-actions.md` §4) и `medical.resolve_diagnosis` (`09-diagnoses.md`) — тот же принцип "текст на входе, сервис сам разбирает" применённый к отмене пункта плана и к подтверждению разрешения диагноза, а не к их созданию.
 
 ```
 medical.log_event
@@ -201,6 +201,8 @@ medical.log_event
 medical.delete_event
 
 medical.decline_planned_action
+
+medical.resolve_diagnosis
 ```
 
 ---
@@ -336,7 +338,7 @@ string, необязательный, по умолчанию равен userId
 
 Идентификатор пользователя, чьи данные требуется получить, если он отличается от `userId`. Используется, когда один член семьи спрашивает о данных другого — например, родитель спрашивает про здоровье ребёнка.
 
-Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.planned_actions`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.log_event`, `medical.delete_event`, `medical.decline_planned_action` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
+Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.planned_actions`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.log_event`, `medical.delete_event`, `medical.decline_planned_action`, `medical.resolve_diagnosis` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
 
 Если `subjectId` отличается от `userId`, сервис проверяет, что пользователь `subjectId` явно разрешил доступ (`shared_with` в своей конфигурации, см. `../architecture/01-overview.md` §4). Если доступ не разрешён, сервис отвечает так же, как если бы `subjectId` не существовал (`USER_NOT_FOUND`) — не раскрывая, что пользователь существует, но доступ запрещён.
 
@@ -436,6 +438,7 @@ string, необязательный, по умолчанию равен userId
 | `medical.log_event` | Фиксация самостоятельно сообщённого медицинского события |
 | `medical.delete_event` | Удаление самостоятельно зафиксированного события |
 | `medical.decline_planned_action` | Отмена пункта плана по тексту пользователя |
+| `medical.resolve_diagnosis` | Подтверждение разрешения диагноза по тексту пользователя |
 | `medical.ask` | Ответ на медицинский вопрос |
 | `medical.profile` | Получение агрегированной медицинской карточки |
 | `medical.timeline` | Получение временной шкалы медицинских событий |

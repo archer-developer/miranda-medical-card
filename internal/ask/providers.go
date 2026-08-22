@@ -184,8 +184,9 @@ func (p *DiagnosisProvider) Metadata() ProviderMetadata {
 		Name: "diagnoses",
 		Description: "Диагнозы: название, код (МКБ-10, если указан), дата постановки, статус " +
 			"(предполагаемый/действующий/хронический/снят), и для некоторых активных диагнозов — оценочная дата " +
-			"разрешения (не из документа, общая медицинская оценка по типу диагноза, не факт). Используйте для " +
-			"вопросов об истории диагнозов, хронических заболеваниях, дате первой постановки диагноза.",
+			"разрешения (не из документа, общая медицинская оценка по типу диагноза, не факт) вместе с пометкой, " +
+			"если этот срок уже прошёл. Используйте для вопросов об истории диагнозов, хронических заболеваниях, " +
+			"дате первой постановки диагноза, и о том, не пора ли перепроверить диагноз, который должен был пройти.",
 	}
 }
 
@@ -194,6 +195,7 @@ func (p *DiagnosisProvider) Collect(ctx context.Context, req KnowledgeRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("ask: diagnosis provider: %w", err)
 	}
+	now := time.Now()
 	chunks := make([]KnowledgeChunk, len(diagnoses))
 	for i, d := range diagnoses {
 		content := fmt.Sprintf("%s. Статус: %s.", d.Name, d.Status)
@@ -203,13 +205,29 @@ func (p *DiagnosisProvider) Collect(ctx context.Context, req KnowledgeRequest) (
 		if d.DiagnosedAt != nil {
 			content += fmt.Sprintf(" Поставлен: %s.", formatDate(d.DiagnosedAt))
 		}
-		if d.ExpectedResolutionTo != nil {
+		// ExpectedResolutionTo is only meaningful while the diagnosis is
+		// still active — medical.resolve_diagnosis deliberately leaves it
+		// set after resolving (see storage.DiagnosisRepository.MarkResolved's
+		// doc comment: it's a historical estimate, not overwritten by the
+		// actual outcome), so a resolved diagnosis can still carry a stale
+		// one that must not be presented as still pending.
+		if d.Status == "active" && d.ExpectedResolutionTo != nil {
 			// Explicitly labeled as an estimate, not a documented fact — this
 			// comes from the extraction model's general medical knowledge of
 			// the condition's typical course, not anything the source
 			// document itself states (see extraction.Schema's
 			// expectedResolutionAmount* description).
 			content += fmt.Sprintf(" Ожидаемое разрешение (оценочно, не из документа): к %s.", formatDate(d.ExpectedResolutionTo))
+			// d.Overdue never flips Status itself (see that method's doc
+			// comment) — surfaced here only as a prompt for the model to
+			// suggest the patient re-check, not as a claim the diagnosis
+			// resolved or didn't.
+			if d.Overdue(now) {
+				content += " Ожидаемый срок уже прошёл, а диагноз всё ещё числится действующим — возможно, стоит уточнить у врача."
+			}
+		}
+		if d.ActualResolutionAt != nil {
+			content += fmt.Sprintf(" Пациент подтвердил разрешение: %s.", formatDate(d.ActualResolutionAt))
 		}
 		chunks[i] = KnowledgeChunk{Source: "diagnoses", Title: d.Name, Content: content, Confidence: 1.0, DocumentID: d.DocumentID}
 	}

@@ -74,6 +74,23 @@ func TestNormalize_Diagnosis_NoExpectedResolutionStatedLeavesFieldsNil(t *testin
 	require.Nil(t, result.Diagnoses[0].ExpectedResolutionTo)
 }
 
+func TestDiagnosis_Overdue(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	past := now.AddDate(0, 0, -1)
+	future := now.AddDate(0, 0, 1)
+
+	require.True(t, normalization.Diagnosis{Status: "active", ExpectedResolutionTo: &past}.Overdue(now))
+	require.False(t, normalization.Diagnosis{Status: "active", ExpectedResolutionTo: &future}.Overdue(now))
+	require.False(t, normalization.Diagnosis{Status: "active", ExpectedResolutionTo: nil}.Overdue(now),
+		"no expected-resolution estimate at all must never be overdue")
+	require.False(t, normalization.Diagnosis{Status: "chronic", ExpectedResolutionTo: &past}.Overdue(now),
+		"chronic is never overdue even if a resolution estimate is somehow present")
+	require.False(t, normalization.Diagnosis{Status: "resolved", ExpectedResolutionTo: &past}.Overdue(now),
+		"already resolved is never overdue")
+	require.False(t, normalization.Diagnosis{Status: "suspected", ExpectedResolutionTo: &past}.Overdue(now),
+		"suspected is never overdue")
+}
+
 func TestNormalize_Diagnosis_StatusReasoningCarriesThroughButNeverIntoNotes(t *testing.T) {
 	extracted := extraction.Result{
 		DocumentType: "consultation",

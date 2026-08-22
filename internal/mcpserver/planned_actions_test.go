@@ -63,7 +63,7 @@ func TestServer_PlannedActions_DefaultExcludesDeclined(t *testing.T) {
 
 	provider.WithStructured(
 		llmtest.StructuredResponse{}, // index 0, already consumed by log_event, never re-read
-		llmtest.StructuredResponse{JSON: json.RawMessage(`{"plannedActionId":"` + logOut.PlannedAction.PlannedActionID + `"}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"matchId":"` + logOut.PlannedAction.PlannedActionID + `"}`)},
 	)
 	declineResult := callTool(t, session, "medical.decline_planned_action", map[string]any{"userId": "alex", "text": "отмени прививку от бешенства"})
 	require.False(t, declineResult.IsError, "%v", declineResult.Content)

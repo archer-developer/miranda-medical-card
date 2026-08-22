@@ -56,7 +56,8 @@ func (p *Pipeline) DeclinePlannedAction(ctx context.Context, userID, text string
 		return normalization.PlannedAction{}, &PlannedActionNotFoundError{}
 	}
 
-	matchedID, err := decline.Match(ctx, p.provider, text, candidates)
+	matchedID, err := decline.Match(ctx, p.provider,
+		"The user is saying a planned medical action is no longer needed and should be cancelled.", text, candidates)
 	if err != nil {
 		return normalization.PlannedAction{}, fmt.Errorf("pipeline: decline planned action: match: %w", err)
 	}

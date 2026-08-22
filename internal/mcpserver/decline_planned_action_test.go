@@ -36,7 +36,7 @@ func TestServer_DeclinePlannedAction_HappyPath(t *testing.T) {
 	// 1, the one the next Structured call actually consumes.
 	provider.WithStructured(
 		llmtest.StructuredResponse{},
-		llmtest.StructuredResponse{JSON: json.RawMessage(`{"plannedActionId":"` + logOut.PlannedAction.PlannedActionID + `"}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"matchId":"` + logOut.PlannedAction.PlannedActionID + `"}`)},
 	)
 
 	declineResult := callTool(t, session, "medical.decline_planned_action", map[string]any{"userId": "alex", "text": "отмени прививку от бешенства"})

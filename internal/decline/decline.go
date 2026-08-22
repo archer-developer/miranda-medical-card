@@ -1,11 +1,13 @@
-// Package decline implements medical.decline_planned_action's matching step
-// (docs/adr/004-planned-actions.md §3): given the text a user said to
-// cancel a planned action ("отмени прививку от бешенства") and their
-// current pending PlannedActions, decide which single one — if any — they
-// mean. One small Structured LLM call over an explicit, short candidate
-// list (a user's pending actions), not a general-purpose search — the
-// candidate set is always small, so this is closer to a disambiguation
-// prompt than internal/search.
+// Package decline implements a small, reusable "which of the user's few
+// current <thing>s does this free-text message refer to" matcher. Built for
+// medical.decline_planned_action's matching step (docs/adr/004-planned-actions.md
+// §3: given "отмени прививку от бешенства" and the user's current pending
+// PlannedActions, decide which single one — if any — they mean), and reused
+// as-is by medical.resolve_diagnosis (given "да, ОРВИ прошла" and the
+// user's current non-resolved Diagnoses, decide which one). One small
+// Structured LLM call over an explicit, short candidate list, not a
+// general-purpose search — the candidate set is always small, so this is
+// closer to a disambiguation prompt than internal/search.
 package decline
 
 import (
@@ -18,19 +20,26 @@ import (
 )
 
 // SchemaName is passed as llm.StructuredRequest.SchemaName.
-const SchemaName = "planned_action_decline_match"
+const SchemaName = "candidate_text_match"
 
-// Prompt instructs the model to pick at most one candidate by meaning, not
-// exact wording — text and a PlannedAction.Description often use different
-// words for the same thing ("укол от бешенства" vs "прививка от
-// бешенства").
-const Prompt = `You are matching a user's short request to cancel a planned medical action against a list of their own currently pending planned actions.
+// promptTemplate instructs the model to pick at most one candidate by
+// meaning, not exact wording — free text and a Candidate.Description often
+// use different words for the same thing ("укол от бешенства" vs
+// "прививка от бешенства", "ОРВИ прошла" vs "Острая респираторная вирусная
+// инфекция"). %s is filled in by Match with a one-line description of what
+// kind of thing is being matched and why (see Match's kind parameter) —
+// kept out of the candidate list itself so the model isn't tempted to
+// invent a match just because something merely resembles a candidate.
+const promptTemplate = `You are matching a user's short free-text message against a list of their own current candidate items.
+
+%s
 
 Given the user's text and a list of candidates (id + description), return the id of the single candidate the text most clearly refers to. The text may paraphrase the description — match by meaning, not exact wording.
 
-Omit plannedActionId entirely if you are not confident any candidate is what the user means — never guess when it's ambiguous or none fit.`
+Omit matchId entirely if you are not confident any candidate is what the user means — never guess when it's ambiguous or none fit.`
 
-// Candidate is one pending PlannedAction offered to the model.
+// Candidate is one current item (a pending PlannedAction, a non-resolved
+// Diagnosis, ...) offered to the model.
 type Candidate struct {
 	ID          string
 	Description string
@@ -38,13 +47,13 @@ type Candidate struct {
 }
 
 // Schema is the JSON Schema passed as llm.StructuredRequest.Schema —
-// plannedActionId is constrained to candidateIDs so the model can only ever
-// return an id it was actually offered, never invent one.
+// matchId is constrained to candidateIDs so the model can only ever return
+// an id it was actually offered, never invent one.
 func Schema(candidateIDs []string) map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"plannedActionId": map[string]any{
+			"matchId": map[string]any{
 				"type":        "string",
 				"enum":        candidateIDs,
 				"description": "The id of the matching candidate. Omit entirely if none confidently match.",
@@ -55,7 +64,7 @@ func Schema(candidateIDs []string) map[string]any {
 
 // Result is the Go-side mirror of Schema.
 type Result struct {
-	PlannedActionID string `json:"plannedActionId,omitempty"`
+	MatchID string `json:"matchId,omitempty"`
 }
 
 // StructuredProvider is the subset of llm.StructuredProvider Match needs.
@@ -67,8 +76,13 @@ type StructuredProvider interface {
 // candidates is empty or the model found no confident match — never an
 // error for "no match," only for an actual call/parse failure (mirroring
 // internal/events.Extract's posture: an inconclusive result is a normal
-// outcome here, not a failure).
-func Match(ctx context.Context, provider StructuredProvider, text string, candidates []Candidate) (string, error) {
+// outcome here, not a failure). kind is a one-line description of what's
+// being matched and why, substituted into the prompt so the model doesn't
+// have to guess the task from the candidate list alone — e.g. "The user is
+// saying a planned medical action is no longer needed and should be
+// cancelled." or "The user is saying one of their current diagnoses has
+// now resolved."
+func Match(ctx context.Context, provider StructuredProvider, kind, text string, candidates []Candidate) (string, error) {
 	if len(candidates) == 0 {
 		return "", nil
 	}
@@ -82,7 +96,7 @@ func Match(ctx context.Context, provider StructuredProvider, text string, candid
 
 	req := llm.StructuredRequest{
 		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: Prompt},
+			{Role: llm.RoleSystem, Content: fmt.Sprintf(promptTemplate, kind)},
 			{Role: llm.RoleUser, Content: fmt.Sprintf("User's text: %q\n\nCandidates:\n%s", text, listing.String())},
 		},
 		Schema:     Schema(ids),
@@ -98,5 +112,5 @@ func Match(ctx context.Context, provider StructuredProvider, text string, candid
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return "", fmt.Errorf("decline: structured: unmarshal result: %w", err)
 	}
-	return result.PlannedActionID, nil
+	return result.MatchID, nil
 }

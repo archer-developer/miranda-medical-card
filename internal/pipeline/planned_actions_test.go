@@ -30,7 +30,7 @@ func TestDeclinePlannedAction_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
-		JSON: json.RawMessage(`{"plannedActionId":"` + rabies.ID + `"}`),
+		JSON: json.RawMessage(`{"matchId":"` + rabies.ID + `"}`),
 	})
 	p := pipeline.New(provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 

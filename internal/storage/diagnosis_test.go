@@ -76,6 +76,47 @@ func TestDiagnosisRepository_AddWithNilDiagnosedAtRoundTripsAsNil(t *testing.T) 
 	require.Empty(t, got[0].StatusReasoning)
 }
 
+func TestDiagnosisRepository_MarkResolved(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{
+		ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1",
+		Name: "ОРВИ", Status: "active",
+		ExpectedResolutionFrom: &from, ExpectedResolutionTo: &to,
+		StatusReasoning: "Острое респираторное заболевание, типичный срок разрешения 7-14 дней.",
+	}))
+
+	resolvedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repo.MarkResolved(ctx, "dx_doc1_0", "user1", resolvedAt, "Пользователь подтвердил разрешение в диалоге."))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "resolved", got[0].Status)
+	require.True(t, resolvedAt.Equal(*got[0].ActualResolutionAt))
+	require.Equal(t, "Пользователь подтвердил разрешение в диалоге.", got[0].StatusReasoning)
+	// ExpectedResolutionFrom/To are a prior estimate, not overwritten by
+	// resolution — see MarkResolved's own doc comment on the interface.
+	require.True(t, from.Equal(*got[0].ExpectedResolutionFrom))
+	require.True(t, to.Equal(*got[0].ExpectedResolutionTo))
+}
+
+func TestDiagnosisRepository_MarkResolved_ScopedToOwningUser(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "ОРВИ", Status: "active"}))
+	require.NoError(t, repo.MarkResolved(ctx, "dx_doc1_0", "user2", time.Now(), "wrong user"))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "active", got[0].Status, "MarkResolved for a different user must be a no-op")
+}
+
 func TestDiagnosisRepository_ReplaceForDocument(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewDiagnosisRepository(newTestStore(t))

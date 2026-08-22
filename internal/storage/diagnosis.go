@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 )
@@ -19,6 +20,16 @@ type DiagnosisRepository interface {
 	// docs/domain/07-diagnosis-and-allergy.md §4), implemented as one
 	// transaction so a caller never observes a partially-replaced set.
 	ReplaceForDocument(ctx context.Context, documentID string, diagnoses []normalization.Diagnosis) error
+	// MarkResolved sets id's status to "resolved" and ActualResolutionAt to
+	// at — medical.resolve_diagnosis's write, the one way Diagnosis.Status
+	// changes outside of Extraction (see docs/domain/07-diagnosis-and-allergy.md).
+	// Deliberately leaves ExpectedResolutionFrom/To untouched: they record
+	// what was estimated beforehand, ActualResolutionAt records what
+	// actually happened, and overwriting one with the other would lose
+	// that distinction. reasoning replaces StatusReasoning so it reflects
+	// why the status is what it now is, not why some earlier Extraction
+	// picked whatever it had before.
+	MarkResolved(ctx context.Context, id, userID string, at time.Time, reasoning string) error
 }
 
 type sqliteDiagnosisRepository struct {
@@ -32,10 +43,10 @@ func NewDiagnosisRepository(s *Store) DiagnosisRepository {
 
 func (r *sqliteDiagnosisRepository) Add(ctx context.Context, d normalization.Diagnosis) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning, actual_resolution_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.UserID, d.DocumentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
-		nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning,
+		nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning, nullUnix(d.ActualResolutionAt),
 	)
 	if err != nil {
 		return fmt.Errorf("storage: add diagnosis: %w", err)
@@ -73,10 +84,10 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	}
 	for _, d := range diagnoses {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO diagnoses (id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning, actual_resolution_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			d.ID, d.UserID, documentID, d.Name, d.Code, d.CodeSystem, nullUnix(d.DiagnosedAt), d.Status, d.Notes,
-			nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning,
+			nullUnix(d.ExpectedResolutionFrom), nullUnix(d.ExpectedResolutionTo), d.StatusReasoning, nullUnix(d.ActualResolutionAt),
 		)
 		if err != nil {
 			return fmt.Errorf("storage: replace diagnoses: insert: %w", err)
@@ -88,23 +99,35 @@ func (r *sqliteDiagnosisRepository) ReplaceForDocument(ctx context.Context, docu
 	return nil
 }
 
-const diagnosisSelectColumns = `SELECT id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning`
+const diagnosisSelectColumns = `SELECT id, user_id, document_id, name, code, code_system, diagnosed_at, status, notes, expected_resolution_from, expected_resolution_to, status_reasoning, actual_resolution_at`
 
 func scanDiagnoses(rows *sql.Rows) ([]normalization.Diagnosis, error) {
 	var result []normalization.Diagnosis
 	for rows.Next() {
 		var d normalization.Diagnosis
-		var diagnosedAt, resolutionFrom, resolutionTo sql.NullInt64
-		if err := rows.Scan(&d.ID, &d.UserID, &d.DocumentID, &d.Name, &d.Code, &d.CodeSystem, &diagnosedAt, &d.Status, &d.Notes, &resolutionFrom, &resolutionTo, &d.StatusReasoning); err != nil {
+		var diagnosedAt, resolutionFrom, resolutionTo, actualResolutionAt sql.NullInt64
+		if err := rows.Scan(&d.ID, &d.UserID, &d.DocumentID, &d.Name, &d.Code, &d.CodeSystem, &diagnosedAt, &d.Status, &d.Notes, &resolutionFrom, &resolutionTo, &d.StatusReasoning, &actualResolutionAt); err != nil {
 			return nil, fmt.Errorf("storage: scan diagnosis: %w", err)
 		}
 		d.DiagnosedAt = timePtr(diagnosedAt)
 		d.ExpectedResolutionFrom = timePtr(resolutionFrom)
 		d.ExpectedResolutionTo = timePtr(resolutionTo)
+		d.ActualResolutionAt = timePtr(actualResolutionAt)
 		result = append(result, d)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("storage: iterate diagnoses: %w", err)
 	}
 	return result, nil
+}
+
+func (r *sqliteDiagnosisRepository) MarkResolved(ctx context.Context, id, userID string, at time.Time, reasoning string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE diagnoses SET status = 'resolved', actual_resolution_at = ?, status_reasoning = ? WHERE id = ? AND user_id = ?`,
+		at.Unix(), reasoning, id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: mark diagnosis resolved: %w", err)
+	}
+	return nil
 }

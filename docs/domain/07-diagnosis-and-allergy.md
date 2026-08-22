@@ -12,6 +12,7 @@
 > - 03-files-and-documents.md
 > - 05-medical-profile.md
 > - 11-value-objects.md
+> - ../mcp/09-diagnoses.md
 
 ---
 
@@ -37,6 +38,7 @@
 | `notes` | text | ❌ | Дополнительный контекст из документа. |
 | `expectedResolutionFrom`, `expectedResolutionTo` | date, date | ❌ | Оценочный диапазон даты разрешения — только для `status = active`. См. ниже. |
 | `statusReasoning` | text | ❌ | Объяснение модели, почему выбран этот `status`/`expectedResolution*`. Не клинический факт — см. ниже. |
+| `actualResolutionAt` | timestamp | ❌ | Момент, когда пользователь напрямую подтвердил разрешение диагноза через `medical.resolve_diagnosis`. См. ниже. |
 
 ## Определение `status`
 
@@ -59,6 +61,10 @@
 - `status` не проставляется только если текст вообще не утверждает, что это актуальный диагноз пациента (например,
   диагноз упомянут исключительно как семейный анамнез, а не находка этого документа).
 
+Это не единственный источник `status = resolved` — пользователь может напрямую подтвердить разрешение диагноза в
+диалоге ("да, ОРВИ прошла"), минуя новый документ, через `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`). Это
+единственный способ изменить `Diagnosis.status` вне Extraction — см. `actualResolutionAt` ниже.
+
 Агрегация "актуальные диагнозы на сегодня" — задача `Diagnosis Resolver` при пересборке `MedicalProfile` (см. `05-medical-profile.md`), не поле самой сущности.
 
 ## `expectedResolutionFrom`/`expectedResolutionTo`
@@ -78,6 +84,45 @@
 
 Поскольку это оценка, а не факт из документа, `medical.ask` обязан явно помечать её как оценочную, а не как
 задокументированный факт (см. `internal/ask/providers.go`'s `DiagnosisProvider`).
+
+## `actualResolutionAt`
+
+Момент, когда пользователь напрямую подтвердил разрешение диагноза через `medical.resolve_diagnosis`
+(`../mcp/09-diagnoses.md`) — единственный писатель этого поля (`storage.DiagnosisRepository.MarkResolved`). Намеренно
+**не** заменяет собой `expectedResolutionFrom`/`expectedResolutionTo` при разрешении: `MarkResolved` их не трогает —
+одно поле хранит, что было спрогнозировано, другое — что реально произошло и когда, чтобы позже можно было сравнить
+прогноз с фактом (например, для калибровки самой оценки в будущем). Всегда пусто, пока диагноз не подтверждён таким
+образом явно — Extraction никогда не устанавливает это поле сама, даже когда сама выставляет `status = resolved` по
+тексту документа (см. пример с "Серная пробка" выше): `actualResolutionAt` — специфично для *пользовательского*
+подтверждения, а не для любого способа получить `resolved`.
+
+**Известное ограничение**: `ReplaceForDocument` (см. `../architecture/02-processing-pipeline.md` §6, документ-скоуп
+replace) при повторной обработке документа полностью удаляет и заново вставляет все `Diagnosis` этого `documentId` —
+включая те, что были вручную помечены `resolved` через `medical.resolve_diagnosis` после первой обработки. В отличие
+от `PlannedAction.ReplaceForSource`, которая сохраняет `completed`/`declined` через сопоставление по ключу (см.
+`14-planned-action.md`), `Diagnosis.ReplaceForDocument` такого сопоставления не делает — `medical.reprocess_document`
+на документе, диагноз из которого пользователь уже подтвердил разрешённым, отменит это подтверждение обратно на то,
+что вернёт новая Extraction. Не решается в рамках текущей реализации `medical.resolve_diagnosis`; тот же класс
+проблемы, что `PlannedAction` уже разбирал в `../adr/004-planned-actions.md`, просто ещё не перенесённый на
+`Diagnosis`.
+
+## `Overdue` — вычисляется, не хранится
+
+`Diagnosis.Overdue(asOf time.Time) bool` (`internal/normalization/normalization.go`) — `true`, когда `status = active`
+и `expectedResolutionTo` уже в прошлом относительно `asOf`. Технически устроено так же, как
+`PlannedAction.Overdue` (см. этот же файл, `docs/adr/004-planned-actions.md`) — вычисляется на чтении, в одном месте,
+никогда не сохраняется как отдельная колонка и никогда не переписывает сам `status`:
+
+- в этом проекте нет фонового job/scheduler, который мог бы периодически проходить по базе и обновлять статусы —
+  единственный писатель `Diagnosis.status` это Extraction при обработке документа (см. `01-overview.md` "No Docker,
+  no CGO, no CI");
+- "просрочен ожидаемый срок" — это не то же самое, что "диагноз опровергнут": просроченность лишь означает, что стоит
+  перепроверить, а не то, что модель теперь уверена в каком-то другом статусе без всякого основания в новом
+  документе — сам `status` при этом остаётся тем, что было в последней Extraction.
+
+`Overdue` пробрасывается в `MedicalProfile.activeDiagnoses[].overdue` (Diagnosis Resolver, `05-medical-profile.md`) и
+в текст, который `DiagnosisProvider` отдаёт `medical.ask` — как повод предложить пациенту уточнить диагноз у врача, а
+не как утверждение, что что-то изменилось.
 
 ## `statusReasoning` — отдельное поле, не часть `notes`
 
@@ -130,4 +175,4 @@ Extraction дополнительно просит модель коротко �
 
 # 5. Repository
 
-`DiagnosisRepository`, `AllergyRepository` — структура методов идентична `MedicationRepository` (`Add`, `ListByUser`, `ListByDocument`, `ReplaceForDocument`), см. `06-medication.md` §6.
+`DiagnosisRepository`, `AllergyRepository` — структура методов идентична `MedicationRepository` (`Add`, `ListByUser`, `ListByDocument`, `ReplaceForDocument`), см. `06-medication.md` §6. `DiagnosisRepository` дополнительно имеет `MarkResolved` — единственный targeted-update метод среди этих трёх репозиториев, обслуживающий `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`).

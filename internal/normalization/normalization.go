@@ -52,6 +52,14 @@ type Diagnosis struct {
 	// with no reasonable estimate.
 	ExpectedResolutionFrom *time.Time
 	ExpectedResolutionTo   *time.Time
+	// ActualResolutionAt is when this diagnosis was actually confirmed
+	// resolved — set only via a direct user confirmation (see
+	// storage.DiagnosisRepository.MarkResolved, medical.resolve_diagnosis),
+	// never by Extraction itself, and deliberately independent of
+	// ExpectedResolutionFrom/To: resolving a diagnosis does not erase what
+	// was estimated beforehand, it just records what actually happened
+	// alongside it (see docs/domain/07-diagnosis-and-allergy.md).
+	ActualResolutionAt *time.Time
 	// StatusReasoning is the model's own one-sentence explanation of why it
 	// picked Status (and, if set, ExpectedResolutionFrom/To) — kept
 	// deliberately separate from Notes (document-derived clinical context)
@@ -59,6 +67,21 @@ type Diagnosis struct {
 	// Not shown to the user via medical.ask — see
 	// docs/domain/07-diagnosis-and-allergy.md.
 	StatusReasoning string
+}
+
+// Overdue reports whether d is still active and its expected-resolution
+// range has already closed as of asOf — mirrors PlannedAction.Overdue below
+// (see that method's doc comment for why this is deliberately computed
+// on read, in one place, rather than stored/mutated: there's no background
+// job in this codebase that could flip a stored Status over time, and
+// Diagnosis.Status otherwise only ever comes from Extraction). A chronic,
+// suspected, or resolved diagnosis, or an active one with no
+// ExpectedResolutionTo at all (no estimate was ever produced), is never
+// overdue — overdue does not change Status itself, just flags it for
+// display (see internal/profile's DiagnosisSummary.Overdue and
+// internal/ask/providers.go's DiagnosisProvider).
+func (d Diagnosis) Overdue(asOf time.Time) bool {
+	return d.Status == "active" && d.ExpectedResolutionTo != nil && d.ExpectedResolutionTo.Before(asOf)
 }
 
 // Medication mirrors docs/domain/06-medication.md §2.

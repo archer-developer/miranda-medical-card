@@ -25,7 +25,7 @@
 | Поле | Тип | Обязательно | Описание |
 |------|-----|-------------|----------|
 | `userId` | string | ✅ | Первичный ключ — один профиль на пользователя. |
-| `activeDiagnoses` | `DiagnosisSummary[]` | ✅ | Только диагнозы со статусом `active` или `chronic` (§4 Diagnosis). |
+| `activeDiagnoses` | `DiagnosisSummary[]` | ✅ | Только диагнозы со статусом `active` или `chronic` (§4 Diagnosis). Каждая запись несёт `overdue` — вычисленный на чтении флаг "ожидаемый срок разрешения уже прошёл" (`Diagnosis.Overdue`, см. `07-diagnosis-and-allergy.md`), не влияющий на сам статус. |
 | `chronicConditions` | `DiagnosisSummary[]` | ✅ | Подмножество `activeDiagnoses` со статусом `chronic` — выделено отдельно для удобства UI, не самостоятельный источник данных. |
 | `activeMedications` | `MedicationSummary[]` | ✅ | Только `Medication` со статусом `active` (§ Medication `MedicationStatus`). |
 | `allergies` | `AllergySummary[]` | ✅ | Все известные аллергии — не имеют статуса "неактивна", если явно не отменены в более позднем документе. |
