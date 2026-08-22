@@ -276,3 +276,98 @@ func TestPlannedActionRepository_ReplaceForSource_NewRowIDNeverCollidesWithStale
 	require.Equal(t, "flu shot", got[0].Description)
 	require.Equal(t, "Грипп", got[0].MatchProcedureName)
 }
+
+// TestPlannedActionRepository_ReplaceForSource_SkipsDuplicateAcrossDifferentSources
+// reproduces the production bug docs/adr/005-planned-action-cross-source-dedup.md
+// fixes: two different documents both recommending "Консультация
+// эндокринолога" used to mint two textually-identical pending rows, which
+// broke medical.decline_planned_action's LLM matching (it couldn't tell the
+// two candidates apart, so it refused to pick either).
+func TestPlannedActionRepository_ReplaceForSource_SkipsDuplicateAcrossDifferentSources(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "consultation", Description: "Консультация эндокринолога", MatchProcedureName: "Консультация эндокринолога"},
+	}))
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc2", []normalization.PlannedAction{
+		{UserID: "user1", Type: "consultation", Description: "Консультация эндокринолога", MatchProcedureName: "Консультация эндокринолога"},
+	}))
+
+	got, err := repo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "the second document's recommendation must not duplicate the first's row")
+	require.Equal(t, "doc1", got[0].SourceID, "the surviving row stays owned by whichever source created it first")
+}
+
+// TestPlannedActionRepository_ReplaceForSource_DedupSkipsAgainstSelfReportedPending
+// covers the other direction the ADR documents as in-scope: a document
+// recommending the same thing a self-reported chat message already logged
+// must not duplicate it either — ReplaceForSource's cross-source check
+// isn't limited to "document" sources.
+func TestPlannedActionRepository_ReplaceForSource_DedupSkipsAgainstSelfReportedPending(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	_, err := repo.Add(ctx, normalization.PlannedAction{
+		UserID: "user1", SourceType: "self_reported", SourceID: "event1",
+		Type: "examination", Description: "ЭКГ", MatchProcedureName: "ЭКГ",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "examination", Description: "ЭКГ", MatchProcedureName: "ЭКГ"},
+	}))
+
+	got, err := repo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "the document's recommendation must not duplicate the already-logged self-reported one")
+	require.Equal(t, "self_reported", got[0].SourceType)
+}
+
+// TestPlannedActionRepository_ReplaceForSource_DoesNotDedupAcrossUsers guards
+// the household-sharing safety concern the ADR calls out explicitly: two
+// different users each having a document recommend the same thing must
+// produce two separate rows, one per owner — merging them would let one
+// user's medical.decline_planned_action call mutate another user's data.
+func TestPlannedActionRepository_ReplaceForSource_DoesNotDedupAcrossUsers(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "examination", Description: "ЭКГ", MatchProcedureName: "ЭКГ"},
+	}))
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc2", []normalization.PlannedAction{
+		{UserID: "user2", Type: "examination", Description: "ЭКГ", MatchProcedureName: "ЭКГ"},
+	}))
+
+	got1, err := repo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got1, 1)
+
+	got2, err := repo.ListPending(ctx, "user2")
+	require.NoError(t, err)
+	require.Len(t, got2, 1)
+}
+
+// TestPlannedActionRepository_ReplaceForSource_DoesNotDedupWhenKeyHasNoIdentity
+// guards docs/adr/005-planned-action-cross-source-dedup.md §2: two
+// recommendations that both failed to extract a canonical
+// MatchProcedureName must never be treated as duplicates of each other —
+// an empty key carries no identifying information, so "matching" on it
+// would be a coincidence, not a real match.
+func TestPlannedActionRepository_ReplaceForSource_DoesNotDedupWhenKeyHasNoIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc1", []normalization.PlannedAction{
+		{UserID: "user1", Type: "other", Description: "Уточнить у врача"},
+	}))
+	require.NoError(t, repo.ReplaceForSource(ctx, "document", "doc2", []normalization.PlannedAction{
+		{UserID: "user1", Type: "other", Description: "Проверить назначение"},
+	}))
+
+	got, err := repo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "two unrelated nameless recommendations must not be collapsed into one")
+}

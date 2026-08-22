@@ -15,6 +15,7 @@
 > - 12-self-reported-events.md
 > - ../architecture/02-processing-pipeline.md
 > - ../adr/004-planned-actions.md
+> - ../adr/005-planned-action-cross-source-dedup.md
 > - ../mcp/08-planned-actions.md
 
 ---
@@ -122,6 +123,16 @@ write-tool: структурированное извлечение самост
   `SelfReportedEvent.rawText`.
 - Пункт без `dueDateFrom`/`dueDateTo` (в тексте не было срока) всегда присутствует в выдаче
   `medical.planned_actions` и никогда не считается просроченным.
+- **Дедупликация между разными документами** (`../adr/005-planned-action-cross-source-dedup.md`):
+  прежде чем вставить новую pending-запись, `ReplaceForSource` проверяет, нет ли уже у того же
+  `userId` pending-записи с тем же ключом (`type` + канонизированное имя) от **другого** источника
+  (документа или диалога) — если есть, новая запись не создаётся, а рекомендацию продолжает
+  представлять уже существующая. Иначе два независимых документа, рекомендующих одно и то же,
+  плодят текстуально неразличимые дубли, которые `medical.decline_planned_action` не может
+  различить (см. ADR). Ключ без канонического имени (пустой `matchIndicatorName`/
+  `matchProcedureName`) никогда не считается совпадением — иначе две разные, но одинаково
+  "безымянные" рекомендации схлопнулись бы случайно. Дедуп всегда в разрезе `userId` — общая
+  рекомендация двух разных членов семьи остаётся двумя отдельными записями, по одной на владельца.
 
 ---
 
@@ -131,7 +142,7 @@ write-tool: структурированное извлечение самост
 
 ```text
 Add(action PlannedAction) (PlannedAction, error)                         // self-reported: одна запись за вызов
-ReplaceForSource(sourceType, sourceId string, actions []PlannedAction) error  // документы: сверка, см. §5
+ReplaceForSource(sourceType, sourceId string, actions []PlannedAction) error  // документы: сверка + дедуп между источниками, см. §5
 RemoveBySource(sourceType, sourceId string) error                        // medical.delete_event
 ListByUser(userId string) ([]PlannedAction, error)
 ListPending(userId string) ([]PlannedAction, error)                      // кандидаты для planmatch/decline

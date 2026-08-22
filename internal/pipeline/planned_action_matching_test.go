@@ -162,3 +162,69 @@ func TestPlannedAction_CompletedStateSurvivesReprocessOfItsOwnSourceDocument(t *
 	require.Equal(t, resultB.DocumentID, afterReprocess[0].MatchedDocumentID)
 	require.Equal(t, "Контроль глюкозы крови в динамике", afterReprocess[0].Description, "description should still update to the reworded text")
 }
+
+// scriptedConsultationRecommendingEndocrinologist scripts a document whose
+// only recommendation is a follow-up consultation, structured into a single
+// plannedActions entry of type "consultation" — used to reproduce
+// docs/adr/005-planned-action-cross-source-dedup.md's production bug: two
+// unrelated documents both recommending "Консультация эндокринолога".
+func scriptedConsultationRecommendingEndocrinologist(complaintText string) *llmtest.FakeProvider {
+	return llmtest.New("fake",
+		llmtest.Response{Text: complaintText},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{
+			"documentType": "consultation",
+			"recommendations": ["Консультация эндокринолога"],
+			"plannedActions": [{
+				"type": "consultation",
+				"description": "Консультация эндокринолога",
+				"referenceText": "Консультация эндокринолога.",
+				"relatedProcedureName": "Консультация эндокринолога"
+			}]
+		}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+	)
+}
+
+// TestPlannedAction_CrossDocumentDuplicateRecommendationCollapsesToOneRow
+// reproduces the exact production bug docs/adr/005-planned-action-cross-source-dedup.md
+// fixes: two unrelated documents both recommending "Консультация
+// эндокринолога" used to mint two textually-identical pending rows, which
+// made medical.decline_planned_action's LLM-based text matching refuse to
+// pick between them ("no confident match among pending actions:
+// Консультация эндокринолога; Консультация эндокринолога").
+func TestPlannedAction_CrossDocumentDuplicateRecommendationCollapsesToOneRow(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+
+	providerA := scriptedConsultationRecommendingEndocrinologist("Жалобы на утомляемость. Рекомендована консультация эндокринолога.")
+	pipelineA := pipeline.New(providerA, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	fileA, err := pipelineA.UploadFile(ctx, "user1", "consult1.pdf", "application/pdf", []byte("a"))
+	require.NoError(t, err)
+	_, err = pipelineA.UploadDocument(ctx, "user1", fileA.ID)
+	require.NoError(t, err)
+
+	providerB := scriptedConsultationRecommendingEndocrinologist("Повторный приём терапевта. Рекомендована консультация эндокринолога.")
+	pipelineB := pipeline.New(providerB, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	fileB, err := pipelineB.UploadFile(ctx, "user1", "consult2.pdf", "application/pdf", []byte("b"))
+	require.NoError(t, err)
+	_, err = pipelineB.UploadDocument(ctx, "user1", fileB.ID)
+	require.NoError(t, err)
+
+	planRepo := storage.NewPlannedActionRepository(s)
+	pending, err := planRepo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, pending, 1, "the second document's identical recommendation must not duplicate the first's pending row")
+
+	// The now-unambiguous single candidate must be resolvable by
+	// medical.decline_planned_action's text matching — the whole point of
+	// the fix. Before this fix, decline.Match would see two identical
+	// candidates and refuse to pick either (see ADR 005's "Проблема").
+	declineProvider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"matchId":"` + pending[0].ID + `"}`),
+	})
+	declinePipeline := pipeline.New(declineProvider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	declined, err := declinePipeline.DeclinePlannedAction(ctx, "user1", "Консультация эндокринолога")
+	require.NoError(t, err)
+	require.Equal(t, pending[0].ID, declined.ID)
+}

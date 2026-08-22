@@ -34,6 +34,19 @@ type PlannedActionRepository interface {
 	// merely-reworded re-extraction; a new key is inserted fresh as
 	// pending. Two actions in the same call sharing a key degrade to
 	// positional matching (documented limitation, see ADR).
+	//
+	// Also skips creating a new row when userID already has a *different*
+	// source's still-pending row with the same key (see
+	// docs/adr/005-planned-action-cross-source-dedup.md) — otherwise two
+	// documents independently recommending the same thing (e.g. two
+	// consultations both extracting to "Консультация эндокринолога") mint
+	// two textually-identical pending rows, which broke
+	// medical.decline_planned_action's LLM-based text matching in
+	// production (it can't tell which of two identical candidates the user
+	// means, so it refuses to guess). This dedup is intentionally
+	// one-directional: it only prevents ReplaceForSource (the document
+	// path) from duplicating a row that already exists from any source; it
+	// does not retroactively touch Add's self-reported path (see ADR §3).
 	ReplaceForSource(ctx context.Context, sourceType, sourceID string, actions []normalization.PlannedAction) error
 	// RemoveBySource deletes every action for (sourceType, sourceID) — used
 	// by medical.delete_event to clean up a self-reported PlannedAction the
@@ -105,6 +118,48 @@ func planActionKey(a normalization.PlannedAction) string {
 	return a.Type + "|" + a.MatchProcedureName
 }
 
+// hasKeyIdentity reports whether a's reconciliation key carries any actual
+// identifying information. An empty MatchIndicatorName/MatchProcedureName
+// (extraction produced no canonical name) must never be treated as a dedup
+// match against another equally-nameless action — see
+// docs/adr/005-planned-action-cross-source-dedup.md §2. Mirrors
+// internal/planmatch.Match's identical guard against the same
+// false-positive risk.
+func hasKeyIdentity(a normalization.PlannedAction) bool {
+	if a.Type == "lab_test" {
+		return a.MatchIndicatorName != ""
+	}
+	return a.MatchProcedureName != ""
+}
+
+// pendingKeysFromOtherSources returns the planActionKey set of userID's
+// currently pending PlannedActions that do NOT belong to
+// (sourceType, sourceID) — used by ReplaceForSource to detect when a
+// different source already represents the same recommendation, so it isn't
+// duplicated. See docs/adr/005-planned-action-cross-source-dedup.md.
+func pendingKeysFromOtherSources(ctx context.Context, tx *sql.Tx, userID, sourceType, sourceID string) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, plannedActionSelectColumns+`
+		FROM planned_actions
+		WHERE user_id = ? AND status = ? AND NOT (source_type = ? AND source_id = ?)`,
+		userID, normalization.PlannedActionStatusPending, sourceType, sourceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending from other sources: %w", err)
+	}
+	others, err := scanPlannedActions(rows)
+	_ = rows.Close()
+	if err != nil {
+		return nil, fmt.Errorf("list pending from other sources: %w", err)
+	}
+	keys := make(map[string]bool, len(others))
+	for _, o := range others {
+		if hasKeyIdentity(o) {
+			keys[planActionKey(o)] = true
+		}
+	}
+	return keys, nil
+}
+
 func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, sourceType, sourceID string, actions []normalization.PlannedAction) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -134,6 +189,11 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 
 	consumed := make(map[string]bool, len(existing)) // by ID
 
+	// dedupKeys is userID's other-source pending keys — see
+	// docs/adr/005-planned-action-cross-source-dedup.md. Fetched once,
+	// lazily, only when there's actually something to insert.
+	var dedupKeys map[string]bool
+
 	for _, a := range actions {
 		key := planActionKey(a)
 		queue := byKey[key]
@@ -151,6 +211,20 @@ func (r *sqlitePlannedActionRepository) ReplaceForSource(ctx context.Context, so
 				return fmt.Errorf("storage: replace planned actions: update: %w", err)
 			}
 			continue
+		}
+		if hasKeyIdentity(a) {
+			if dedupKeys == nil {
+				dedupKeys, err = pendingKeysFromOtherSources(ctx, tx, a.UserID, sourceType, sourceID)
+				if err != nil {
+					return fmt.Errorf("storage: replace planned actions: %w", err)
+				}
+			}
+			if dedupKeys[key] {
+				// A different source already has a pending row for this
+				// exact recommendation — don't mint a second,
+				// textually-indistinguishable one (see ADR 005).
+				continue
+			}
 		}
 		a.SourceType, a.SourceID = sourceType, sourceID
 		// Always mint a fresh id here, ignoring whatever id normalization
