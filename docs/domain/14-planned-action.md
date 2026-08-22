@@ -88,13 +88,18 @@ write-tool: структурированное извлечение самост
 # 4. Статус и автозавершение
 
 - `pending` — по умолчанию, при создании.
-- `completed` — выставляется **автоматически**, не вручную: если позже обрабатывается документ, чьи
+- `completed` — обычно выставляется **автоматически**: если позже обрабатывается документ, чьи
   нормализованные `LabResult`/`Procedure` совпадают по `type` и канонизированному
   `matchIndicatorName`/`matchProcedureName` с ещё не выполненным пунктом плана, пункт помечается
   `completed` с обратной ссылкой на закрывший его документ/сущность (`internal/planmatch`, см.
   `../architecture/02-processing-pipeline.md`). Ограничение: сопоставление реально работает только
-  со стороны Document Pipeline — self-reported факт вроде "я сделал прививку" сегодня не
-  производит `LabResult`/`Procedure` и потому не может автоматически закрыть пункт плана.
+  со стороны Document Pipeline — self-reported факт вроде "я сделал прививку" сам по себе не
+  производит `LabResult`/`Procedure` и потому не может автоматически закрыть пункт плана. Для
+  этого случая есть ручная альтернатива — `medical.complete_planned_action`
+  (`../mcp/08-planned-actions.md` §5): тот же принцип текстового сопоставления, что и у
+  `medical.decline_planned_action`, но помечает пункт `completed` вместо `declined`, с `matchedAt`,
+  равным моменту подтверждения, и **без** `matchedDocumentId`/`matchedEntityId` — закрывшего
+  документа/сущности здесь нет, только слово пользователя.
 - `declined` — пользователь отменил пункт плана через диалог (`medical.decline_planned_action`,
   см. `../mcp/08-planned-actions.md`). Терминальный статус: не участвует ни в переопределении
   "просрочено", ни в автозавершении — отменённый пункт не может внезапно "довыполниться" более
@@ -153,6 +158,7 @@ RemoveBySource(sourceType, sourceId string) error                        // medi
 ListByUser(userId string) ([]PlannedAction, error)
 ListPending(userId string) ([]PlannedAction, error)                      // кандидаты для planmatch/decline
 ClearMatchesFromDocument(documentId string) error                        // сброс перед rematch, см. §5
-MarkCompleted(id, matchedDocumentId, matchedEntityId string, at time.Time) error
-MarkDeclined(id, userId string) error
+MarkCompleted(id, matchedDocumentId, matchedEntityId string, at time.Time) error  // автозавершение, internal/planmatch
+MarkDeclined(id, userId string) error                                     // medical.decline_planned_action
+MarkCompletedManually(id, userId string, at time.Time) error              // medical.complete_planned_action — как MarkDeclined, но completed; matched* кроме matchedAt не трогает
 ```

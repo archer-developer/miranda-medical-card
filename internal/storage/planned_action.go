@@ -77,6 +77,13 @@ type PlannedActionRepository interface {
 	// MarkDeclined marks id declined — medical.decline_planned_action.
 	// Scoped by userID like every other write in this domain.
 	MarkDeclined(ctx context.Context, id, userID string) error
+	// MarkCompletedManually marks id completed by the user's own
+	// confirmation in dialogue — medical.complete_planned_action. Unlike
+	// MarkCompleted (automatic document matching), this is scoped by userID
+	// like every other write in this domain, and leaves matched_document_id/
+	// matched_entity_id untouched (there's no closing document/entity, only
+	// a confirmation moment in matched_at).
+	MarkCompletedManually(ctx context.Context, id, userID string, at time.Time) error
 }
 
 type sqlitePlannedActionRepository struct {
@@ -290,6 +297,17 @@ func (r *sqlitePlannedActionRepository) MarkDeclined(ctx context.Context, id, us
 	)
 	if err != nil {
 		return fmt.Errorf("storage: mark planned action declined: %w", err)
+	}
+	return nil
+}
+
+func (r *sqlitePlannedActionRepository) MarkCompletedManually(ctx context.Context, id, userID string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE planned_actions SET status = ?, matched_at = ? WHERE id = ? AND user_id = ?`,
+		normalization.PlannedActionStatusCompleted, at.Unix(), id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: mark planned action completed manually: %w", err)
 	}
 	return nil
 }

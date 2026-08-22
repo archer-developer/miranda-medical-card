@@ -103,6 +103,44 @@ func TestPlannedActionRepository_MarkDeclined_ScopedByUser(t *testing.T) {
 	require.Equal(t, normalization.PlannedActionStatusPending, got[0].Status)
 }
 
+func TestPlannedActionRepository_MarkCompletedManually(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	stored, err := repo.Add(ctx, normalization.PlannedAction{UserID: "user1", SourceType: "self_reported", SourceID: "selfevt_1", Type: "vaccination", Description: "rabies shot"})
+	require.NoError(t, err)
+
+	at := *mustDate("2026-06-01")
+	require.NoError(t, repo.MarkCompletedManually(ctx, stored.ID, "user1", at))
+
+	got, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Equal(t, normalization.PlannedActionStatusCompleted, got[0].Status)
+	require.NotNil(t, got[0].MatchedAt)
+	require.Empty(t, got[0].MatchedDocumentID, "manual completion has no closing document")
+	require.Empty(t, got[0].MatchedEntityID, "manual completion has no closing entity")
+
+	pending, err := repo.ListPending(ctx, "user1")
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}
+
+func TestPlannedActionRepository_MarkCompletedManually_ScopedByUser(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewPlannedActionRepository(newTestStore(t))
+
+	stored, err := repo.Add(ctx, normalization.PlannedAction{UserID: "user1", SourceType: "self_reported", SourceID: "selfevt_1", Type: "vaccination", Description: "rabies shot"})
+	require.NoError(t, err)
+
+	// Same "mismatch indistinguishable from not-found" posture as
+	// MarkDeclined — see TestPlannedActionRepository_MarkDeclined_ScopedByUser.
+	require.NoError(t, repo.MarkCompletedManually(ctx, stored.ID, "someone-else", *mustDate("2026-06-01")))
+
+	got, err := repo.ListByUser(ctx, "user1")
+	require.NoError(t, err)
+	require.Equal(t, normalization.PlannedActionStatusPending, got[0].Status)
+}
+
 func TestPlannedActionRepository_ClearMatchesFromDocument(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewPlannedActionRepository(newTestStore(t))

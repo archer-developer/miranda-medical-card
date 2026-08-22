@@ -135,7 +135,7 @@ func TestServer_ListsAllRegisteredTools(t *testing.T) {
 	for _, want := range []string{
 		"medical.download_file",
 		"medical.upload_document", "medical.reprocess_document", "medical.list_documents", "medical.get_document",
-		"medical.log_event", "medical.delete_event", "medical.decline_planned_action", "medical.resolve_diagnosis",
+		"medical.log_event", "medical.delete_event", "medical.decline_planned_action", "medical.complete_planned_action", "medical.resolve_diagnosis",
 		"medical.ask", "medical.profile", "medical.timeline", "medical.planned_actions",
 	} {
 		require.True(t, names[want], "expected tool %s to be registered", want)

@@ -1,5 +1,11 @@
 > **Статус**: реализовано. См. `internal/planning`, `internal/planmatch`,
 > `internal/decline`, `docs/domain/14-planned-action.md`, `docs/mcp/08-planned-actions.md`.
+>
+> **Обновление**: §2 ниже описывает решение v1 не добавлять write-tool на "выполнено" —
+> с тех пор добавлен `medical.complete_planned_action`, но только как ручная альтернатива для
+> случая, который автозавершение принципиально не покрывает (self-reported факт, не порождающий
+> `LabResult`/`Procedure`), а не как замена автозавершению для документов. См.
+> `docs/mcp/08-planned-actions.md` §5.
 
 ## Проблема
 
