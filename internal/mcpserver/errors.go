@@ -30,4 +30,5 @@ const (
 	codeStorageError            = "STORAGE_ERROR"
 	codePlannedActionNotFound   = "PLANNED_ACTION_NOT_FOUND"
 	codeDiagnosisNotFound       = "DIAGNOSIS_NOT_FOUND"
+	codeMedicationNotFound      = "MEDICATION_NOT_FOUND"
 )

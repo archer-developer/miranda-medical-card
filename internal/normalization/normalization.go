@@ -99,6 +99,15 @@ type Medication struct {
 	Status       string
 	Reason       string
 	PrescribedBy string
+	// ConfirmedEndedAt is when the user themselves confirmed, in dialogue,
+	// that this course has finished (see
+	// storage.MedicationRepository.MarkEndedManually, medical.complete_medication)
+	// — never set by Extraction. nil means Status/EndedAt reflect only what
+	// a document said; non-nil means the user said so directly, regardless
+	// of what any document says. Status is always plain "completed" either
+	// way — this field alone carries the "who said so" provenance, mirroring
+	// Diagnosis.ActualResolutionAt's role for medical.resolve_diagnosis.
+	ConfirmedEndedAt *time.Time
 }
 
 // LabResult mirrors docs/domain/09-lab-result-and-vital-sign.md §2.

@@ -86,6 +86,18 @@ func TestBuilder_MedicationResolver_StillActiveIncluded(t *testing.T) {
 	require.Equal(t, 10.0, p.ActiveMedications[0].DoseAmount)
 }
 
+func TestResolveActiveMedications_ReturnsFullEntityWithID(t *testing.T) {
+	meds := []normalization.Medication{
+		{ID: "med_1", UserID: "user1", DrugName: "Розувастатин", Status: "active", StartedAt: mustDate("2025-05-14")},
+		{ID: "med_2", UserID: "user1", DrugName: "Аспирин", Status: "discontinued"},
+	}
+
+	active := profile.ResolveActiveMedications(meds)
+	require.Len(t, active, 1, "only the active drug is returned, discontinued ones excluded")
+	require.Equal(t, "med_1", active[0].ID, "the full entity (with ID) is returned, not just a summary")
+	require.Equal(t, "Розувастатин", active[0].DrugName)
+}
+
 func TestBuilder_DiagnosisResolver_GroupsByCodeAndSplitsChronic(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

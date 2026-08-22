@@ -55,6 +55,7 @@ func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, max
 	registerDeclinePlannedActionTool(server, pl, gate, logger)
 	registerCompletePlannedActionTool(server, pl, gate, logger)
 	registerResolveDiagnosisTool(server, pl, gate, logger)
+	registerCompleteMedicationTool(server, pl, gate, logger)
 
 	return server
 }

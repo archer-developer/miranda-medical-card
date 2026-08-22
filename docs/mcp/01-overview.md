@@ -15,6 +15,9 @@
 > - 05-profile.md
 > - 06-timeline.md
 > - 07-events.md
+> - 08-planned-actions.md
+> - 09-diagnoses.md
+> - 10-medications.md
 
 ---
 
@@ -193,7 +196,7 @@ medical.get_document
 
 ## Events
 
-Медицинские факты, зафиксированные пользователем напрямую, без исходного документа — см. `07-events.md`. `medical.decline_planned_action`/`medical.complete_planned_action` (`08-planned-actions.md` §4-5) и `medical.resolve_diagnosis` (`09-diagnoses.md`) — тот же принцип "текст на входе, сервис сам разбирает" применённый к отмене/завершению пункта плана и к подтверждению разрешения диагноза, а не к их созданию.
+Медицинские факты, зафиксированные пользователем напрямую, без исходного документа — см. `07-events.md`. `medical.decline_planned_action`/`medical.complete_planned_action` (`08-planned-actions.md` §4-5), `medical.resolve_diagnosis` (`09-diagnoses.md`) и `medical.complete_medication` (`10-medications.md`) — тот же принцип "текст на входе, сервис сам разбирает" применённый к отмене/завершению пункта плана, к подтверждению разрешения диагноза и к подтверждению завершения курса препарата, а не к их созданию.
 
 ```
 medical.log_event
@@ -205,6 +208,8 @@ medical.decline_planned_action
 medical.complete_planned_action
 
 medical.resolve_diagnosis
+
+medical.complete_medication
 ```
 
 ---
@@ -340,7 +345,7 @@ string, необязательный, по умолчанию равен userId
 
 Идентификатор пользователя, чьи данные требуется получить, если он отличается от `userId`. Используется, когда один член семьи спрашивает о данных другого — например, родитель спрашивает про здоровье ребёнка.
 
-Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.planned_actions`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.log_event`, `medical.delete_event`, `medical.decline_planned_action`, `medical.complete_planned_action`, `medical.resolve_diagnosis` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
+Поддерживается только Tools для чтения агрегированных данных: `medical.ask`, `medical.profile`, `medical.timeline`, `medical.planned_actions`, `medical.list_documents`. Не поддерживается у `medical.upload_document`, `medical.reprocess_document`, `medical.log_event`, `medical.delete_event`, `medical.decline_planned_action`, `medical.complete_planned_action`, `medical.resolve_diagnosis`, `medical.complete_medication` — совместный доступ никогда не даёт права изменять, удалять или добавлять чужие данные.
 
 Если `subjectId` отличается от `userId`, сервис проверяет, что пользователь `subjectId` явно разрешил доступ (`shared_with` в своей конфигурации, см. `../architecture/01-overview.md` §4). Если доступ не разрешён, сервис отвечает так же, как если бы `subjectId` не существовал (`USER_NOT_FOUND`) — не раскрывая, что пользователь существует, но доступ запрещён.
 
@@ -442,6 +447,7 @@ string, необязательный, по умолчанию равен userId
 | `medical.decline_planned_action` | Отмена пункта плана по тексту пользователя |
 | `medical.complete_planned_action` | Отметка пункта плана выполненным по тексту пользователя |
 | `medical.resolve_diagnosis` | Подтверждение разрешения диагноза по тексту пользователя |
+| `medical.complete_medication` | Подтверждение завершения курса препарата по тексту пользователя |
 | `medical.ask` | Ответ на медицинский вопрос |
 | `medical.profile` | Получение агрегированной медицинской карточки |
 | `medical.timeline` | Получение временной шкалы медицинских событий |
@@ -463,3 +469,6 @@ string, необязательный, по умолчанию равен userId
 - **05-profile.md** — получение агрегированного медицинского профиля.
 - **06-timeline.md** — получение структурированной истории медицинских событий.
 - **07-events.md** — фиксация медицинских событий без исходного документа.
+- **08-planned-actions.md** — получение и отмена/завершение предстоящих медицинских действий.
+- **09-diagnoses.md** — подтверждение разрешения диагноза.
+- **10-medications.md** — подтверждение завершения курса препарата.

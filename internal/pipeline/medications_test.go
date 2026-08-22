@@ -1,0 +1,130 @@
+package pipeline_test
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/archer-developer/miranda-llm/llmtest"
+
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
+	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
+	"github.com/archer-developer/miranda-medical-card/internal/storage"
+)
+
+func mustDate(s string) *time.Time {
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		panic(err)
+	}
+	return &d
+}
+
+func TestCompleteMedication_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Аспирин", Status: "chronic",
+	}))
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_1", UserID: "user1", DocumentID: "doc1", DrugName: "Амоксициллин", Status: "active",
+	}))
+
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"matchId":"med_doc1_1"}`),
+	})
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	completed, err := p.CompleteMedication(ctx, "user1", "я закончил принимать антибиотик")
+	require.NoError(t, err)
+	require.Equal(t, "med_doc1_1", completed.ID)
+	require.Equal(t, "completed", completed.Status)
+	require.NotNil(t, completed.EndedAt)
+	require.NotNil(t, completed.ConfirmedEndedAt)
+
+	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
+	require.NoError(t, err)
+	for _, m := range all {
+		if m.ID == "med_doc1_1" {
+			require.Equal(t, "completed", m.Status)
+			require.NotNil(t, m.ConfirmedEndedAt)
+		} else {
+			require.Equal(t, "chronic", m.Status, "the other medication must be untouched")
+		}
+	}
+}
+
+func TestCompleteMedication_NoActiveMedicationsAtAll(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.CompleteMedication(ctx, "user1", "я закончил курс")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Empty(t, notFound.CurrentDrugNames)
+}
+
+func TestCompleteMedication_SupersededActiveRowIsNeverACandidate(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	// An older document said it was active; a newer one already discontinued
+	// it — the Medication Resolver must exclude this drug entirely, not
+	// offer the stale "active" row as a candidate.
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Розувастатин",
+		Status: "active", StartedAt: mustDate("2025-05-14"),
+	}))
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc2_0", UserID: "user1", DocumentID: "doc2", DrugName: "розувастатин",
+		Status: "discontinued", EndedAt: mustDate("2026-01-01"),
+	}))
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.CompleteMedication(ctx, "user1", "закончил розувастатин")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Empty(t, notFound.CurrentDrugNames, "an already-discontinued drug must never be offered as a candidate")
+}
+
+func TestCompleteMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	medRepo := storage.NewMedicationRepository(s)
+	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Периндоприл", Status: "active",
+	}))
+
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{}`), // model found no confident match
+	})
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.CompleteMedication(ctx, "user1", "что-то непонятное закончил")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.ErrorAs(t, err, &notFound)
+	require.Equal(t, []string{"Периндоприл"}, notFound.CurrentDrugNames)
+
+	all, err := medRepo.ListByUser(ctx, "user1", storage.MedicationFilter{})
+	require.NoError(t, err)
+	require.Equal(t, "active", all[0].Status, "no match must leave the medication untouched")
+}
+
+func TestCompleteMedication_EmptyTextRejected(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+
+	_, err := p.CompleteMedication(ctx, "user1", "   ")
+	require.Error(t, err)
+	var notFound *pipeline.MedicationNotFoundError
+	require.NotErrorAs(t, err, &notFound, "empty text must be its own plain error, not MedicationNotFoundError")
+}

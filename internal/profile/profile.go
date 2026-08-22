@@ -231,13 +231,34 @@ func groupKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// resolveActiveMedications is the Medication Resolver: groups by
-// canonicalized drug name, keeps the entity with the latest date per group
-// (StartedAt, falling back to EndedAt when a discontinued/completed
-// Medication has no StartedAt), and includes it only if that latest
-// snapshot's Status is "active" — an earlier document saying "active" for a
-// drug a later document says was discontinued must not still show up here.
+// resolveActiveMedications is the Medication Resolver's Profile-facing view:
+// ResolveActiveMedications's full entities, mapped down to the summary shape
+// medical.profile actually returns.
 func resolveActiveMedications(meds []normalization.Medication) []MedicationSummary {
+	active := ResolveActiveMedications(meds)
+	result := make([]MedicationSummary, len(active))
+	for i, m := range active {
+		result[i] = MedicationSummary{
+			DrugName: m.DrugName, DoseAmount: m.DoseAmount, DoseUnit: m.DoseUnit,
+			Frequency: m.Frequency, StartedAt: m.StartedAt,
+		}
+	}
+	return result
+}
+
+// ResolveActiveMedications is the Medication Resolver (docs/domain/01-overview.md
+// §7): groups by canonicalized drug name, keeps the entity with the latest
+// date per group (StartedAt, falling back to EndedAt when a discontinued/
+// completed Medication has no StartedAt), and includes it only if that
+// latest snapshot's Status is "active" — an earlier document saying "active"
+// for a drug a later document says was discontinued must not still show up
+// here. Exported (full entities, not MedicationSummary) so
+// internal/pipeline.CompleteMedication can offer the same currently-active
+// set as candidates for medical.complete_medication, rather than
+// duplicating this grouping logic against a raw storage.MedicationFilter{Status:
+// "active"} listing (which alone can't tell a superseded "active" row from
+// the real latest one).
+func ResolveActiveMedications(meds []normalization.Medication) []normalization.Medication {
 	type candidate struct {
 		med     normalization.Medication
 		date    time.Time
@@ -253,15 +274,12 @@ func resolveActiveMedications(meds []normalization.Medication) []MedicationSumma
 		}
 	}
 
-	var result []MedicationSummary
+	var result []normalization.Medication
 	for _, c := range groups {
 		if c.med.Status != "active" {
 			continue
 		}
-		result = append(result, MedicationSummary{
-			DrugName: c.med.DrugName, DoseAmount: c.med.DoseAmount, DoseUnit: c.med.DoseUnit,
-			Frequency: c.med.Frequency, StartedAt: c.med.StartedAt,
-		})
+		result = append(result, c.med)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].DrugName < result[j].DrugName })
 	return result
