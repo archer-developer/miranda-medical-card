@@ -38,11 +38,15 @@ type MedicationRepository interface {
 	// "prescribed" (whether Extraction itself said so, or a user confirmed
 	// it via medical.start_medication/medical.complete_medication) is left
 	// untouched rather than being silently reset by a reprocess of the
-	// document it came from — mirrors DiagnosisRepository/PlannedActionRepository's
-	// own reprocess-replace rules, keyed on Status directly rather than a
+	// document it came from — mirrors PlannedActionRepository's own
+	// reprocess-replace rule, keyed on Status directly rather than a
 	// separate provenance field (Medication's Status already carries enough
 	// signal: nothing legitimately reverts to "prescribed" once past it).
-	// meds whose (canonicalized) DrugName still has a surviving row for this
+	// Unlike DiagnosisRepository.ReplaceForDocument, which keys on a
+	// separate ActualResolutionAt field instead — Diagnosis.Status can
+	// reach "resolved" from Extraction alone, so a pure status check there
+	// would wrongly freeze such a diagnosis from ever being corrected.
+	// Meds whose (canonicalized) DrugName still has a surviving row for this
 	// document are skipped rather than inserted again — the surviving row
 	// already represents that drug for this document, and a fresh
 	// extraction re-describing the same drug must not produce a duplicate.

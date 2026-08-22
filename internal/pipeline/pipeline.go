@@ -370,15 +370,15 @@ func (p *Pipeline) process(ctx context.Context, userID, documentID string, versi
 		return Result{}, err
 	}
 
-	p.logger.Debug("pipeline: run start", "documentId", documentID, "userId", userID, "version", version)
+	p.logger.Debug("pipeline: process start", "documentId", documentID, "userId", userID, "version", version)
 
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
-		return Result{}, fmt.Errorf("pipeline: run: %w", err)
+		return Result{}, fmt.Errorf("pipeline: process: %w", err)
 	}
 
 	extracted, raw, stillSuspicious, err := extractFunc()
 	if err != nil {
-		return fail(fmt.Errorf("pipeline: run: extract: %w", err))
+		return fail(fmt.Errorf("pipeline: process: extract: %w", err))
 	}
 	// stillSuspicious means every attempt (primary retries + escalation,
 	// see extraction.Extract's doc comment) came back with the categories
@@ -396,15 +396,15 @@ func (p *Pipeline) process(ctx context.Context, userID, documentID string, versi
 	// Profile, FTS) runs against a result already known to have nothing
 	// useful in it.
 	if stillSuspicious {
-		return fail(fmt.Errorf("pipeline: run: extract: structured result still suspiciously empty after every attempt (including escalation, if configured) for documentType %q", extracted.DocumentType))
+		return fail(fmt.Errorf("pipeline: process: extract: structured result still suspiciously empty after every attempt (including escalation, if configured) for documentType %q", extracted.DocumentType))
 	}
 
 	record, err := p.extractionRepo.Add(ctx, storage.ExtractionRecord{DocumentID: documentID, Version: version, Raw: raw})
 	if err != nil {
-		return fail(fmt.Errorf("pipeline: run: store extraction: %w", err))
+		return fail(fmt.Errorf("pipeline: process: store extraction: %w", err))
 	}
 	if err := p.extractionRepo.Activate(ctx, record.ID); err != nil {
-		return fail(fmt.Errorf("pipeline: run: activate extraction: %w", err))
+		return fail(fmt.Errorf("pipeline: process: activate extraction: %w", err))
 	}
 
 	return p.normalizeAndPersist(ctx, userID, documentID, extracted)
@@ -475,36 +475,36 @@ func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID s
 		"normalizeErrors", len(normErrs))
 
 	if err := p.persistCanonicalUnits(ctx, userID, normalized); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist canonical units: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist canonical units: %w", err))
 	}
 
 	if err := p.diagnoses.ReplaceForDocument(ctx, documentID, normalized.Diagnoses); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist diagnoses: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist diagnoses: %w", err))
 	}
 	if err := p.medications.ReplaceForDocument(ctx, documentID, normalized.Medications); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist medications: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist medications: %w", err))
 	}
 	if err := p.labResults.ReplaceForDocument(ctx, documentID, normalized.LabResults); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist lab results: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist lab results: %w", err))
 	}
 	if err := p.instrumentalFindings.ReplaceForDocument(ctx, documentID, normalized.InstrumentalFindings); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist instrumental findings: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist instrumental findings: %w", err))
 	}
 	if err := p.procedures.ReplaceForDocument(ctx, documentID, normalized.Procedures); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist procedures: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist procedures: %w", err))
 	}
 	if err := p.allergies.ReplaceForDocument(ctx, documentID, normalized.Allergies); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist allergies: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist allergies: %w", err))
 	}
 	if err := p.vitalSigns.ReplaceForDocument(ctx, documentID, normalized.VitalSigns); err != nil {
-		return fail(fmt.Errorf("pipeline: run: persist vital signs: %w", err))
+		return fail(fmt.Errorf("pipeline: process: persist vital signs: %w", err))
 	}
 	if err := p.matchPlannedActions(ctx, userID, documentID, normalized); err != nil {
-		return fail(fmt.Errorf("pipeline: run: match planned actions: %w", err))
+		return fail(fmt.Errorf("pipeline: process: match planned actions: %w", err))
 	}
 	documentPlannedActions, err := p.plannedActionsForDocument(ctx, userID, documentID)
 	if err != nil {
-		return fail(fmt.Errorf("pipeline: run: list planned actions: %w", err))
+		return fail(fmt.Errorf("pipeline: process: list planned actions: %w", err))
 	}
 
 	summary := buildSummary(extracted)
@@ -520,14 +520,14 @@ func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID s
 		Summary:        summary,
 	}
 	if err := p.documentRepo.UpdateExtracted(ctx, documentID, userID, update); err != nil {
-		return fail(fmt.Errorf("pipeline: run: update document: %w", err))
+		return fail(fmt.Errorf("pipeline: process: update document: %w", err))
 	}
 
 	if err := p.rebuildTimeline(ctx, userID, documentID, title, documentDate, normalized); err != nil {
-		return fail(fmt.Errorf("pipeline: run: rebuild timeline: %w", err))
+		return fail(fmt.Errorf("pipeline: process: rebuild timeline: %w", err))
 	}
 	if err := p.rebuildProfile(ctx, userID); err != nil {
-		return fail(fmt.Errorf("pipeline: run: rebuild profile: %w", err))
+		return fail(fmt.Errorf("pipeline: process: rebuild profile: %w", err))
 	}
 
 	// FTS is a pure, local SQLite operation — treated as required, same as
@@ -542,7 +542,7 @@ func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID s
 	ftsParts = append(ftsParts, extracted.Recommendations...)
 	ftsContent := strings.Join(ftsParts, "\n")
 	if err := p.fts.IndexDocument(ctx, userID, documentID, title, ftsContent); err != nil {
-		return fail(fmt.Errorf("pipeline: run: index fts: %w", err))
+		return fail(fmt.Errorf("pipeline: process: index fts: %w", err))
 	}
 
 	// Embeddings depend on an external LLM call — per
@@ -552,10 +552,10 @@ func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID s
 	p.generateDocumentEmbedding(ctx, userID, documentID, summary)
 
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusReady); err != nil {
-		return Result{}, fmt.Errorf("pipeline: run: mark ready: %w", err)
+		return Result{}, fmt.Errorf("pipeline: process: mark ready: %w", err)
 	}
 
-	p.logger.Debug("pipeline: run done", "documentId", documentID, "userId", userID, "status", storage.DocumentStatusReady)
+	p.logger.Debug("pipeline: process done", "documentId", documentID, "userId", userID, "status", storage.DocumentStatusReady)
 
 	return Result{
 		DocumentID: documentID,

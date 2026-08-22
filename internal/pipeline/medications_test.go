@@ -78,11 +78,11 @@ func TestCompleteMedication_SupersededActiveRowIsNeverACandidate(t *testing.T) {
 	// offer the stale "active" row as a candidate.
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
 		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Розувастатин",
-		Status: "active", StartedAt: mustDate("2025-05-14"),
+		Status: normalization.MedicationStatusActive, StartedAt: mustDate("2025-05-14"),
 	}))
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
 		ID: "med_doc2_0", UserID: "user1", DocumentID: "doc2", DrugName: "розувастатин",
-		Status: "discontinued", EndedAt: mustDate("2026-01-01"),
+		Status: normalization.MedicationStatusDiscontinued, EndedAt: mustDate("2026-01-01"),
 	}))
 	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
 
@@ -98,7 +98,7 @@ func TestCompleteMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) 
 	s, fs := newTestBackend(t)
 	medRepo := storage.NewMedicationRepository(s)
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
-		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Периндоприл", Status: "active",
+		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Периндоприл", Status: normalization.MedicationStatusActive,
 	}))
 
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{

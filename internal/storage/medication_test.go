@@ -97,7 +97,7 @@ func TestMedicationRepository_MarkEndedManually(t *testing.T) {
 	repo := storage.NewMedicationRepository(newTestStore(t))
 
 	require.NoError(t, repo.Add(ctx, normalization.Medication{
-		ID: "med_1", UserID: "user1", DocumentID: "doc1", DrugName: "Amoxicillin", Status: "active",
+		ID: "med_1", UserID: "user1", DocumentID: "doc1", DrugName: "Amoxicillin", Status: normalization.MedicationStatusActive,
 	}))
 
 	endedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
@@ -115,7 +115,7 @@ func TestMedicationRepository_MarkEndedManually_ScopedToOwningUser(t *testing.T)
 	repo := storage.NewMedicationRepository(newTestStore(t))
 
 	require.NoError(t, repo.Add(ctx, normalization.Medication{
-		ID: "med_1", UserID: "user1", DocumentID: "doc1", DrugName: "Amoxicillin", Status: "active",
+		ID: "med_1", UserID: "user1", DocumentID: "doc1", DrugName: "Amoxicillin", Status: normalization.MedicationStatusActive,
 	}))
 	require.NoError(t, repo.MarkEndedManually(ctx, "med_1", "user2", time.Now()))
 

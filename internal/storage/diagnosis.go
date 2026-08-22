@@ -31,11 +31,11 @@ type DiagnosisRepository interface {
 	// Diagnosis.Status can reach "resolved" from Extraction alone, with no
 	// user involvement, so a pure status check would wrongly freeze such a
 	// diagnosis from ever being corrected by a smarter reprocess.
-	// diagnoses whose (canonicalized) Name still has a surviving row for
-	// this document are skipped rather than inserted again — the surviving
-	// row already represents that diagnosis for this document, and a fresh
-	// extraction re-describing the same diagnosis must not produce a
-	// duplicate.
+	// Diagnoses whose (canonicalized, case/whitespace-insensitive via
+	// dedupKey) Name still has a surviving row for this document are
+	// skipped rather than inserted again — the surviving row already
+	// represents that diagnosis for this document, and a fresh extraction
+	// re-describing the same diagnosis must not produce a duplicate.
 	ReplaceForDocument(ctx context.Context, documentID string, diagnoses []normalization.Diagnosis) error
 	// MarkResolved sets id's status to "resolved" and ActualResolutionAt to
 	// at — medical.resolve_diagnosis's write, the one way Diagnosis.Status
