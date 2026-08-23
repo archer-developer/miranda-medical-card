@@ -747,19 +747,15 @@ func (p *Pipeline) nutritionGuidance(ctx context.Context, userID string, built p
 	now := time.Now().UTC()
 
 	input := nutrition.Input{
-		Diagnoses:   diagnosisNames(built.ActiveDiagnoses),
-		Allergies:   allergyDescriptions(built.Allergies),
-		Medications: medicationNames(built.ActiveMedications),
+		Diagnoses:     diagnosisNames(built.ActiveDiagnoses),
+		Allergies:     allergyDescriptions(built.Allergies),
+		Medications:   medicationNames(built.ActiveMedications),
+		PastSurgeries: procedureNames(built.Surgeries),
 	}
 	if symptoms, err := p.recentSymptoms(ctx, userID, now); err != nil {
 		p.logger.Warn("pipeline: list recent self-reported symptoms for nutrition guidance failed", "userId", userID, "error", err)
 	} else {
 		input.RecentSymptoms = symptoms
-	}
-	if surgeries, err := p.pastSurgeries(ctx, userID); err != nil {
-		p.logger.Warn("pipeline: list past surgeries for nutrition guidance failed", "userId", userID, "error", err)
-	} else {
-		input.PastSurgeries = surgeries
 	}
 	if p.users != nil {
 		if u, err := p.users.FindByID(ctx, userID); err != nil {
@@ -834,28 +830,19 @@ func (p *Pipeline) recentSymptoms(ctx context.Context, userID string, now time.T
 	return symptoms, nil
 }
 
-// pastSurgeries returns the names of userID's Procedure rows with
-// type=="surgery" — no date bound, unlike recentSymptoms above: a
-// surgery's dietary implication (e.g. cholecystectomy's permanent bile
-// reduction) doesn't fade after a month the way a self-reported symptom's
-// relevance does, so every surgery on record stays part of the input
-// regardless of how long ago it happened. Deliberately narrower than every
-// Procedure type (examination/hospitalization/vaccination/consultation
-// have no comparable lasting dietary relevance) — the same kind of
-// precision recentSymptoms already applies by filtering to
-// category=="symptom" alone rather than every self-reported event.
-func (p *Pipeline) pastSurgeries(ctx context.Context, userID string) ([]string, error) {
-	procedures, err := p.procedures.ListByUser(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("pipeline: list procedures: %w", err)
+// procedureNames maps Profile.Vaccinations/Surgeries down to plain names —
+// used for nutrition.Input.PastSurgeries (built.Surgeries already has no
+// date bound applied, see that field's own doc comment in internal/profile,
+// so this needs no filtering of its own beyond the name projection).
+func procedureNames(procedures []profile.ProcedureSummary) []string {
+	if len(procedures) == 0 {
+		return nil
 	}
-	var surgeries []string
-	for _, proc := range procedures {
-		if proc.Type == "surgery" {
-			surgeries = append(surgeries, proc.Name)
-		}
+	names := make([]string, len(procedures))
+	for i, p := range procedures {
+		names[i] = p.Name
 	}
-	return surgeries, nil
+	return names
 }
 
 func medicationNames(medications []profile.MedicationSummary) []string {

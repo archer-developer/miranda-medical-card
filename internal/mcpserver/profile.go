@@ -14,7 +14,7 @@ import (
 func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only.",
+		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, past surgeries, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only.",
 	}, profileHandler(pl, gate, logger))
 }
 
@@ -99,6 +99,7 @@ type ProfileOutput struct {
 	ActiveMedications []MedicationSummaryOutput `json:"activeMedications"`
 	Allergies         []AllergySummaryOutput    `json:"allergies"`
 	Vaccinations      []ProcedureSummaryOutput  `json:"vaccinations"`
+	Surgeries         []ProcedureSummaryOutput  `json:"surgeries"`
 	LatestLabResults  []LabResultSummaryOutput  `json:"latestLabResults"`
 	LatestVitalSigns  []VitalSignSummaryOutput  `json:"latestVitalSigns"`
 	NutritionGuidance NutritionGuidanceOutput   `json:"nutritionGuidance"`
@@ -141,6 +142,7 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 		ActiveMedications: make([]MedicationSummaryOutput, len(p.ActiveMedications)),
 		Allergies:         make([]AllergySummaryOutput, len(p.Allergies)),
 		Vaccinations:      make([]ProcedureSummaryOutput, len(p.Vaccinations)),
+		Surgeries:         make([]ProcedureSummaryOutput, len(p.Surgeries)),
 		LatestLabResults:  make([]LabResultSummaryOutput, len(p.LatestLabResults)),
 		LatestVitalSigns:  make([]VitalSignSummaryOutput, len(p.LatestVitalSigns)),
 	}
@@ -162,6 +164,9 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 	}
 	for i, pr := range p.Vaccinations {
 		out.Vaccinations[i] = ProcedureSummaryOutput{Name: pr.Name, PerformedAt: formatOptionalDate(pr.PerformedAt)}
+	}
+	for i, pr := range p.Surgeries {
+		out.Surgeries[i] = ProcedureSummaryOutput{Name: pr.Name, PerformedAt: formatOptionalDate(pr.PerformedAt)}
 	}
 	for i, l := range p.LatestLabResults {
 		out.LatestLabResults[i] = LabResultSummaryOutput{

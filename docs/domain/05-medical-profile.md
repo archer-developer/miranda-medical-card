@@ -30,6 +30,7 @@
 | `activeMedications` | `MedicationSummary[]` | ✅ | Только `Medication` со статусом `active` (§ Medication `MedicationStatus`). |
 | `allergies` | `AllergySummary[]` | ✅ | Все известные аллергии — не имеют статуса "неактивна", если явно не отменены в более позднем документе. |
 | `vaccinations` | `ProcedureSummary[]` | ✅ | Подмножество `Procedure` с `type == vaccination`. |
+| `surgeries` | `ProcedureSummary[]` | ✅ | Подмножество `Procedure` с `type == surgery` — как и `vaccinations`, без ограничения по давности: перенесённая операция (например холецистэктомия) остаётся частью профиля независимо от того, сколько лет прошло. |
 | `latestLabResults` | `LabResultSummary[]` | ✅ | По одному последнему значению на каждый наблюдаемый показатель (см. §3). |
 | `latestVitalSigns` | `VitalSignSummary[]` | ✅ | По одному последнему значению на каждый тип показателя. |
 | `nutritionGuidance` | `NutritionGuidance` | ✅ | Диетические ограничения и рекомендации (`restrictions`/`recommendations`, каждый пункт — `text`+`reason`), выведенные из активных диагнозов/хронических состояний, аллергий, активных лекарств, перенесённых операций, возраста/пола и симптомов пользователя за последний месяц. См. §6 и `../adr/006-nutrition-guidance.md`. Оба списка пусты, если нет ни одного диагноза/аллергии/лекарства/операции/симптома, из которого можно было бы что-то вывести. |

@@ -100,6 +100,8 @@ func TestRebuildProfile_NutritionGuidance_ActiveMedicationAndPastSurgeryAloneTri
 	got, err := p.GetProfile(ctx, "user1")
 	require.NoError(t, err)
 	require.Empty(t, got.ActiveDiagnoses, "this scenario deliberately has no diagnosis — medication/surgery alone must still drive guidance")
+	require.Len(t, got.Surgeries, 1, "Profile.Surgeries is what fed nutrition.Input.PastSurgeries")
+	require.Equal(t, "Холецистэктомия", got.Surgeries[0].Name)
 	require.Len(t, got.NutritionGuidance.Restrictions, 1)
 	require.Equal(t, "Строго ограничить жирную пищу", got.NutritionGuidance.Restrictions[0].Text)
 	require.Len(t, got.NutritionGuidance.Recommendations, 1)

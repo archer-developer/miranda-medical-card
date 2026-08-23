@@ -216,6 +216,25 @@ func TestBuilder_VaccinationsAllIncludedNotDeduped(t *testing.T) {
 	require.Len(t, p.Vaccinations, 2, "repeat vaccinations are all legitimate separate events, unlike medications/diagnoses/allergies")
 }
 
+func TestBuilder_SurgeriesOnlyIncludesSurgeryTypeProcedures(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	procedures := storage.NewProcedureRepository(s)
+	require.NoError(t, procedures.Add(ctx, normalization.Procedure{ID: "p1", UserID: "user1", DocumentID: "doc1", Type: "surgery", Name: "Холецистэктомия", PerformedAt: mustDate("2015-05-01")}))
+	require.NoError(t, procedures.Add(ctx, normalization.Procedure{ID: "p2", UserID: "user1", DocumentID: "doc2", Type: "vaccination", Name: "Грипп 2025", PerformedAt: mustDate("2025-10-01")}))
+	require.NoError(t, procedures.Add(ctx, normalization.Procedure{ID: "p3", UserID: "user1", DocumentID: "doc3", Type: "examination", Name: "МРТ коленного сустава", PerformedAt: mustDate("2026-01-01")}))
+
+	b := profile.NewBuilder(
+		storage.NewMedicationRepository(s), storage.NewDiagnosisRepository(s), procedures,
+		storage.NewAllergyRepository(s), storage.NewLabResultRepository(s), storage.NewVitalSignRepository(s), storage.NewDocumentRepository(s),
+	)
+	p, err := b.Build(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, p.Surgeries, 1, "vaccination/examination rows must not leak into Surgeries")
+	require.Equal(t, "Холецистэктомия", p.Surgeries[0].Name)
+	require.Len(t, p.Vaccinations, 1, "and Vaccinations must stay unaffected by the new Surgeries filter")
+}
+
 func TestBuilder_LatestLabResultsAndVitalSigns(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

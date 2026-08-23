@@ -10,6 +10,14 @@
 > самостоятельно, без единого диагноза, обосновывать пункт (приём препаратов железа — рекомендация не
 > запивать чаем/кофе; холецистэктомия в анамнезе — стойкое ограничение по жирному, даже если самой
 > операции уже много лет и в текущих активных диагнозах она не значится).
+>
+> **Обновление 2**: перенесённые операции теперь читаются и напрямую в самом `MedicalProfile`, не
+> только как вход Nutrition Advisor — новое поле `MedicalProfile.surgeries` (см.
+> `../domain/05-medical-profile.md` §2, `../mcp/05-profile.md`), симметричное уже существующему
+> `vaccinations` (то же подмножество `Procedure`, отфильтрованное по `type`, только `surgery` вместо
+> `vaccination`). `Pipeline.nutritionGuidance` больше не делает собственный запрос к
+> `ProcedureRepository` — читает уже посчитанное `built.Surgeries`, тем же способом, каким уже читает
+> `built.ActiveDiagnoses`/`built.Allergies`/`built.ActiveMedications`.
 
 ## Проблема
 
@@ -190,11 +198,13 @@ Miranda, не медицинская экспертиза этого серви�
 что уже строит `resolveActiveMedications`, просто ещё один потребитель, без нового чтения из
 хранилища.
 
-**Перенесённые операции** — `nutrition.Input.PastSurgeries`, новый метод `Pipeline.pastSurgeries`
-читает `p.procedures.ListByUser` (уже существующий `ProcedureRepository.ListByUser`, ранее не
-использовавшийся `ProfileBuilder`-ом — `Profile.Vaccinations` строится отдельным
-`ListVaccinations`) и фильтрует `type == "surgery"` в Go. Два решения здесь заслуживают явного
-объяснения:
+**Перенесённые операции** — `nutrition.Input.PastSurgeries`. Изначально (v1 этого пункта) читались
+отдельным методом `Pipeline.pastSurgeries`, напрямую вызывавшим `ProcedureRepository.ListByUser` и
+фильтровавшим `type == "surgery"` в Go — с "Обновление 2" выше это чтение переехало в сам
+`ProfileBuilder` как поле `Profile.surgeries`, и `nutritionGuidance` теперь просто маппит уже
+посчитанное `built.Surgeries` в список имён, тем же способом, каким уже читает
+`built.ActiveDiagnoses`/`built.Allergies`. Два решения о том, что именно попадает в `surgeries`,
+по-прежнему заслуживают явного объяснения:
 
 - **Без ограничения по давности**, в отличие от `recentSymptoms` (§6, "не старше месяца"). Симптом —
   преходящее состояние, чья релевантность действительно падает со временем; хирургическое

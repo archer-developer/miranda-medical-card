@@ -38,7 +38,7 @@
 # 3. Инварианты
 
 - Принадлежит ровно одному документу; повторная обработка документа полностью заменяет набор `Procedure` для этого `documentId`.
-- `type == vaccination` — единственное подмножество, читаемое отдельно в `MedicalProfile.vaccinations` (см. `05-medical-profile.md` §2).
+- `type == vaccination` и `type == surgery` — единственные подмножества, читаемые отдельно, соответственно в `MedicalProfile.vaccinations` и `MedicalProfile.surgeries` (см. `05-medical-profile.md` §2).
 
 ---
 

@@ -37,8 +37,16 @@ type Profile struct {
 	ActiveMedications []MedicationSummary
 	Allergies         []AllergySummary
 	Vaccinations      []ProcedureSummary
-	LatestLabResults  []LabResultSummary
-	LatestVitalSigns  []VitalSignSummary
+	// Surgeries is every Procedure with Type == "surgery" — same sibling
+	// relationship to Vaccinations (both a subset of Procedure read out
+	// separately, docs/domain/08-procedure.md §3), not filtered by
+	// recency: a permanent anatomical change (e.g. a cholecystectomy)
+	// stays relevant indefinitely, unlike a symptom. Feeds
+	// nutrition.Input.PastSurgeries directly (docs/adr/006-nutrition-guidance.md
+	// §9) — Nutrition Advisor no longer queries Procedure on its own.
+	Surgeries        []ProcedureSummary
+	LatestLabResults []LabResultSummary
+	LatestVitalSigns []VitalSignSummary
 	// NutritionGuidance is the one field Builder itself never sets — see
 	// this package's own doc comment and docs/adr/006-nutrition-guidance.md
 	// §2: everything else above is pure aggregation over already-stored
@@ -156,6 +164,13 @@ type DiagnosisRepository interface {
 
 type ProcedureRepository interface {
 	ListVaccinations(ctx context.Context, userID string) ([]normalization.Procedure, error)
+	// ListByUser is the same method storage.NewProcedureRepository already
+	// exposes elsewhere — reused here for Surgeries rather than adding a
+	// ListSurgeries sibling to ListVaccinations: filtering "surgery" out
+	// of the full list in Go, the same way resolveActiveDiagnoses already
+	// filters by status, is simplest given there's now more than one Type
+	// this package cares about.
+	ListByUser(ctx context.Context, userID string) ([]normalization.Procedure, error)
 }
 
 type AllergyRepository interface {
@@ -228,6 +243,10 @@ func (b *Builder) Build(ctx context.Context, userID string) (Profile, error) {
 	if err != nil {
 		return Profile{}, fmt.Errorf("profile: list vaccinations: %w", err)
 	}
+	procedures, err := b.procedures.ListByUser(ctx, userID)
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile: list procedures: %w", err)
+	}
 	allergies, err := b.allergies.ListByUser(ctx, userID)
 	if err != nil {
 		return Profile{}, fmt.Errorf("profile: list allergies: %w", err)
@@ -260,10 +279,26 @@ func (b *Builder) Build(ctx context.Context, userID string) (Profile, error) {
 		ActiveMedications: activeMedications,
 		Allergies:         dedupAllergies(allergies),
 		Vaccinations:      toProcedureSummaries(vaccinations),
+		Surgeries:         toProcedureSummaries(filterProceduresByType(procedures, "surgery")),
 		LatestLabResults:  labSummaries,
 		LatestVitalSigns:  vitalSummaries,
 		RebuiltAt:         b.now(),
 	}, nil
+}
+
+// filterProceduresByType returns the subset of procedures with Type ==
+// procType — used for Surgeries (see that field's own doc comment); not
+// used for Vaccinations, which still goes through ListVaccinations's own
+// SQL-level filter (see ProcedureRepository's doc comment for why the two
+// are handled differently).
+func filterProceduresByType(procedures []normalization.Procedure, procType string) []normalization.Procedure {
+	var result []normalization.Procedure
+	for _, p := range procedures {
+		if p.Type == procType {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // groupKey canonicalizes a name for cross-document grouping — case/whitespace
