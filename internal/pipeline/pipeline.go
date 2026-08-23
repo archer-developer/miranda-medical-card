@@ -763,6 +763,7 @@ func (p *Pipeline) nutritionGuidance(ctx context.Context, userID string, built p
 		} else {
 			input.AgeYears = ageYears(u.BirthDate, now)
 			input.Sex = u.Sex
+			input.Language = u.Language
 		}
 	}
 

@@ -67,7 +67,32 @@ func TestInput_Empty(t *testing.T) {
 	require.False(t, nutrition.Input{Medications: []string{"x"}}.Empty())
 	require.False(t, nutrition.Input{PastSurgeries: []string{"x"}}.Empty())
 	require.False(t, nutrition.Input{RecentSymptoms: []string{"x"}}.Empty())
-	// Age/sex alone don't count — see Empty's own doc comment.
+	// Age/sex/language alone don't count — see Empty's own doc comment.
 	age := 42
-	require.True(t, nutrition.Input{AgeYears: &age, Sex: "male"}.Empty())
+	require.True(t, nutrition.Input{AgeYears: &age, Sex: "male", Language: "ru"}.Empty())
+}
+
+func TestGenerate_LanguageInstructionIncludedInPromptWhenSet(t *testing.T) {
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"restrictions": [], "recommendations": []}`),
+	})
+
+	_, err := nutrition.Generate(context.Background(), provider, nutrition.Input{
+		Diagnoses: []string{"x"},
+		Language:  "ru",
+	}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, provider.StructuredRequests, 1)
+	require.Contains(t, provider.StructuredRequests[0].Messages[1].Content, "Response language: ru")
+}
+
+func TestGenerate_NoLanguageInstructionWhenUnset(t *testing.T) {
+	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
+		JSON: json.RawMessage(`{"restrictions": [], "recommendations": []}`),
+	})
+
+	_, err := nutrition.Generate(context.Background(), provider, nutrition.Input{Diagnoses: []string{"x"}}, time.Now())
+	require.NoError(t, err)
+	require.Len(t, provider.StructuredRequests, 1)
+	require.NotContains(t, provider.StructuredRequests[0].Messages[1].Content, "Response language")
 }

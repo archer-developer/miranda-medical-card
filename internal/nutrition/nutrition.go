@@ -45,7 +45,8 @@ Rules:
 - A past surgery can matter just as much as an active diagnosis even if it happened long ago and nothing about it appears elsewhere in the input — e.g. gallbladder removal (cholecystectomy) permanently reduces bile output and calls for a lasting fat restriction; a medication can matter on its own too — e.g. iron supplementation interacts with foods/drinks that inhibit its absorption (tea, coffee, dairy taken at the same time).
 - Keep each item to one short sentence, plus a one-sentence medical reason referencing what it follows from.
 - Do NOT suggest specific dishes, foods, brands, recipes, or calorie/macro targets — only the direction of a restriction or recommendation (e.g. "limit fatty food," never "avoid butter, use olive oil instead, target 20g fat/day"). A separate system turns this into an actual meal plan.
-- If nothing below has clear dietary relevance, return empty lists for both — do not pad the answer with generic advice that isn't tied to a given fact.`
+- If nothing below has clear dietary relevance, return empty lists for both — do not pad the answer with generic advice that isn't tied to a given fact.
+- If a "Response language" line is given below, write every "text" and "reason" strictly in that language, regardless of what language the medical facts themselves are written in. Otherwise, write them in the same language as those facts.`
 
 // Input is everything Generate needs about one user — deliberately narrow
 // (docs/adr/006-nutrition-guidance.md §6-7, §9): the active
@@ -56,12 +57,19 @@ Rules:
 // (from Procedure, type=="surgery" only — a permanent anatomical change
 // like a cholecystectomy stays relevant indefinitely, not just while it's
 // a recent Timeline entry), symptoms self-reported in the last month, and
-// age/sex from config.User via pipeline.UserRepository. Still not the
-// whole Profile — lab results and vital signs are out of scope for this
-// call (see docs/adr/006-nutrition-guidance.md §8).
+// age/sex/language from config.User via pipeline.UserRepository. Still not
+// the whole Profile — lab results and vital signs are out of scope for
+// this call (see docs/adr/006-nutrition-guidance.md §8).
 type Input struct {
-	AgeYears       *int
-	Sex            string
+	AgeYears *int
+	Sex      string
+	// Language, if set (config.UserConfig.Language), instructs Generate to
+	// write every NutritionNote.Text/Reason in that language regardless of
+	// what language the diagnoses/symptoms/etc. below happen to be in —
+	// see promptTemplate's own rule. Empty means no instruction: the model
+	// infers a language from the rest of the input instead, the behavior
+	// from before this field existed.
+	Language       string
 	Diagnoses      []string
 	Allergies      []string
 	Medications    []string
@@ -170,6 +178,9 @@ func toNotes(notes []note) []profile.NutritionNote {
 
 func formatInput(input Input) string {
 	var b strings.Builder
+	if input.Language != "" {
+		fmt.Fprintf(&b, "Response language: %s\n", input.Language)
+	}
 	if input.AgeYears != nil {
 		fmt.Fprintf(&b, "Age: %d\n", *input.AgeYears)
 	}

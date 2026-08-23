@@ -18,6 +18,15 @@
 > `vaccination`). `Pipeline.nutritionGuidance` больше не делает собственный запрос к
 > `ProcedureRepository` — читает уже посчитанное `built.Surgeries`, тем же способом, каким уже читает
 > `built.ActiveDiagnoses`/`built.Allergies`/`built.ActiveMedications`.
+>
+> **Обновление 3**: добавлен `config.UserConfig.Language` (см. `../domain/02-user.md` §2) — код или
+> название языка (`ru`, `Russian`, что угодно, передаётся модели как есть), на котором Nutrition
+> Advisor обязан писать `text`/`reason`, если он задан для пользователя. Без него поведение прежнее —
+> модель сама определяет язык ответа по языку входных данных (диагнозов, симптомов и т.д.), что до
+> сих пор совпадало с языком реальных документов пользователей (русский), но не гарантированно на
+> будущее. Проброшено через `pipeline.User.Language` (`internal/pipeline/users.go`) в
+> `nutrition.Input.Language`, не влияет на `Input.Empty()` (§4) — язык сам по себе не медицинский
+> факт, наравне с возрастом/полом.
 
 ## Проблема
 

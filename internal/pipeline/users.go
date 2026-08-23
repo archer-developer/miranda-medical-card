@@ -9,17 +9,19 @@ import (
 )
 
 // User is UserRepository's read view of one household member — just the
-// two fields the Nutrition Advisor input (docs/adr/006-nutrition-guidance.md
-// §7) needs, the same pair docs/domain/02-user.md §2 already earmarks for
-// exactly this purpose ("используется для расчёта возраста в Medical
-// Profile" / "используется для референсных диапазонов, специфичных по
-// полу"). BirthDate is nil when unset or unparseable — a missing age is a
-// rendering gap for Nutrition Advisor input, not a fatal error, the same
-// posture profile.Builder.documentTitle already takes for a missing
-// document title.
+// fields Nutrition Advisor input (docs/adr/006-nutrition-guidance.md §7,
+// §10) needs: BirthDate/Sex (the pair docs/domain/02-user.md §2 already
+// earmarks for exactly this purpose — "используется для расчёта возраста
+// в Medical Profile" / "используется для референсных диапазонов,
+// специфичных по полу") and Language (config.UserConfig.Language, passed
+// straight through). BirthDate is nil when unset or unparseable — a
+// missing age is a rendering gap for Nutrition Advisor input, not a fatal
+// error, the same posture profile.Builder.documentTitle already takes for
+// a missing document title.
 type User struct {
 	BirthDate *time.Time
 	Sex       string
+	Language  string
 }
 
 // UserRepository implements docs/domain/02-user.md §7's long-documented but
@@ -70,5 +72,5 @@ func (r *configUserRepository) FindByID(_ context.Context, id string) (User, err
 			birthDate = &t
 		}
 	}
-	return User{BirthDate: birthDate, Sex: u.Sex}, nil
+	return User{BirthDate: birthDate, Sex: u.Sex, Language: u.Language}, nil
 }

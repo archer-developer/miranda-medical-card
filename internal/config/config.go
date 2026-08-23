@@ -24,6 +24,16 @@ type UserConfig struct {
 	// Sex is "male" or "female", if known — used for sex-specific reference
 	// ranges (see docs/domain/02-user.md §2). Empty is valid (unknown).
 	Sex string `yaml:"sex"`
+	// Language, if set, names the language (an ISO 639-1 code like "ru"/
+	// "en", or a plain name like "Russian" — passed through to the LLM
+	// as-is, either works) Nutrition Advisor
+	// (docs/adr/006-nutrition-guidance.md) is instructed to write its
+	// restrictions/recommendations in for this user — see
+	// internal/nutrition's promptTemplate. Empty means no explicit
+	// instruction: the model infers a language from the diagnoses/
+	// symptoms/etc. given in the prompt, same as before this field
+	// existed.
+	Language string `yaml:"language"`
 	// SharedWith is a read-only allowlist: other users' ids allowed to read
 	// this user's data via subjectId (see docs/domain/02-user.md §4). Empty
 	// by default — visible only to the owner.
