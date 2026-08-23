@@ -17,7 +17,10 @@ func TestNew_FilesRouteRequiresBearerToken(t *testing.T) {
 	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := httpserver.New(mcpHandler, fileHandler, "secret-token")
+	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := httpserver.New(mcpHandler, fileHandler, linkHandler, "secret-token")
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
@@ -41,4 +44,29 @@ func TestNew_FilesRouteRequiresBearerToken(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNew_LinksRouteDoesNotRequireBearerToken guards
+// docs/adr/007-short-lived-file-links-for-profile-export.md's deliberate
+// choice: /links/{linkId}'s access control is its random id + TTL, not the
+// shared bearer token /mcp and /files require — a caller presenting no
+// Authorization header at all must still reach the handler.
+func TestNew_LinksRouteDoesNotRequireBearerToken(t *testing.T) {
+	fileHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("linkId=" + r.PathValue("linkId")))
+	})
+	handler := httpserver.New(mcpHandler, fileHandler, linkHandler, "secret-token")
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/links/link_123")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "no Authorization header must still reach the link handler")
 }

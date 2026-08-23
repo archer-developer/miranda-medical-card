@@ -366,6 +366,28 @@ CREATE TABLE IF NOT EXISTS ask_messages (
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ask_messages_session_id ON ask_messages(session_id, id);
+
+-- ephemeral_links backs internal/linkstore (docs/adr/007-short-lived-file-
+-- links-for-profile-export.md) — short-lived, random-ID links for
+-- ephemeral, derived data (e.g. a medical.profile snapshot staged for
+-- code-execution-sandbox's upload_file), resolved by the unauthenticated
+-- GET /links/{linkId} route rather than /files/{fileId}. Exactly one of
+-- file_id/content is populated (an application-level invariant, not a CHECK
+-- constraint, per that ADR's §1) — file_id is a forward-looking column for
+-- short-lived links onto an existing storage.File, not yet resolved by
+-- anything (see EphemeralLinkRepository.Get's doc comment); content is the
+-- only path actually used today, for derived data that has no permanent
+-- storage.File of its own.
+CREATE TABLE IF NOT EXISTS ephemeral_links (
+    id           TEXT PRIMARY KEY,
+    file_id      TEXT,
+    content      BLOB,
+    content_type TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_links_expires_at ON ephemeral_links(expires_at);
 `
 
 // schemaMigrations holds changes applied after schema's initial CREATE

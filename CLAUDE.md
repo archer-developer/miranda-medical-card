@@ -89,8 +89,16 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   docs/architecture/02-processing-pipeline.md.
 - **`internal/filestore`** — binary file storage on disk, keyed by content hash; SQLite only ever
   stores a reference, never file bytes.
-- **`internal/httpserver`** — bearer-auth gate in front of the MCP handler; kept free of any
-  MCP-specific knowledge.
+- **`internal/linkstore`** — short-lived, random-ID links for ephemeral/derived data (as opposed to
+  `internal/filestore`'s permanent, on-disk documents) — `Store.Mint`/`Resolve`, backed by SQLite via
+  `storage.EphemeralLinkRepository`, TTL-checked against an injectable clock seam (mirrors
+  `internal/ask.SessionStore`'s own `now` field). Currently only used by `medical.profile`'s
+  `format=file_uri` (docs/adr/007-short-lived-file-links-for-profile-export.md) — resolved by the
+  unauthenticated `GET /links/{linkId}` route, deliberately separate from `/files/{fileId}` (see that
+  ADR's "Почему это НЕ то же самое" section for why).
+- **`internal/httpserver`** — bearer-auth gate in front of the MCP handler and `/files/{fileId}`; kept
+  free of any MCP-specific knowledge. `/links/{linkId}` (`internal/linkstore`) is the one route mounted
+  here without that gate — its random id + TTL is the access control, not the shared token.
 
 ## Conventions
 

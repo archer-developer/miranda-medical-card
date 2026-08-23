@@ -22,6 +22,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
+	"github.com/archer-developer/miranda-medical-card/internal/linkstore"
 	"github.com/archer-developer/miranda-medical-card/internal/mcpserver"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -69,7 +70,8 @@ func newTestSessionWithStore(t *testing.T, provider *llmtest.FakeProvider, users
 	require.NoError(t, err)
 	asker := ask.NewAsker(askRouter, registry, ask.NewSessionStore(storage.NewAskSessionRepository(s)), 5*time.Second, 20, 8, nil)
 
-	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, nil)
+	links := linkstore.New(storage.NewEphemeralLinkRepository(s))
+	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, links, nil)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -82,6 +84,16 @@ func newTestSessionWithStore(t *testing.T, provider *llmtest.FakeProvider, users
 	t.Cleanup(func() { _ = clientSession.Close() })
 
 	return clientSession, s
+}
+
+// linkstoreFor builds an internal/linkstore.Store backed by the same
+// storage.Store a test session was wired against — for a test that needs
+// to mount its own "GET /links/{linkId}" handler (mirroring
+// httpserver.New's route) to actually resolve a medical.profile
+// format=file_uri link.
+func linkstoreFor(t *testing.T, store *storage.Store) *linkstore.Store {
+	t.Helper()
+	return linkstore.New(storage.NewEphemeralLinkRepository(store))
 }
 
 func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
@@ -293,7 +305,8 @@ func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
 	require.NoError(t, err)
 	asker := ask.NewAsker(askRouter, registry, ask.NewSessionStore(storage.NewAskSessionRepository(s)), 5*time.Second, 20, 8, nil)
 
-	server := mcpserver.New(pl, asker, []config.UserConfig{{ID: "alex"}}, 50*1024*1024, testPublicBaseURL, nil)
+	links := linkstore.New(storage.NewEphemeralLinkRepository(s))
+	server := mcpserver.New(pl, asker, []config.UserConfig{{ID: "alex"}}, 50*1024*1024, testPublicBaseURL, links, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
 	require.NoError(t, err)

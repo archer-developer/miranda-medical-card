@@ -45,6 +45,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/httpserver"
+	"github.com/archer-developer/miranda-medical-card/internal/linkstore"
 	"github.com/archer-developer/miranda-medical-card/internal/mcpserver"
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
@@ -73,6 +74,13 @@ const (
 	// turn's Recorder would never see a single Trace call to detect
 	// anything from.
 	anomaliesDirName = "anomalies"
+
+	// linkCleanupInterval is how often expired internal/linkstore rows are
+	// swept (docs/adr/007-short-lived-file-links-for-profile-export.md §3)
+	// — links TTL out after 5 minutes (see mcpserver.profileFileLinkTTL),
+	// so even this coarse an interval keeps the ephemeral_links table from
+	// growing unbounded without needing anything more precise.
+	linkCleanupInterval = 5 * time.Minute
 
 	// askProviderTimeout bounds each Knowledge Provider's Collect call
 	// (docs/architecture/03-knowledge-providers.md §16) — a slow/hung
@@ -300,10 +308,14 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		})
 	}
 
-	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, logger)
+	links := linkstore.New(storage.NewEphemeralLinkRepository(store))
+	go cleanupExpiredLinks(ctx, links, logger)
+
+	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, links, logger)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	fileHandler := mcpserver.NewFileDownloadHandler(pl, logger)
-	handler := httpserver.New(mcpHandler, fileHandler, token)
+	linkHandler := mcpserver.NewLinkDownloadHandler(links, logger)
+	handler := httpserver.New(mcpHandler, fileHandler, linkHandler, token)
 	httpServer := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: handler,
@@ -501,6 +513,30 @@ func buildLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
 		return nil, fmt.Errorf("open llm log %s: %w", path, err)
 	}
 	return w, nil
+}
+
+// cleanupExpiredLinks periodically sweeps expired internal/linkstore rows
+// (docs/adr/007-short-lived-file-links-for-profile-export.md §3) until ctx
+// is canceled (the same SIGINT/SIGTERM signal every other background loop
+// in run() shuts down on). Errors are logged, not fatal — a missed sweep
+// just means the next tick (or the one after) catches the same rows, and
+// the 5-minute link TTL means the table never grows unbounded even if
+// cleanup lags.
+func cleanupExpiredLinks(ctx context.Context, links *linkstore.Store, logger *slog.Logger) {
+	ticker := time.NewTicker(linkCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := links.DeleteExpired(ctx); err != nil {
+				logger.Error("cleanup expired links failed", "error", err)
+			} else if n > 0 {
+				logger.Info("cleanup expired links", "removed", n)
+			}
+		}
+	}
 }
 
 func serveUntilInterrupted(ctx context.Context, httpServer *http.Server, tlsCfg config.TLSConfig, logger *slog.Logger) error {

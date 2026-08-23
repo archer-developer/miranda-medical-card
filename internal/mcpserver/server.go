@@ -19,6 +19,7 @@ import (
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
+	"github.com/archer-developer/miranda-medical-card/internal/linkstore"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 )
 
@@ -31,13 +32,18 @@ const (
 // bounds how much medical.upload_document (see documents.go) will read from
 // a caller-supplied fileUri. publicBaseURL is the externally reachable
 // origin medical.get_document uses to build a document's fileUri (see
-// documents.go's fileURI, config.Config.PublicBaseURL) — the plain HTTP GET
-// /files/{fileId} handler that fileUri resolves against
-// (NewFileDownloadHandler) is mounted separately by httpserver.New, not
-// registered on this *mcp.Server; medical.download_file (files.go) remains
-// the MCP-native way to fetch a file with ownership/shared_with re-checked
-// on every call. A nil logger falls back to slog.Default().
-func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, maxFileSizeBytes int64, publicBaseURL string, logger *slog.Logger) *mcp.Server {
+// documents.go's fileURI, config.Config.PublicBaseURL) and medical.profile's
+// format=file_uri uses to build a link's fileUri (see links.go's linkURI) —
+// the plain HTTP GET /files/{fileId} and /links/{linkId} handlers those
+// URIs resolve against (NewFileDownloadHandler, NewLinkDownloadHandler) are
+// mounted separately by httpserver.New, not registered on this *mcp.Server;
+// medical.download_file (files.go) remains the MCP-native way to fetch a
+// file with ownership/shared_with re-checked on every call. links backs
+// medical.profile's format=file_uri response
+// (docs/adr/007-short-lived-file-links-for-profile-export.md) — build it
+// with linkstore.New(storage.NewEphemeralLinkRepository(store)). A nil
+// logger falls back to slog.Default().
+func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, maxFileSizeBytes int64, publicBaseURL string, links *linkstore.Store, logger *slog.Logger) *mcp.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -49,7 +55,7 @@ func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, max
 	registerDocumentTools(server, pl, gate, maxFileSizeBytes, publicBaseURL, logger)
 	registerEventTools(server, pl, gate, logger)
 	registerAskTool(server, asker, gate, logger)
-	registerProfileTool(server, pl, gate, logger)
+	registerProfileTool(server, pl, gate, links, publicBaseURL, logger)
 	registerTimelineTool(server, pl, gate, logger)
 	registerPlannedActionsTool(server, pl, gate, logger)
 	registerDeclinePlannedActionTool(server, pl, gate, logger)

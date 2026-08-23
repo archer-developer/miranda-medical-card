@@ -15,6 +15,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
+	"github.com/archer-developer/miranda-medical-card/internal/linkstore"
 	"github.com/archer-developer/miranda-medical-card/internal/mcpserver"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -42,7 +43,8 @@ func newAskTestSession(t *testing.T, fake *llmtest.FakeProvider, users []config.
 	require.NoError(t, err)
 	asker := ask.NewAsker(askRouter, registry, ask.NewSessionStore(storage.NewAskSessionRepository(s)), 5*time.Second, 20, 8, nil)
 
-	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, nil)
+	links := linkstore.New(storage.NewEphemeralLinkRepository(s))
+	server := mcpserver.New(pl, asker, users, 50*1024*1024, testPublicBaseURL, links, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	require.NoError(t, err)

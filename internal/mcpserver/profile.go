@@ -2,25 +2,41 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/archer-developer/miranda-medical-card/internal/linkstore"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 )
 
-func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
+// profileFileLinkTTL bounds how long a format=file_uri link stays
+// resolvable — docs/adr/007-short-lived-file-links-for-profile-export.md
+// picks 5 minutes as "five orders of magnitude below the practical
+// brute-force window for a 128-bit id", with large headroom over the
+// actual use case (handing the link to another tool within the same
+// agent-loop turn, normally seconds).
+const profileFileLinkTTL = 5 * time.Minute
+
+func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, links *linkstore.Store, publicBaseURL string, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, past surgeries, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only.",
-	}, profileHandler(pl, gate, logger))
+		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, past surgeries, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only. format=\"json\" (default) returns the full profile inline (activeDiagnoses, chronicConditions, activeMedications, allergies, vaccinations, surgeries, latestLabResults, latestVitalSigns, nutritionGuidance). format=\"file_uri\" instead returns {fileUri, expiresAt} — a short-lived (5 minute) link to that same JSON — use this when the goal is handing the data to another tool (e.g. code-execution-sandbox's upload_file, for PDF generation) rather than reading it yourself: retyping a large profile by hand is unreliable, a URI passed through server-to-server is not.",
+	}, profileHandler(pl, gate, links, publicBaseURL, logger))
 }
 
 type ProfileInput struct {
 	UserID    string `json:"userId" jsonschema:"User identifier."`
 	SubjectID string `json:"subjectId,omitempty" jsonschema:"Whose profile to fetch, if not the caller's own. Must be that household member's own user_id — the same identifier used for userId elsewhere (e.g. \"anna\"), never a display name like \"Аня\". Omit to default to the caller's own data."`
+	// Format selects the response shape: "json" (default) returns the full
+	// profile inline, as today. "file_uri" instead stages the same JSON
+	// behind a short-lived link and returns just that URI — see
+	// docs/adr/007-short-lived-file-links-for-profile-export.md.
+	Format string `json:"format,omitempty" jsonschema:"Response shape: \"json\" (default, full profile inline) or \"file_uri\" (a short-lived link to the same JSON — use when handing this straight to another tool, e.g. PDF generation, instead of reading it yourself)."`
 }
 
 type DiagnosisSummaryOutput struct {
@@ -105,21 +121,64 @@ type ProfileOutput struct {
 	NutritionGuidance NutritionGuidanceOutput   `json:"nutritionGuidance"`
 }
 
-func profileHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[ProfileInput, ProfileOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in ProfileInput) (*mcp.CallToolResult, ProfileOutput, error) {
+// ProfileFileOutput is medical.profile's format=file_uri response shape —
+// docs/adr/007-short-lived-file-links-for-profile-export.md §"Что нужно
+// сделать" item 5. ExpiresAt is RFC3339 so the model has an explicit,
+// parseable deadline rather than having to infer urgency from prose.
+type ProfileFileOutput struct {
+	FileURI   string `json:"fileUri"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+// profileHandler's Out type parameter is `any`, not ProfileOutput, because
+// the tool has two possible response shapes depending on ProfileInput.Format
+// (see docs/adr/007 §5, "решить на этапе реализации... не переусложнять
+// специально под ADR") — mcp.AddTool's generic Out can't express that
+// directly. This still preserves the Content-mirrors-StructuredContent
+// invariant server_test.go checks: the SDK's toolForErr marshals whatever
+// concrete value the handler returns into both fields identically,
+// regardless of the static Out type (see modelcontextprotocol/go-sdk's
+// server.go toolForErr) — it only loses the auto-generated *output* JSON
+// Schema entry for medical.profile, which the tool Description above
+// compensates for in prose.
+func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Store, publicBaseURL string, logger *slog.Logger) mcp.ToolHandlerFor[ProfileInput, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in ProfileInput) (*mcp.CallToolResult, any, error) {
 		subjectID, err := gate.resolveSubject(in.UserID, in.SubjectID)
 		if err != nil {
-			return nil, ProfileOutput{}, err
+			return nil, nil, err
+		}
+		format := in.Format
+		if format == "" {
+			format = "json"
+		}
+		if format != "json" && format != "file_uri" {
+			return nil, nil, mcpError(codeInvalidFormat, "format must be \"json\" or \"file_uri\", got %q", in.Format)
 		}
 
 		built, err := pl.GetProfile(ctx, subjectID)
 		if err != nil {
 			logger.Error("profile failed", "userId", in.UserID, "subjectId", subjectID, "error", err)
-			return nil, ProfileOutput{}, mcpError(codeStorageError, "%v", err)
+			return nil, nil, mcpError(codeStorageError, "%v", err)
 		}
 
 		out := toProfileOutput(built)
-		logger.Info("profile", "userId", in.UserID, "subjectId", subjectID)
+
+		if format == "file_uri" {
+			jsonBytes, err := json.Marshal(out)
+			if err != nil {
+				return nil, nil, fmt.Errorf("mcpserver: marshal profile for file_uri: %w", err)
+			}
+			linkID, expiresAt, err := links.Mint(ctx, jsonBytes, "application/json", "profile.json", profileFileLinkTTL)
+			if err != nil {
+				logger.Error("profile: mint file_uri link failed", "userId", in.UserID, "subjectId", subjectID, "error", err)
+				return nil, nil, mcpError(codeStorageError, "%v", err)
+			}
+			logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format, "expiresAt", expiresAt)
+			fileOut := ProfileFileOutput{FileURI: linkURI(publicBaseURL, linkID), ExpiresAt: expiresAt.Format(time.RFC3339)}
+			return nil, fileOut, nil
+		}
+
+		logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format)
 		// Deliberately no hand-built Content here (unlike other handlers in
 		// this package that write a short human summary) — see
 		// docs/adr/002-structured-profile-response.md: a caller reading
