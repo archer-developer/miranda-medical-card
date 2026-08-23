@@ -403,9 +403,16 @@ func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]Know
 	// Every branch above already returns most-recent-first (see
 	// labResultOrderBy), so truncating here keeps the newest Limit results
 	// — matching the lab_results tool schema's own "most recent first"
-	// description (tools.go's limitProperty).
-	if req.Limit > 0 && len(results) > req.Limit {
-		results = results[:req.Limit]
+	// description (tools.go's limitProperty). Unlike the other providers'
+	// own Collect (which all call limitOrDefault before hitting storage),
+	// this used to truncate only "if req.Limit > 0" — so a bare
+	// lab_results call with no indicatorName/limit (exactly what "show me
+	// my lab results" produces) fell through to ListByUser's entire
+	// multi-year, unbounded history. limitOrDefault closes that gap the
+	// same way every sibling provider already does.
+	limit := limitOrDefault(req.Limit)
+	if len(results) > limit {
+		results = results[:limit]
 	}
 
 	chunks := make([]KnowledgeChunk, len(results))

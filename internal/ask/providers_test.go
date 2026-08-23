@@ -2,6 +2,7 @@ package ask_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -172,6 +173,32 @@ func TestLabProvider_OrdersMostRecentFirstAndHonorsLimit(t *testing.T) {
 	require.Len(t, chunks, 2, "limit must actually bound the result count")
 	require.Contains(t, chunks[0].Content, "2026-01-01", "most recent result must come first")
 	require.Contains(t, chunks[1].Content, "2025-06-01")
+}
+
+// TestLabProvider_NoLimitStillCapsResultCount is the regression test for a
+// real bug: unlike every sibling provider (which all call limitOrDefault
+// before hitting storage), LabProvider used to truncate only "if req.Limit
+// > 0" — so a bare lab_results call with no indicatorName/limit at all
+// (exactly what "show me my lab results" produces) fell through to
+// ListByUser's entire, unbounded history. A large history like this one
+// used to come back as a single oversized RoleTool message, which compounds
+// across a multi-turn conversation into a big enough request to make the
+// agent_provider return an empty completion (see format.go's
+// maxToolResultBytes doc comment for the mechanism this bug fed).
+func TestLabProvider_NoLimitStillCapsResultCount(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	for i := 0; i < 40; i++ {
+		require.NoError(t, repo.Add(context.Background(), normalization.LabResult{
+			ID: fmt.Sprintf("l%d", i), UserID: "user1", DocumentID: "doc1", IndicatorName: "ALT", Value: float64(i),
+			TakenAt: mustDate("2025-01-01"),
+		}))
+	}
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
+	require.NoError(t, err)
+	require.Less(t, len(chunks), 40, "an omitted limit must still fall back to a bounded default, not the entire history")
 }
 
 // TestLabProvider_IndicatorNameWithLimitReturnsMostRecent is the regression
