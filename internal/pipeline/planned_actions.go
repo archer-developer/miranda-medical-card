@@ -51,7 +51,7 @@ func (p *Pipeline) findPendingMatch(ctx context.Context, userID, text, kind stri
 	candidates := make([]decline.Candidate, len(pending))
 	for i, a := range pending {
 		descriptions[i] = a.Description
-		candidates[i] = decline.Candidate{ID: a.ID, Description: a.Description, Type: a.Type}
+		candidates[i] = decline.Candidate{ID: a.ID, Description: a.Description, Context: a.Type}
 	}
 
 	matchedID, err := decline.Match(ctx, p.extractionProvider, kind, text, candidates)

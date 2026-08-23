@@ -544,6 +544,13 @@ Embedding v3
 
 Повторная обработка не должна требовать повторной загрузки файла.
 
+Первая диаграмма выше — это ровно то, что реализуют `internal/pipeline.Pipeline.ReextractDocument`
+(Artifact → новый промпт Structured Extraction → Extraction → Normalization → Timeline, без OCR) и
+`RenormalizeDocument` (тот же путь ещё на шаг короче — без нового вызова Extraction вовсе, только
+свежий Normalization уже сохранённого `Extraction.Raw`), см. §2 "Независимость этапов" — там же оба
+метода описаны подробнее вместе с `medical-dev pipeline --stage ocr|extraction|normalization`, через
+который обе границы доступны снаружи (docs/cli/medical_dev.md §13).
+
 ---
 
 # 14. Обработка ошибок

@@ -373,7 +373,7 @@ func (p *Pipeline) process(ctx context.Context, userID, documentID string, versi
 	p.logger.Debug("pipeline: process start", "documentId", documentID, "userId", userID, "version", version)
 
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
-		return Result{}, fmt.Errorf("pipeline: process: %w", err)
+		return fail(fmt.Errorf("pipeline: process: %w", err))
 	}
 
 	extracted, raw, stillSuspicious, err := extractFunc()
@@ -439,8 +439,18 @@ func (p *Pipeline) RenormalizeDocument(ctx context.Context, userID, documentID s
 		return Result{}, fmt.Errorf("pipeline: renormalize document: unmarshal stored extraction: %w", err)
 	}
 
+	// fail mirrors process's own closure — symmetry matters here since,
+	// past this point, RenormalizeDocument shares normalizeAndPersist's
+	// failure handling with process/ReextractDocument, and every one of
+	// those failure paths marks the document FAILED rather than leaving it
+	// stuck in RUNNING.
+	fail := func(err error) (Result, error) {
+		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
+		return Result{}, err
+	}
+
 	if err := p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusRunning); err != nil {
-		return Result{}, fmt.Errorf("pipeline: renormalize document: %w", err)
+		return fail(fmt.Errorf("pipeline: renormalize document: %w", err))
 	}
 
 	return p.normalizeAndPersist(ctx, userID, documentID, extracted)

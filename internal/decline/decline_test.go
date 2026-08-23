@@ -32,8 +32,8 @@ func TestMatch_ExactCandidateReturned(t *testing.T) {
 	})
 
 	got, err := decline.Match(context.Background(), provider, testKind, "отмени прививку от бешенства", []decline.Candidate{
-		{ID: "plan_1", Description: "Повторный анализ глюкозы", Type: "lab_test"},
-		{ID: "plan_2", Description: "Прививка от бешенства", Type: "vaccination"},
+		{ID: "plan_1", Description: "Повторный анализ глюкозы", Context: "lab_test"},
+		{ID: "plan_2", Description: "Прививка от бешенства", Context: "vaccination"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "plan_2", got)
@@ -45,7 +45,7 @@ func TestMatch_NoConfidentMatchReturnsEmpty(t *testing.T) {
 	})
 
 	got, err := decline.Match(context.Background(), provider, testKind, "отмени что-то непонятное", []decline.Candidate{
-		{ID: "plan_1", Description: "Повторный анализ глюкозы", Type: "lab_test"},
+		{ID: "plan_1", Description: "Повторный анализ глюкозы", Context: "lab_test"},
 	})
 	require.NoError(t, err)
 	require.Empty(t, got)

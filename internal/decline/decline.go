@@ -39,11 +39,18 @@ Given the user's text and a list of candidates (id + description), return the id
 Omit matchId entirely if you are not confident any candidate is what the user means — never guess when it's ambiguous or none fit.`
 
 // Candidate is one current item (a pending PlannedAction, a non-resolved
-// Diagnosis, ...) offered to the model.
+// Diagnosis, ...) offered to the model. Context is a free-text disambiguation
+// hint shown alongside Description — deliberately untyped rather than a
+// shared enum, since each caller fills it with a different, unrelated
+// domain concept: PlannedAction passes its own Type (lab_test/procedure/...),
+// while Diagnosis and Medication pass their Status instead (no PlannedAction
+// itself has a status to offer here). Any overlap between those values
+// across domains is coincidental, not a shared vocabulary — don't rely on it
+// meaning the same thing for different callers.
 type Candidate struct {
 	ID          string
 	Description string
-	Type        string
+	Context     string
 }
 
 // Schema is the JSON Schema passed as llm.StructuredRequest.Schema —
@@ -91,7 +98,7 @@ func Match(ctx context.Context, provider StructuredProvider, kind, text string, 
 	var listing strings.Builder
 	for i, c := range candidates {
 		ids[i] = c.ID
-		fmt.Fprintf(&listing, "- id=%s type=%s: %s\n", c.ID, c.Type, c.Description)
+		fmt.Fprintf(&listing, "- id=%s context=%s: %s\n", c.ID, c.Context, c.Description)
 	}
 
 	req := llm.StructuredRequest{

@@ -59,7 +59,7 @@ func (p *Pipeline) ResolveDiagnosis(ctx context.Context, userID, text string) (n
 	candidates := make([]decline.Candidate, len(current))
 	for i, d := range current {
 		names[i] = d.Name
-		candidates[i] = decline.Candidate{ID: d.ID, Description: d.Name, Type: d.Status}
+		candidates[i] = decline.Candidate{ID: d.ID, Description: d.Name, Context: d.Status}
 	}
 
 	matchedID, err := decline.Match(ctx, p.extractionProvider,

@@ -61,7 +61,7 @@ func (p *Pipeline) findMedicationMatch(ctx context.Context, userID, text, kind s
 	candidates := make([]decline.Candidate, len(current))
 	for i, m := range current {
 		names[i] = m.DrugName
-		candidates[i] = decline.Candidate{ID: m.ID, Description: m.DrugName, Type: string(m.Status)}
+		candidates[i] = decline.Candidate{ID: m.ID, Description: m.DrugName, Context: string(m.Status)}
 	}
 
 	matchedID, err := decline.Match(ctx, p.extractionProvider, kind, text, candidates)
