@@ -38,26 +38,34 @@ const SchemaName = "nutrition_guidance"
 // whatever downstream system builds an actual meal plan (Miranda).
 const promptTemplate = `You are a clinical nutrition assistant for a household medical record service.
 
-Given one household member's active diagnoses/chronic conditions, allergies, age, sex, and symptoms they've reported in the last month, produce short dietary restrictions and recommendations that follow directly from those medical facts.
+Given one household member's active diagnoses/chronic conditions, allergies, age, sex, active medications, past surgeries, and symptoms they've reported in the last month, produce short dietary restrictions and recommendations that follow directly from those medical facts.
 
 Rules:
-- Every item must be grounded in a specific diagnosis, allergy, or symptom given below — never invent an item that isn't traceable to the input.
+- Every item must be grounded in a specific diagnosis, allergy, active medication, past surgery, or symptom given below — never invent an item that isn't traceable to the input.
+- A past surgery can matter just as much as an active diagnosis even if it happened long ago and nothing about it appears elsewhere in the input — e.g. gallbladder removal (cholecystectomy) permanently reduces bile output and calls for a lasting fat restriction; a medication can matter on its own too — e.g. iron supplementation interacts with foods/drinks that inhibit its absorption (tea, coffee, dairy taken at the same time).
 - Keep each item to one short sentence, plus a one-sentence medical reason referencing what it follows from.
 - Do NOT suggest specific dishes, foods, brands, recipes, or calorie/macro targets — only the direction of a restriction or recommendation (e.g. "limit fatty food," never "avoid butter, use olive oil instead, target 20g fat/day"). A separate system turns this into an actual meal plan.
 - If nothing below has clear dietary relevance, return empty lists for both — do not pad the answer with generic advice that isn't tied to a given fact.`
 
 // Input is everything Generate needs about one user — deliberately narrow
-// (docs/adr/006-nutrition-guidance.md §6-7): the active
+// (docs/adr/006-nutrition-guidance.md §6-7, §9): the active
 // diagnoses/chronic conditions and allergies profile.Builder already
-// computes, symptoms self-reported in the last month, and age/sex from
-// config.User via pipeline.UserRepository. Not the whole Profile — lab
-// results, vital signs, and medications are out of scope for this call
-// (see docs/adr/006-nutrition-guidance.md §8).
+// computes, active medications (same, from ActiveMedications — a course
+// currently being taken can itself carry a dietary implication, e.g. iron
+// supplementation and foods that block its absorption), past surgeries
+// (from Procedure, type=="surgery" only — a permanent anatomical change
+// like a cholecystectomy stays relevant indefinitely, not just while it's
+// a recent Timeline entry), symptoms self-reported in the last month, and
+// age/sex from config.User via pipeline.UserRepository. Still not the
+// whole Profile — lab results and vital signs are out of scope for this
+// call (see docs/adr/006-nutrition-guidance.md §8).
 type Input struct {
 	AgeYears       *int
 	Sex            string
 	Diagnoses      []string
 	Allergies      []string
+	Medications    []string
+	PastSurgeries  []string
 	RecentSymptoms []string
 }
 
@@ -66,10 +74,12 @@ type Input struct {
 // (pipeline.rebuildProfile) to check this first and skip Generate entirely,
 // per docs/adr/006-nutrition-guidance.md §4: age/sex alone isn't a medical
 // restriction, so calling the LLM just to get back "eat balanced meals" for
-// a household member with no active diagnosis, allergy, or recent symptom
-// would be a wasted call for a non-medical answer.
+// a household member with no active diagnosis, allergy, medication, past
+// surgery, or recent symptom would be a wasted call for a non-medical
+// answer.
 func (i Input) Empty() bool {
-	return len(i.Diagnoses) == 0 && len(i.Allergies) == 0 && len(i.RecentSymptoms) == 0
+	return len(i.Diagnoses) == 0 && len(i.Allergies) == 0 && len(i.Medications) == 0 &&
+		len(i.PastSurgeries) == 0 && len(i.RecentSymptoms) == 0
 }
 
 // note mirrors one NutritionNote's JSON shape — Schema constrains the
@@ -168,6 +178,8 @@ func formatInput(input Input) string {
 	}
 	writeList(&b, "Active diagnoses/chronic conditions", input.Diagnoses)
 	writeList(&b, "Allergies", input.Allergies)
+	writeList(&b, "Active medications", input.Medications)
+	writeList(&b, "Past surgeries", input.PastSurgeries)
 	writeList(&b, "Symptoms reported in the last month", input.RecentSymptoms)
 	return b.String()
 }

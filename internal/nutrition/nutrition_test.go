@@ -64,6 +64,8 @@ func TestInput_Empty(t *testing.T) {
 	require.True(t, nutrition.Input{}.Empty())
 	require.False(t, nutrition.Input{Diagnoses: []string{"x"}}.Empty())
 	require.False(t, nutrition.Input{Allergies: []string{"x"}}.Empty())
+	require.False(t, nutrition.Input{Medications: []string{"x"}}.Empty())
+	require.False(t, nutrition.Input{PastSurgeries: []string{"x"}}.Empty())
 	require.False(t, nutrition.Input{RecentSymptoms: []string{"x"}}.Empty())
 	// Age/sex alone don't count — see Empty's own doc comment.
 	age := 42

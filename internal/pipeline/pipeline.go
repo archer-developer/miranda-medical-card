@@ -747,13 +747,19 @@ func (p *Pipeline) nutritionGuidance(ctx context.Context, userID string, built p
 	now := time.Now().UTC()
 
 	input := nutrition.Input{
-		Diagnoses: diagnosisNames(built.ActiveDiagnoses),
-		Allergies: allergyDescriptions(built.Allergies),
+		Diagnoses:   diagnosisNames(built.ActiveDiagnoses),
+		Allergies:   allergyDescriptions(built.Allergies),
+		Medications: medicationNames(built.ActiveMedications),
 	}
 	if symptoms, err := p.recentSymptoms(ctx, userID, now); err != nil {
 		p.logger.Warn("pipeline: list recent self-reported symptoms for nutrition guidance failed", "userId", userID, "error", err)
 	} else {
 		input.RecentSymptoms = symptoms
+	}
+	if surgeries, err := p.pastSurgeries(ctx, userID); err != nil {
+		p.logger.Warn("pipeline: list past surgeries for nutrition guidance failed", "userId", userID, "error", err)
+	} else {
+		input.PastSurgeries = surgeries
 	}
 	if p.users != nil {
 		if u, err := p.users.FindByID(ctx, userID); err != nil {
@@ -826,6 +832,41 @@ func (p *Pipeline) recentSymptoms(ctx context.Context, userID string, now time.T
 		}
 	}
 	return symptoms, nil
+}
+
+// pastSurgeries returns the names of userID's Procedure rows with
+// type=="surgery" — no date bound, unlike recentSymptoms above: a
+// surgery's dietary implication (e.g. cholecystectomy's permanent bile
+// reduction) doesn't fade after a month the way a self-reported symptom's
+// relevance does, so every surgery on record stays part of the input
+// regardless of how long ago it happened. Deliberately narrower than every
+// Procedure type (examination/hospitalization/vaccination/consultation
+// have no comparable lasting dietary relevance) — the same kind of
+// precision recentSymptoms already applies by filtering to
+// category=="symptom" alone rather than every self-reported event.
+func (p *Pipeline) pastSurgeries(ctx context.Context, userID string) ([]string, error) {
+	procedures, err := p.procedures.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: list procedures: %w", err)
+	}
+	var surgeries []string
+	for _, proc := range procedures {
+		if proc.Type == "surgery" {
+			surgeries = append(surgeries, proc.Name)
+		}
+	}
+	return surgeries, nil
+}
+
+func medicationNames(medications []profile.MedicationSummary) []string {
+	if len(medications) == 0 {
+		return nil
+	}
+	names := make([]string, len(medications))
+	for i, m := range medications {
+		names[i] = m.DrugName
+	}
+	return names
 }
 
 func diagnosisNames(diagnoses []profile.DiagnosisSummary) []string {

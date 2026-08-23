@@ -75,3 +75,45 @@ func TestRebuildProfile_NutritionGuidance_CarriesForwardPreviousValueOnError(t *
 	require.NoError(t, err)
 	require.Equal(t, first.NutritionGuidance, second.NutritionGuidance, "a failed regeneration must carry the previous value forward, not clear it")
 }
+
+// TestRebuildProfile_NutritionGuidance_ActiveMedicationAndPastSurgeryAloneTriggerGeneration
+// covers docs/adr/006-nutrition-guidance.md §9: an active medication or a
+// past surgery (Procedure, type=="surgery") must feed Nutrition Guidance
+// input on their own, same as a diagnosis/allergy/symptom would — a user
+// with neither an active diagnosis, allergy, nor recent symptom, but with
+// an active medication and a past surgery on record, must still trigger
+// nutrition.Generate rather than being short-circuited as "empty" (§4).
+func TestRebuildProfile_NutritionGuidance_ActiveMedicationAndPastSurgeryAloneTriggerGeneration(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	provider := scriptedLabReportProviderWithProcedures(
+		`{"documentType":"discharge_summary","medications":[{"name":"Железа сульфат","status":"active"}],"procedures":[{"type":"surgery","name":"Холецистэктомия"}]}`,
+		`{"restrictions":[{"text":"Строго ограничить жирную пищу","reason":"После холецистэктомии снижена выработка желчи"}],"recommendations":[{"text":"Не принимать препараты железа с чаем или кофе","reason":"Приём железа сульфата — танины ухудшают усвоение железа"}]}`,
+	)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
+
+	file, err := p.UploadFile(ctx, "user1", "discharge.pdf", "application/pdf", []byte("pdf bytes"))
+	require.NoError(t, err)
+	_, err = p.UploadDocument(ctx, "user1", file.ID)
+	require.NoError(t, err)
+
+	got, err := p.GetProfile(ctx, "user1")
+	require.NoError(t, err)
+	require.Empty(t, got.ActiveDiagnoses, "this scenario deliberately has no diagnosis — medication/surgery alone must still drive guidance")
+	require.Len(t, got.NutritionGuidance.Restrictions, 1)
+	require.Equal(t, "Строго ограничить жирную пищу", got.NutritionGuidance.Restrictions[0].Text)
+	require.Len(t, got.NutritionGuidance.Recommendations, 1)
+}
+
+// scriptedLabReportProviderWithProcedures mirrors scriptedLabReportProvider
+// (pipeline_test.go) plus one more scripted Structured response for
+// rebuildProfile's Nutrition Guidance call.
+func scriptedLabReportProviderWithProcedures(extractionJSON, nutritionJSON string) *llmtest.FakeProvider {
+	return llmtest.New("fake",
+		llmtest.Response{Text: "Выписной эпикриз."},
+	).WithStructured(
+		llmtest.StructuredResponse{JSON: json.RawMessage(extractionJSON)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+		llmtest.StructuredResponse{JSON: json.RawMessage(nutritionJSON)},
+	)
+}
