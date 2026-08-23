@@ -14,7 +14,7 @@ import (
 func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, latest lab results and vital signs. Does not perform analysis — data only.",
+		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only.",
 	}, profileHandler(pl, gate, logger))
 }
 
@@ -75,6 +75,23 @@ type VitalSignSummaryOutput struct {
 	DocumentSource string `json:"documentSource,omitempty"`
 }
 
+// NutritionNoteOutput mirrors profile.NutritionNote — see
+// docs/adr/006-nutrition-guidance.md §1 for why Reason is included
+// alongside Text.
+type NutritionNoteOutput struct {
+	Text   string `json:"text"`
+	Reason string `json:"reason"`
+}
+
+// NutritionGuidanceOutput mirrors profile.NutritionGuidance
+// (docs/adr/006-nutrition-guidance.md). Omitted entirely (both slices nil)
+// when the user has no active diagnoses/allergies/recent symptoms to base
+// guidance on — see that ADR's §4.
+type NutritionGuidanceOutput struct {
+	Restrictions    []NutritionNoteOutput `json:"restrictions,omitempty"`
+	Recommendations []NutritionNoteOutput `json:"recommendations,omitempty"`
+}
+
 // ProfileOutput mirrors docs/mcp/05-profile.md §5.
 type ProfileOutput struct {
 	ActiveDiagnoses   []DiagnosisSummaryOutput  `json:"activeDiagnoses"`
@@ -84,6 +101,7 @@ type ProfileOutput struct {
 	Vaccinations      []ProcedureSummaryOutput  `json:"vaccinations"`
 	LatestLabResults  []LabResultSummaryOutput  `json:"latestLabResults"`
 	LatestVitalSigns  []VitalSignSummaryOutput  `json:"latestVitalSigns"`
+	NutritionGuidance NutritionGuidanceOutput   `json:"nutritionGuidance"`
 }
 
 func profileHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[ProfileInput, ProfileOutput] {
@@ -157,6 +175,25 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 			value = fmt.Sprintf("%g/%g", v.Systolic, v.Diastolic)
 		}
 		out.LatestVitalSigns[i] = VitalSignSummaryOutput{Name: v.Type, Value: value, Date: formatOptionalDate(v.MeasuredAt), DocumentSource: v.DocumentTitle}
+	}
+	out.NutritionGuidance = toNutritionGuidanceOutput(p.NutritionGuidance)
+	return out
+}
+
+func toNutritionGuidanceOutput(g profile.NutritionGuidance) NutritionGuidanceOutput {
+	return NutritionGuidanceOutput{
+		Restrictions:    toNutritionNoteOutputs(g.Restrictions),
+		Recommendations: toNutritionNoteOutputs(g.Recommendations),
+	}
+}
+
+func toNutritionNoteOutputs(notes []profile.NutritionNote) []NutritionNoteOutput {
+	if len(notes) == 0 {
+		return nil
+	}
+	out := make([]NutritionNoteOutput, len(notes))
+	for i, n := range notes {
+		out[i] = NutritionNoteOutput{Text: n.Text, Reason: n.Reason}
 	}
 	return out
 }

@@ -1,0 +1,187 @@
+# Nutrition Guidance: диетические рекомендации и ограничения в MedicalProfile
+
+## Проблема
+
+Miranda хочет уметь предлагать пользователю план питания — конкретные блюда, подобранные не только
+по КБЖУ, но и с учётом медицинских ограничений. Например, после холецистэктомии (удаление желчного
+пузыря) должно строго ограничиваться жирное; жалоба на запоры в симптомах должна тянуть за собой
+"меньше мучного, больше клетчатки". Сегодня `MedicalProfile` (`docs/domain/05-medical-profile.md`)
+ничего такого не содержит — там есть сырые `activeDiagnoses`/`allergies`/... но нет вывода "что из
+этого следует есть/не есть". Строить такой вывод на стороне Miranda означало бы, что она сама
+занимается медицинским рассуждением над диагнозами — прямое нарушение уже зафиксированного в
+`../CLAUDE.md` разделения "Miranda — оркестратор... Medical/domain reasoning stays inside this
+service, Miranda never analyzes medical data itself".
+
+Это не задача агрегации (как остальные поля `MedicalProfile`, которые `ProfileBuilder` сегодня
+собирает `Без LLM`, см. `05-medical-profile.md` §6). Сопоставление диагноза "холецистэктомия" со
+строгим ограничением жирной пищи, или жалобы "запоры" с рекомендацией по клетчатке — это открытое
+медицинское рассуждение над свободным текстом диагнозов и симптомов, ровно того же рода, что уже
+единственно решается в этом сервисе через LLM (Structured Extraction, `internal/decline`'s
+сопоставление текста с кандидатами) — никогда захардкоженной таблицей "диагноз → правило", потому
+что формулировки диагнозов/симптомов never нормализованы до фиксированного словаря.
+
+## Идея
+
+### 1. Новое поле — структурированное, не одна строка текста
+
+`MedicalProfile.nutritionGuidance`:
+
+```go
+// NutritionNote — один пункт диетической рекомендации/ограничения с
+// коротким медицинским обоснованием, а не голый факт "нельзя жирное" без
+// объяснения, откуда оно взялось.
+type NutritionNote struct {
+    Text   string // "Строго ограничить жирную пищу"
+    Reason string // "После холецистэктомии — снижена выработка желчи, жир переваривается хуже"
+}
+
+type NutritionGuidance struct {
+    Restrictions    []NutritionNote
+    Recommendations []NutritionNote
+    GeneratedAt     time.Time
+}
+```
+
+Два отдельных списка, а не один список с полем `kind` — так же, как остальной `Profile` уже держит
+`ActiveMedications`/`Allergies`/... отдельными top-level срезами, а не одним смешанным списком,
+который клиенту пришлось бы фильтровать. `Reason` — не для machine-checkable трассировки (см. ниже
+отклонённую альтернативу), а чтобы Miranda могла объяснить пользователю "почему" без повторного
+рассуждения, и чтобы при разборе `logs/llm.log` было видно, на основании чего сгенерирован каждый
+пункт — та же роль, что уже играют `LabResultSummary.DocumentTitle` и `DiagnosisSummary.Overdue`
+для остальных полей `Profile`.
+
+**Отклонено:** привязывать каждый пункт к конкретному `diagnosisId`/`eventId`, по аналогии с
+`sources` в ответе `medical.ask` (`docs/domain/12-self-reported-events.md` §6). Здесь пункт часто
+синтезирован сразу из нескольких факторов (диагноз *и* симптом могут усиливать одну и ту же
+рекомендацию) — это не point-in-time факт с одним источником, который стоит верифицировать по одной
+ссылке. Ближайший аналог такого сопоставления в кодовой базе, `internal/decline`, и тот возвращает
+максимум один id из явного списка кандидатов на один вызов; здесь потребовалось бы возвращать
+множество id на пункт — заметно сложнее, а задача этого не требует. Короткого `Reason`-текста
+достаточно для объяснимости.
+
+### 2. Кто вызывает LLM — `Pipeline.rebuildProfile`, не `ProfileBuilder`
+
+`ProfileBuilder` (`internal/profile.Builder`) сегодня — чистая агрегация, явно `Без LLM`
+(`05-medical-profile.md` §6). Вместо того чтобы переносить эту черту, генерация `NutritionGuidance`
+остаётся отдельным шагом в `Pipeline.rebuildProfile` (`internal/pipeline/pipeline.go:683`) —
+Builder по-прежнему строит `Profile` целиком без LLM, `rebuildProfile` отдельно вызывает новый
+collaborator и дописывает результат в уже собранный `Profile` перед `profileStore.Replace`. Это тот
+же принцип, что уже используется в этом файле для embeddings (`indexEmbedding`,
+`pipeline.go:590-603`) — отдельная, не относящаяся к "чистой" сборке стадия, оркestрируемая
+`Pipeline`, а не спрятанная внутрь другого Domain Service. `05-medical-profile.md` §6 нужно
+поправить не отменой "Без LLM", а уточнением: этим предложением по-прежнему верно для
+`ProfileBuilder`/каждого поля кроме одного нового — `nutritionGuidance`, которое собирается
+отдельным, явно LLM-based Domain Service ("Nutrition Advisor", по аналогии с уже описанными в
+`01-overview.md` §7 Medication/Diagnosis Resolver).
+
+Новый пакет `internal/nutrition` — по образцу `internal/decline` (маленький пакет, одна Structured
+LLM-задача, свой prompt, `SchemaName`, `Schema()`): принимает короткий, уже собранный набор входных
+данных (см. §6-7 ниже) и возвращает `profile.NutritionGuidance`. `internal/nutrition` импортирует
+`internal/profile` за типом результата; `internal/profile` не импортирует `internal/nutrition` —
+никакого цикла, тот же однонаправленный паттерн, что у `internal/normalization`/пакетов, что в неё
+пишут.
+
+### 3. LLM-провайдер — переиспользуем `extraction_provider`, не заводим новый
+
+`rebuildProfile` вызывается и из document-пайплайна (`UploadDocument`/`ReprocessDocument`), и из
+`internal/pipeline/events.go`'s `medical.log_event`/`delete_event` — оба уже часть "семейства"
+Document Pipeline (`../CLAUDE.md`: "One-shot `llm.Provider.Structured`/`Chat` calls"), которое уже
+делит один `extractionProvider`/`extractionEscalation` между Stage 2a/2b, Self-Reported Event
+extraction и `internal/decline` (см. `pipeline.New`'s doc comment). Генерация Nutrition Guidance —
+такой же одноразовый Structured-вызов той же природы, встаёт в этот же список, а не заводит
+отдельный `llm.nutrition_provider` в конфиге. Если на практике окажется, что этому шагу нужна другая
+модель/бюджет — расщепить его так же, как уже был расщеплён `ocr_provider`/`extraction_provider`, а
+не заранее готовить отдельный слот конфигурации под гипотетическую будущую потребность.
+
+### 4. Когда генерировать — при каждой пересборке профиля, с коротким замыканием на пустой вход
+
+Возраст сам по себе не медицинское ограничение — вызывать LLM ради "ешьте сбалансированно" для
+пользователя без единого активного диагноза, аллергии или недавнего симптома означало бы платить за
+вызов ради общего совета не про здоровье, а про питание вообще (не медицинская экспертиза этого
+сервиса, см. §8). Поэтому `rebuildProfile` пропускает вызов `nutrition.Generate` целиком (оставляя
+`NutritionGuidance` пустым), если одновременно пусты `ActiveDiagnoses`+`ChronicConditions`,
+`Allergies` и список недавних симптомов (§6) — тот же дух, что уже описан в
+`05-medical-profile.md` §4 для пустого профиля целиком ("нет ни одного READY-документа — пустые
+массивы, не ошибка").
+
+### 5. Отказоустойчивость — при ошибке генерации сохраняем предыдущее значение, не затираем
+
+`MedicalProfile` не имеет частичного `Update*` — только полный `Replace`
+(`05-medical-profile.md` §5). Значит, транзиентная ошибка LLM-вызова на каждой пересборке будет
+стирать последнее удачно сгенерированное `NutritionGuidance`, если ничего не предпринять — тогда как
+для остальных 7 полей это не проблема (они не зависят от LLM и переобсчитываются детерминированно
+каждый раз). Поэтому при ошибке `nutrition.Generate` (или коротком замыкании §4, которое — не
+ошибка, а намеренная пустота) `rebuildProfile`:
+
+- логирует `Warn` и продолжает — так же, как уже сделано для сбоя генерации embedding
+  (`pipeline.go:591,595,603`), никогда не проваливает весь `upload_document`/`log_event` из-за
+  необязательного шага;
+- при настоящей ошибке (не при §4-коротком замыкании) читает предыдущий сохранённый `Profile` через
+  `profileStore.Get` и переносит его `NutritionGuidance` как есть в новый `Profile` перед `Replace`,
+  вместо того чтобы обнулять — иначе один неудачный вызов LLM посреди дня стирал бы то, что было
+  корректно сгенерировано вчера. Для самой первой сборки профиля (предыдущего `Profile` ещё нет)
+  результат ошибки — пустое `NutritionGuidance`, что уже валидно само по себе (§4 того же рода
+  пустота, `05-medical-profile.md` §4's "профиль ещё не построен").
+
+### 6. Симптомы — новый `SelfReportedEventRepository.ListByUser`, дата — уже существующий VO
+
+`SelfReportedEventRepository` (`internal/storage/self_reported_event.go`) сегодня не имеет ни
+одного `List*`-метода вообще (`docs/domain/12-self-reported-events.md` §7 тоже не описывает его) —
+добавляется `ListByUser(ctx, userID string, filter storage.DateRange) ([]SelfReportedEvent, error)`,
+переиспользуя `storage.DateRange`, уже введённый для `MedicationIntakeRepository.ListByUser`
+(`internal/storage/medication_intake.go:29`), а не новый параллельный тип фильтра.
+`rebuildProfile` вызывает его с `From: now.AddDate(0, -1, 0)` — буквально "не старше месяца" из
+задачи, тем же инжектируемым `now`, которым уже пользуется `profile.Builder` для детерминированных
+тестов (`profile.go`'s `Builder.now`). `category == "symptom"` и `status == READY` фильтруются в Go
+после выборки, а не в SQL — тот же паттерн, что `resolveActiveDiagnoses` уже использует для фильтра
+по статусу (`profile.go:347`): выборка одного пользователя за месяц мала по объёму (household-scale
+данные), доп. `WHERE` не оправдывает отдельного параметра фильтра ради одной колонки.
+
+### 7. Возраст и пол — через новый, но давно описанный `UserRepository`
+
+`docs/domain/02-user.md` §7 уже документирует `UserRepository.FindByID(id) (User, error)`, но в
+коде его никогда не было — единственный сегодняшний потребитель `birthDate`/`sex`,
+`internal/mcpserver`'s `userGate`, читает `config.UserConfig` напрямую, потому что ему нужны были
+только `sharedWith`/`encryption`, не `birthDate`/`sex`. Nutrition Advisor — первый код, которому
+реально нужны эти два поля, так что реализуется наконец сам `UserRepository`: узкий интерфейс в
+`internal/pipeline` (`FindByID(ctx, id) (User{BirthDate *time.Time, Sex string}, error)`),
+реализованный небольшим адаптером над `[]config.UserConfig` (аналог того, как `storage.NewXxxRepository`
+оборачивает SQLite — здесь оборачивается in-memory конфигурация, как и предполагает
+`02-user.md` §3). `Pipeline.New` получает новую зависимость; `main.go` и `cmd/medical-dev` — оба
+уже строящие `Pipeline` — прокидывают `cfg.Users` в неё.
+
+Модели передаётся возраст в годах (вычисленный от `birthDate` на момент `now`), не заранее
+рассортированная категория "ребёнок"/"пожилой" — решение, где проходит граница возрастных
+рекомендаций, остаётся за prompt'ом/моделью, а не захардкожено здесь. `sex` передаётся, только если
+задан (поле опционально, `02-user.md` §2) — используется моделью для немногих специфичных по полу
+рекомендаций (например, железо), не обязателен для остального рассуждения.
+
+### 8. Область ответственности — медицинские ограничения, не меню и не КБЖУ
+
+Результат — короткие пункты вида "ограничить жирную пищу", "увеличить клетчатку в рационе", а не
+рецепты, конкретные продукты или расчёт калорийности. Подбор блюд с учётом КБЖУ — компетенция
+Miranda, не медицинская экспертиза этого сервиса (`../CLAUDE.md`'s разделение сохраняется: этот
+сервис поставляет медицинские ограничения/рекомендации, Miranda комбинирует их с собственными
+знаниями о питании и КБЖУ, чтобы построить конкретный план). Prompt `internal/nutrition` явно
+запрещает модели предлагать конкретные блюда/продукты/граммовки — только направление ограничения и
+краткое обоснование, ровно то, что описывает `NutritionNote` (§1).
+
+## Что дальше
+
+Изменения, не меняющие ни один существующий MCP-контракт, только добавляющие новый раздел:
+
+- `internal/storage/self_reported_event.go` — новый `ListByUser` в `SelfReportedEventRepository`.
+- новый `internal/nutrition` — `Generator`/`Input`/`Schema`/prompt, по образцу `internal/decline`;
+  тесты через `llmtest.FakeProvider` (`../CLAUDE.md`'s "Running things" §Tests).
+- `internal/profile/profile.go` — `NutritionGuidance`/`NutritionNote` (чистые данные) в `Profile`.
+- `internal/pipeline/pipeline.go` — новая зависимость `UserRepository`/`nutrition.Generator`,
+  расширение `rebuildProfile` (§2, §4, §5); `internal/config` — небольшой адаптер `[]UserConfig` →
+  `pipeline.UserRepository`.
+- `cmd/miranda-medical-card/main.go`, `cmd/medical-dev/main.go` — прокинуть `cfg.Users` и новый
+  provider в `pipeline.New`.
+- `internal/mcpserver/profile.go` — `NutritionGuidanceOutput` в `ProfileOutput`/`toProfileOutput`.
+- `docs/domain/05-medical-profile.md` §2 (новое поле), §6 (уточнить "Без LLM" — верно для каждого
+  поля, кроме `nutritionGuidance`, которое строит новый LLM-based Domain Service); `docs/mcp/05-profile.md`
+  — новый раздел с примером JSON, по образцу §7-10.
+- Тесты на §4 (короткое замыкание при пустом входе) и §5 (перенос предыдущего значения при ошибке)
+  отдельно от happy path — оба случая легко не заметить в реализации.

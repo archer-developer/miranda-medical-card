@@ -1,7 +1,11 @@
 // Package profile implements ProfileBuilder (docs/domain/05-medical-profile.md
 // §6, docs/domain/01-overview.md §7) — reads a user's current Medication/
 // Diagnosis/Procedure/Allergy/LabResult/VitalSign entities across every
-// document and aggregates them into one MedicalProfile "snapshot". No LLM.
+// document and aggregates them into one MedicalProfile "snapshot". No LLM —
+// with one exception, Profile.NutritionGuidance, which Builder itself never
+// touches (see that field's own doc comment and
+// docs/adr/006-nutrition-guidance.md §2): every other field here is filled
+// in by Build below.
 //
 // The Medication/Diagnosis Resolvers described in docs/domain/01-overview.md
 // §7 live here too (resolveActiveMedications/resolveActiveDiagnoses):
@@ -35,7 +39,47 @@ type Profile struct {
 	Vaccinations      []ProcedureSummary
 	LatestLabResults  []LabResultSummary
 	LatestVitalSigns  []VitalSignSummary
+	// NutritionGuidance is the one field Builder itself never sets — see
+	// this package's own doc comment and docs/adr/006-nutrition-guidance.md
+	// §2: everything else above is pure aggregation over already-stored
+	// entities, computed fresh by Build below, but dietary
+	// restrictions/recommendations require open medical reasoning over
+	// free-text diagnoses/symptoms that only an LLM call can do. That call
+	// is made by internal/nutrition, orchestrated from
+	// internal/pipeline.Pipeline.rebuildProfile (not from Build), which
+	// fills this field in on the Profile Build already returned before
+	// persisting it.
+	NutritionGuidance NutritionGuidance
 	RebuiltAt         time.Time
+}
+
+// NutritionNote is one dietary restriction or recommendation with a short
+// medical reason it follows from — see docs/adr/006-nutrition-guidance.md
+// §1 for why Reason exists (Miranda can explain "why" without
+// re-deriving it, and it's what a human reviewing logs/llm.log checks a
+// generated item against) and why it's not a machine-checkable
+// diagnosisId/eventId citation (an item is often synthesized from several
+// inputs at once, not traceable to one).
+type NutritionNote struct {
+	Text   string
+	Reason string
+}
+
+// NutritionGuidance mirrors docs/domain/05-medical-profile.md's
+// nutritionGuidance field — Restrictions/Recommendations are separate
+// slices, not one list with a kind flag, matching how every other section
+// of Profile is already its own top-level slice rather than one the caller
+// has to filter (docs/adr/006-nutrition-guidance.md §1).
+type NutritionGuidance struct {
+	Restrictions    []NutritionNote
+	Recommendations []NutritionNote
+	// GeneratedAt is when this specific guidance was produced — distinct
+	// from Profile.RebuiltAt, which is stamped on every rebuild even when
+	// generation failed and a previous NutritionGuidance was carried
+	// forward unchanged (docs/adr/006-nutrition-guidance.md §5). A gap
+	// between the two means the guidance is stale relative to the rest of
+	// the Profile.
+	GeneratedAt time.Time
 }
 
 type DiagnosisSummary struct {

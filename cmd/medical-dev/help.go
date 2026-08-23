@@ -29,10 +29,11 @@ type commandHelp struct {
 var commandCatalog = []commandHelp{
 	{
 		Name:    "profile",
-		Summary: "Show a user's Medical Profile (JSON)",
-		Usage:   "profile --user <id>",
+		Summary: "Show a user's Medical Profile (JSON); --rebuild re-runs aggregation against current data first",
+		Usage:   "profile --user <id> [--rebuild]",
 		Examples: []string{
 			`profile --user alex`,
+			`profile --user alex --rebuild`,
 		},
 	},
 	{

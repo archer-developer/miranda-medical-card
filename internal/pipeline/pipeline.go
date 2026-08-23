@@ -23,6 +23,7 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
 	"github.com/archer-developer/miranda-medical-card/internal/normalization"
+	"github.com/archer-developer/miranda-medical-card/internal/nutrition"
 	"github.com/archer-developer/miranda-medical-card/internal/planmatch"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -110,6 +111,11 @@ type Pipeline struct {
 	timelineRepo   storage.TimelineRepository
 	profileStore   *profile.Store
 	profileBuilder *profile.Builder
+	// users is only consulted by rebuildProfile, for Nutrition Advisor's
+	// age/sex input (docs/adr/006-nutrition-guidance.md §7) — nil is a
+	// valid value (see rebuildProfile), so callers that don't care about
+	// Nutrition Guidance (most tests) can leave it unset.
+	users UserRepository
 
 	selfReportedEvents storage.SelfReportedEventRepository
 	medicationIntakes  storage.MedicationIntakeRepository
@@ -144,8 +150,12 @@ type Pipeline struct {
 // EmbeddingRepository.ListByUser scopes a search to, so it must stay
 // consistent for vectors to remain comparable). files and s are opened once
 // at process startup and shared across every request. A nil logger falls
-// back to slog.Default().
-func New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger) *Pipeline {
+// back to slog.Default(). users, if non-nil, is consulted by rebuildProfile
+// for Nutrition Advisor's age/sex input (docs/adr/006-nutrition-guidance.md
+// §7) — a nil users is valid and just means every rebuilt Profile's
+// Nutrition Guidance is generated without age/sex context, the same as an
+// unset User.BirthDate/Sex would.
+func New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation extraction.Provider, embedder embedding.Embedder, embeddingProvider, embeddingModel string, files *filestore.Store, s *storage.Store, logger *slog.Logger, users UserRepository) *Pipeline {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -182,6 +192,7 @@ func New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation ex
 		timelineRepo:   storage.NewTimelineRepository(s),
 		profileStore:   profile.NewStore(storage.NewProfileRepository(s)),
 		profileBuilder: profile.NewBuilder(medications, diagnoses, procedures, allergies, labResults, vitalSigns, documentRepo),
+		users:          users,
 
 		selfReportedEvents: storage.NewSelfReportedEventRepository(s),
 		medicationIntakes:  storage.NewMedicationIntakeRepository(s),
@@ -686,16 +697,180 @@ func (p *Pipeline) rebuildTimeline(ctx context.Context, userID, documentID, docu
 	return nil
 }
 
+// RebuildProfile re-runs Medical Profile aggregation for userID against
+// already-persisted data and replaces the stored MedicalProfile — exactly
+// the same step every document upload/reprocess and self-reported event
+// already triggers automatically via rebuildProfile below. Exposed as its
+// own public method purely so medical-dev's "profile --rebuild" flag
+// (docs/cli/medical_dev.md §9) can trigger it by hand — e.g. after a
+// Profile-shaping change ships (new aggregation logic, a new field), to
+// refresh existing users' stored snapshots without re-running OCR/
+// Structured Extraction on every one of their documents. Not otherwise
+// called from within this package — internal call sites use rebuildProfile
+// directly since they don't need the freshly rebuilt Profile value back.
+func (p *Pipeline) RebuildProfile(ctx context.Context, userID string) (profile.Profile, error) {
+	if err := p.rebuildProfile(ctx, userID); err != nil {
+		return profile.Profile{}, err
+	}
+	return p.GetProfile(ctx, userID)
+}
+
 // rebuildProfile fully rebuilds and replaces userID's MedicalProfile — run
 // after every successful document import, per
 // docs/domain/05-medical-profile.md §4 ("пересобирается полностью после
-// каждого успешного upload_document").
+// каждого успешного upload_document"). Nutrition Guidance
+// (docs/adr/006-nutrition-guidance.md) is generated as a separate step
+// after profileBuilder.Build, not inside Build itself — see that ADR's §2
+// for why profile.Builder stays LLM-free and this orchestration lives here
+// instead, the same way indexEmbedding below is a separate stage rather
+// than something Build does.
 func (p *Pipeline) rebuildProfile(ctx context.Context, userID string) error {
 	built, err := p.profileBuilder.Build(ctx, userID)
 	if err != nil {
 		return err
 	}
+	built.NutritionGuidance = p.nutritionGuidance(ctx, userID, built)
 	return p.profileStore.Replace(ctx, built)
+}
+
+// nutritionGuidance produces the NutritionGuidance to store on this rebuild
+// of userID's Profile — built is the just-computed Profile (not yet
+// persisted), used for its ActiveDiagnoses (already a superset of
+// ChronicConditions, docs/domain/05-medical-profile.md §2) and Allergies.
+// Never returns an error: every failure mode (no dietary-relevant input,
+// provider error, malformed result) is handled here and logged, per
+// docs/adr/006-nutrition-guidance.md §4-5 — Nutrition Guidance is an
+// enrichment, not a required part of a successful rebuild, the same
+// posture indexEmbedding's own failure handling already takes for
+// Embedding Search.
+func (p *Pipeline) nutritionGuidance(ctx context.Context, userID string, built profile.Profile) profile.NutritionGuidance {
+	now := time.Now().UTC()
+
+	input := nutrition.Input{
+		Diagnoses: diagnosisNames(built.ActiveDiagnoses),
+		Allergies: allergyDescriptions(built.Allergies),
+	}
+	if symptoms, err := p.recentSymptoms(ctx, userID, now); err != nil {
+		p.logger.Warn("pipeline: list recent self-reported symptoms for nutrition guidance failed", "userId", userID, "error", err)
+	} else {
+		input.RecentSymptoms = symptoms
+	}
+	if p.users != nil {
+		if u, err := p.users.FindByID(ctx, userID); err != nil {
+			p.logger.Warn("pipeline: find user for nutrition guidance failed", "userId", userID, "error", err)
+		} else {
+			input.AgeYears = ageYears(u.BirthDate, now)
+			input.Sex = u.Sex
+		}
+	}
+
+	// §4: nothing dietary-relevant to reason over — skip the call
+	// entirely rather than pay for a generic, non-medical answer. This is
+	// not an error, so no carry-forward of a previous value below: an
+	// empty Profile really does mean "no known restrictions right now."
+	if input.Empty() {
+		return profile.NutritionGuidance{}
+	}
+
+	guidance, err := nutrition.Generate(ctx, p.extractionProvider, input, now)
+	if err == nil {
+		return guidance
+	}
+	p.logger.Warn("pipeline: generate nutrition guidance failed", "userId", userID, "error", err)
+
+	// §5: MedicalProfile only supports a full Replace, so doing nothing
+	// here would silently wipe out yesterday's successfully generated
+	// guidance on every transient LLM failure. Carry the previous stored
+	// value forward instead — a stale-but-correct guidance beats losing it
+	// for one failed call. No previous Profile (first-ever build, or a
+	// user who's never had one generated) just yields the zero value,
+	// which is already valid (docs/domain/05-medical-profile.md §4).
+	previous, found, err := p.profileStore.Get(ctx, userID)
+	if err != nil {
+		p.logger.Warn("pipeline: read previous profile for nutrition guidance carry-forward failed", "userId", userID, "error", err)
+		return profile.NutritionGuidance{}
+	}
+	if !found {
+		return profile.NutritionGuidance{}
+	}
+	return previous.NutritionGuidance
+}
+
+// recentSymptoms returns the descriptions of userID's "symptom"-category
+// self-reported events with OccurredAt in the last month, oldest first —
+// docs/adr/006-nutrition-guidance.md §6's "не старше месяца". Filters
+// Category/Status in Go rather than in SQL (only the date bound is pushed
+// down via storage.DateRange) — the same split resolveActiveDiagnoses
+// already uses for status filtering in internal/profile, reasonable here
+// too since one user's one-month event list is never large.
+func (p *Pipeline) recentSymptoms(ctx context.Context, userID string, now time.Time) ([]string, error) {
+	from := now.AddDate(0, -1, 0)
+	events, err := p.selfReportedEvents.ListByUser(ctx, userID, storage.DateRange{From: &from})
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: list self-reported events: %w", err)
+	}
+	var symptoms []string
+	for _, e := range events {
+		if e.Category != "symptom" || e.Status != storage.DocumentStatusReady {
+			continue
+		}
+		text := e.Description
+		if text == "" {
+			// Structuring found nothing (docs/domain/12-self-reported-events.md
+			// §3's invariant: still saved READY) — fall back to the raw
+			// text rather than dropping the symptom from input entirely.
+			text = e.RawText
+		}
+		if text != "" {
+			symptoms = append(symptoms, text)
+		}
+	}
+	return symptoms, nil
+}
+
+func diagnosisNames(diagnoses []profile.DiagnosisSummary) []string {
+	if len(diagnoses) == 0 {
+		return nil
+	}
+	names := make([]string, len(diagnoses))
+	for i, d := range diagnoses {
+		names[i] = d.Name
+	}
+	return names
+}
+
+func allergyDescriptions(allergies []profile.AllergySummary) []string {
+	if len(allergies) == 0 {
+		return nil
+	}
+	descriptions := make([]string, len(allergies))
+	for i, a := range allergies {
+		if a.Reaction == "" {
+			descriptions[i] = a.Substance
+		} else {
+			descriptions[i] = fmt.Sprintf("%s (%s)", a.Substance, a.Reaction)
+		}
+	}
+	return descriptions
+}
+
+// ageYears computes a whole-years age from birthDate as of now — nil if
+// birthDate is unknown. Deliberately a plain number, not a bucketed
+// "child"/"elderly" label — see docs/adr/006-nutrition-guidance.md §7:
+// where age-band reasoning kicks in is left to the prompt/model, not
+// hardcoded here.
+func ageYears(birthDate *time.Time, now time.Time) *int {
+	if birthDate == nil {
+		return nil
+	}
+	years := now.Year() - birthDate.Year()
+	if now.YearDay() < birthDate.YearDay() {
+		years--
+	}
+	if years < 0 {
+		years = 0
+	}
+	return &years
 }
 
 // persistCanonicalUnits records the canonical unit for any (userID,

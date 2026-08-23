@@ -36,6 +36,17 @@ type SelfReportedEventRepository interface {
 	// DocumentRepository.UpdateExtracted's reasoning for being separate
 	// from UpdateStatus.
 	UpdateExtracted(ctx context.Context, id, userID, category, description, medicationIntakeID string) error
+	// ListByUser returns userID's events with OccurredAt inside filter,
+	// oldest first — reuses DateRange (introduced for
+	// MedicationIntakeRepository.ListByUser) rather than a parallel filter
+	// type. Category/Status filtering (e.g. "symptom"-only,
+	// "READY"-only, for docs/adr/006-nutrition-guidance.md §6's recent-
+	// symptoms input) is left to the caller: a household-scale one-user
+	// date-bounded result set is small enough that pushing every predicate
+	// into SQL isn't worth a wider filter type, the same call
+	// resolveActiveDiagnoses (internal/profile/profile.go) already makes
+	// for status filtering.
+	ListByUser(ctx context.Context, userID string, filter DateRange) ([]SelfReportedEvent, error)
 	Remove(ctx context.Context, id, userID string) error
 }
 
@@ -115,6 +126,42 @@ func (r *sqliteSelfReportedEventRepository) UpdateExtracted(ctx context.Context,
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (r *sqliteSelfReportedEventRepository) ListByUser(ctx context.Context, userID string, filter DateRange) ([]SelfReportedEvent, error) {
+	query := selfReportedEventSelectColumns + ` FROM self_reported_events WHERE user_id = ?`
+	args := []any{userID}
+	if filter.From != nil {
+		query += ` AND occurred_at >= ?`
+		args = append(args, filter.From.Unix())
+	}
+	if filter.To != nil {
+		query += ` AND occurred_at <= ?`
+		args = append(args, filter.To.Unix())
+	}
+	query += ` ORDER BY occurred_at ASC`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list self-reported events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []SelfReportedEvent
+	for rows.Next() {
+		var e SelfReportedEvent
+		var occurredAt, loggedAt int64
+		if err := rows.Scan(&e.ID, &e.UserID, &e.RawText, &occurredAt, &loggedAt, &e.Status, &e.Category, &e.Description, &e.MedicationIntakeID); err != nil {
+			return nil, fmt.Errorf("storage: scan self-reported event: %w", err)
+		}
+		e.OccurredAt = time.Unix(occurredAt, 0).UTC()
+		e.LoggedAt = time.Unix(loggedAt, 0).UTC()
+		result = append(result, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: iterate self-reported events: %w", err)
+	}
+	return result, nil
 }
 
 func (r *sqliteSelfReportedEventRepository) Remove(ctx context.Context, id, userID string) error {

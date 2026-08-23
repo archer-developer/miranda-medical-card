@@ -37,7 +37,7 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"matchId":"med_doc1_1"}`),
 	})
-	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	completed, err := p.CompleteMedication(ctx, "user1", "я закончил принимать антибиотик")
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestCompleteMedication_HappyPath(t *testing.T) {
 func TestCompleteMedication_NoActiveMedicationsAtAll(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.CompleteMedication(ctx, "user1", "я закончил курс")
 	require.Error(t, err)
@@ -84,7 +84,7 @@ func TestCompleteMedication_SupersededActiveRowIsNeverACandidate(t *testing.T) {
 		ID: "med_doc2_0", UserID: "user1", DocumentID: "doc2", DrugName: "розувастатин",
 		Status: normalization.MedicationStatusDiscontinued, EndedAt: mustDate("2026-01-01"),
 	}))
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.CompleteMedication(ctx, "user1", "закончил розувастатин")
 	require.Error(t, err)
@@ -104,7 +104,7 @@ func TestCompleteMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) 
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{}`), // model found no confident match
 	})
-	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.CompleteMedication(ctx, "user1", "что-то непонятное закончил")
 	require.Error(t, err)
@@ -120,7 +120,7 @@ func TestCompleteMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) 
 func TestCompleteMedication_EmptyTextRejected(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.CompleteMedication(ctx, "user1", "   ")
 	require.Error(t, err)
@@ -142,7 +142,7 @@ func TestStartMedication_HappyPath(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"matchId":"med_doc1_1"}`),
 	})
-	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	started, err := p.StartMedication(ctx, "user1", "я начал принимать амоксициллин")
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestStartMedication_HappyPath(t *testing.T) {
 func TestStartMedication_NoPrescribedMedicationsAtAll(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.StartMedication(ctx, "user1", "я начал курс")
 	require.Error(t, err)
@@ -181,7 +181,7 @@ func TestStartMedication_AlreadyActiveMedicationIsNeverACandidate(t *testing.T) 
 	require.NoError(t, medRepo.Add(ctx, normalization.Medication{
 		ID: "med_doc1_0", UserID: "user1", DocumentID: "doc1", DrugName: "Розувастатин", Status: normalization.MedicationStatusActive,
 	}))
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.StartMedication(ctx, "user1", "начал розувастатин")
 	require.Error(t, err)
@@ -201,7 +201,7 @@ func TestStartMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{}`), // model found no confident match
 	})
-	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.StartMedication(ctx, "user1", "что-то непонятное начал")
 	require.Error(t, err)
@@ -217,7 +217,7 @@ func TestStartMedication_NoConfidentMatchListsCurrentDrugNames(t *testing.T) {
 func TestStartMedication_EmptyTextRejected(t *testing.T) {
 	ctx := context.Background()
 	s, fs := newTestBackend(t)
-	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	p := pipeline.New(llmtest.New("fake"), nil, llmtest.New("fake"), nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	_, err := p.StartMedication(ctx, "user1", "   ")
 	require.Error(t, err)

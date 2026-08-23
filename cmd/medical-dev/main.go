@@ -5,8 +5,11 @@
 // ("использовать те же Application Services, что и MCP API... не
 // обращаться напрямую к Repository").
 //
-// Implemented: profile, timeline, planned-actions, document, ask, pipeline
-// (the read-oriented commands directly useful for inspecting a running
+// Implemented: profile (its --rebuild flag re-runs Profile aggregation
+// against already-persisted data before printing it, see
+// docs/cli/medical_dev.md §9 and pipeline.Pipeline.RebuildProfile's own doc
+// comment), timeline, planned-actions, document, ask, pipeline (the
+// read-oriented commands directly useful for inspecting a running
 // deployment's data, plus pipeline for re-running the Processing Pipeline
 // against an already-imported document with full Debug-level tracing to
 // stderr — docs/cli/medical_dev.md §13. --stage picks which document-scoped
@@ -44,6 +47,7 @@
 //
 //	medical-dev              # or `medical-dev help` — full command list with examples (help.go)
 //	medical-dev profile --user alex
+//	medical-dev profile --user alex --rebuild
 //	medical-dev timeline --user alex [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--type TYPE]
 //	medical-dev planned-actions --user alex [--include-resolved]
 //	medical-dev document <documentId> --user alex
@@ -225,7 +229,7 @@ func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, l
 	if err != nil {
 		return nil, err
 	}
-	return pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger), nil
+	return pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger, pipeline.NewConfigUserRepository(cfg.Users)), nil
 }
 
 // buildProviders, firstAPIKey, resolveProvider, and resolveEscalationProvider
@@ -343,6 +347,16 @@ func printJSON(v any) error {
 func runProfile(args []string, cfg config.Config, store *storage.Store) error {
 	fs := flag.NewFlagSet("profile", flag.ExitOnError)
 	user := fs.String("user", "", "user id")
+	// rebuild re-runs Profile aggregation against already-persisted data
+	// before printing it (pipeline.Pipeline.RebuildProfile) instead of just
+	// reading back the last stored snapshot — useful after a Profile-
+	// shaping change ships (new aggregation logic, a new field) to refresh
+	// an existing user's snapshot without re-running OCR/Structured
+	// Extraction on any of their documents. Unlike every other medical-dev
+	// command, this one flag makes profile a write, not a read — see
+	// docs/cli/medical_dev.md §2's "любые операции, изменяющие данные,
+	// должны быть явно указаны пользователем", which --rebuild is.
+	rebuild := fs.Bool("rebuild", false, "rebuild the stored profile from current data before printing it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -353,6 +367,13 @@ func runProfile(args []string, cfg config.Config, store *storage.Store) error {
 	pl, err := newPipeline(cfg, store)
 	if err != nil {
 		return err
+	}
+	if *rebuild {
+		built, err := pl.RebuildProfile(context.Background(), *user)
+		if err != nil {
+			return err
+		}
+		return printJSON(built)
 	}
 	built, err := pl.GetProfile(context.Background(), *user)
 	if err != nil {
@@ -642,7 +663,10 @@ func runBackfillTitles(args []string, cfg config.Config, store *storage.Store) e
 	if err != nil {
 		return err
 	}
-	pl := pipeline.New(nil, nil, provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+	// users is nil — BackfillStudyTitle never triggers rebuildProfile (see
+	// this function's own doc comment: "no ... Profile ... rebuild"), so
+	// Nutrition Advisor's age/sex input is never consulted here.
+	pl := pipeline.New(nil, nil, provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger, nil)
 
 	docs, err := pl.ListDocuments(ctx, *user)
 	if err != nil {

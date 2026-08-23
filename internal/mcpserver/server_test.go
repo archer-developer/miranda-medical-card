@@ -59,7 +59,7 @@ func newTestSessionWithStore(t *testing.T, provider *llmtest.FakeProvider, users
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
 
-	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(storage.NewTimelineRepository(s)),
@@ -287,7 +287,7 @@ func TestServer_GetDocumentReturnsFileURI(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	fs, err := filestore.New(t.TempDir())
 	require.NoError(t, err)
-	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil)
+	pl := pipeline.New(provider, nil, provider, nil, llmtest.NewFakeEmbedder([]float32{0.1, 0.2}), "fake", "fake-model", fs, s, nil, nil)
 	registry := ask.NewRegistry(ask.NewTimelineProvider(storage.NewTimelineRepository(s)))
 	askRouter, err := router.New([]llm.Provider{provider}, nil, "fake")
 	require.NoError(t, err)
@@ -432,6 +432,14 @@ func TestServer_UploadDocument_FileURINotFoundRejected(t *testing.T) {
 func TestServer_LogEventThenDeleteEvent(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"symptom","description":"Головная боль"}`),
+	}, llmtest.StructuredResponse{
+		// log_event's rebuildProfile Nutrition Guidance call
+		// (docs/adr/006-nutrition-guidance.md) — the freshly logged
+		// symptom makes Input non-empty. delete_event's own rebuildProfile
+		// doesn't need a second scripted response: by the time it runs the
+		// event is already removed, so Input is empty again and Generate
+		// is short-circuited.
+		JSON: json.RawMessage(`{"restrictions":[],"recommendations":[]}`),
 	})
 	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
 
@@ -455,6 +463,10 @@ func TestServer_LogEventThenDeleteEvent(t *testing.T) {
 func TestServer_TimelineContentMirrorsStructuredContent(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"symptom","description":"Головная боль"}`),
+	}, llmtest.StructuredResponse{
+		// log_event's rebuildProfile Nutrition Guidance call — see the
+		// identical comment in TestServer_LogEventThenDeleteEvent above.
+		JSON: json.RawMessage(`{"restrictions":[],"recommendations":[]}`),
 	})
 	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
 

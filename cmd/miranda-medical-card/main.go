@@ -246,7 +246,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("main: init gemini embedder: %w", err)
 	}
 
-	pl := pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger)
+	pl := pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger, pipeline.NewConfigUserRepository(cfg.Users))
 
 	// timelineRepo is shared between TimelineProvider and
 	// SelfReportedEventProvider — both read the same timeline_events table,

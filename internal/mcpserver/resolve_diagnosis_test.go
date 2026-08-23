@@ -21,6 +21,10 @@ func TestServer_ResolveDiagnosis_HappyPath(t *testing.T) {
 	).WithStructured(
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"documentType":"consultation","diagnoses":[{"name":"ОРВИ","status":"active"}]}`)},
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"instrumentalFindings":[]}`)},
+		// index 2: rebuildProfile's Nutrition Guidance call
+		// (docs/adr/006-nutrition-guidance.md) — the uploaded document's
+		// active "ОРВИ" diagnosis makes Input non-empty, so this fires.
+		llmtest.StructuredResponse{JSON: json.RawMessage(`{"restrictions":[],"recommendations":[]}`)},
 	)
 	session, store := newTestSessionWithStore(t, provider, []config.UserConfig{{ID: "alex"}})
 
@@ -51,6 +55,7 @@ func TestServer_ResolveDiagnosis_HappyPath(t *testing.T) {
 	provider.WithStructured(
 		llmtest.StructuredResponse{}, // index 0, already consumed by upload's OCR/structured calls, never re-read
 		llmtest.StructuredResponse{}, // index 1, ditto (instrumentalFindings)
+		llmtest.StructuredResponse{}, // index 2, ditto (upload's rebuildProfile nutrition call)
 		llmtest.StructuredResponse{JSON: json.RawMessage(`{"matchId":"` + diagnosisID + `"}`)},
 	)
 
