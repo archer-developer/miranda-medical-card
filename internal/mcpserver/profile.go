@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,7 +26,7 @@ const profileFileLinkTTL = 5 * time.Minute
 func registerProfileTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, links *linkstore.Store, publicBaseURL string, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.profile",
-		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, past surgeries, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only. format=\"json\" (default) returns the full profile inline (activeDiagnoses, chronicConditions, activeMedications, allergies, vaccinations, surgeries, latestLabResults, latestVitalSigns, nutritionGuidance). format=\"file_uri\" instead returns {fileUri, expiresAt} — a short-lived (5 minute) link to that same JSON — use this when the goal is handing the data to another tool (e.g. code-execution-sandbox's upload_file, for PDF generation) rather than reading it yourself: retyping a large profile by hand is unreliable, a URI passed through server-to-server is not.",
+		Description: "Returns the aggregated current health state: active diagnoses, chronic conditions, current medications, allergies, vaccinations, past surgeries, latest lab results and vital signs, and dietary restrictions/recommendations. Does not perform analysis — data only. format=\"json\" (default) returns the full profile inline (activeDiagnoses, chronicConditions, activeMedications, allergies, vaccinations, surgeries, latestLabResults, latestVitalSigns, nutritionGuidance). format=\"file_uri\" instead returns {fileUri, expiresAt} — a short-lived (5 minute) link to that same JSON — use this when the goal is handing the data to another tool (e.g. code-execution-sandbox's upload_file, for PDF generation) rather than reading it yourself: retyping a large profile by hand is unreliable, a URI passed through server-to-server is not. fields=[...] restricts either shape to just the named top-level sections (e.g. [\"nutritionGuidance\", \"vaccinations\"]) instead of every section — use it when only one or two sections are actually needed, to avoid pulling (and paying context budget for) the rest of the profile.",
 	}, profileHandler(pl, gate, links, publicBaseURL, logger))
 }
 
@@ -37,6 +38,86 @@ type ProfileInput struct {
 	// behind a short-lived link and returns just that URI — see
 	// docs/adr/007-short-lived-file-links-for-profile-export.md.
 	Format string `json:"format,omitempty" jsonschema:"Response shape: \"json\" (default, full profile inline) or \"file_uri\" (a short-lived link to the same JSON — use when handing this straight to another tool, e.g. PDF generation, instead of reading it yourself)."`
+	// Fields optionally narrows the response to a subset of ProfileOutput's
+	// top-level sections (profileFields is the single source of truth for
+	// the valid names) instead of the full profile — added for callers that
+	// only need e.g. nutritionGuidance + vaccinations and shouldn't have to
+	// pull (and pay context budget for) the rest. Applies to both format
+	// shapes: for "json" it shrinks the inline payload, for "file_uri" it
+	// shrinks the staged JSON the link resolves to. Nil/empty means every
+	// section, unchanged from before this field existed.
+	Fields []string `json:"fields,omitempty" jsonschema:"Restrict the response to only these top-level profile sections instead of the full profile. One or more of: activeDiagnoses, chronicConditions, activeMedications, allergies, vaccinations, surgeries, latestLabResults, latestVitalSigns, nutritionGuidance. Omit for the full profile (default)."`
+}
+
+// profileFieldDescriptor pairs one ProfileOutput top-level JSON key with an
+// accessor for it — the single source of truth ProfileInput.Fields is
+// validated and filtered against, so the valid-values list can never drift
+// from what toProfileOutput actually populates. Order matches ProfileOutput's
+// own field order.
+type profileFieldDescriptor struct {
+	name  string
+	value func(ProfileOutput) any
+}
+
+var profileFields = []profileFieldDescriptor{
+	{"activeDiagnoses", func(o ProfileOutput) any { return o.ActiveDiagnoses }},
+	{"chronicConditions", func(o ProfileOutput) any { return o.ChronicConditions }},
+	{"activeMedications", func(o ProfileOutput) any { return o.ActiveMedications }},
+	{"allergies", func(o ProfileOutput) any { return o.Allergies }},
+	{"vaccinations", func(o ProfileOutput) any { return o.Vaccinations }},
+	{"surgeries", func(o ProfileOutput) any { return o.Surgeries }},
+	{"latestLabResults", func(o ProfileOutput) any { return o.LatestLabResults }},
+	{"latestVitalSigns", func(o ProfileOutput) any { return o.LatestVitalSigns }},
+	{"nutritionGuidance", func(o ProfileOutput) any { return o.NutritionGuidance }},
+}
+
+func profileFieldNames() []string {
+	names := make([]string, len(profileFields))
+	for i, f := range profileFields {
+		names[i] = f.name
+	}
+	return names
+}
+
+// validateProfileFields rejects any name ProfileInput.Fields carries that
+// toProfileOutput doesn't actually produce — the same "reject anything
+// Default()/here couldn't produce" spirit as internal/config's validate(),
+// applied to a hand-typed tool argument instead of a hand-edited YAML file.
+func validateProfileFields(fields []string) error {
+	valid := make(map[string]bool, len(profileFields))
+	for _, f := range profileFields {
+		valid[f.name] = true
+	}
+	for _, f := range fields {
+		if !valid[f] {
+			return mcpError(codeInvalidFields, "unknown field %q — must be one of: %s", f, strings.Join(profileFieldNames(), ", "))
+		}
+	}
+	return nil
+}
+
+// filterProfileOutput returns out unchanged (as ProfileOutput) when fields
+// is empty — the full-profile default, preserving the exact response shape
+// every caller before this field existed already relies on. A non-empty
+// fields instead returns a map containing only the requested sections, so a
+// section that wasn't asked for is genuinely absent from the JSON rather
+// than present-but-empty — the two are different things (no allergies vs.
+// allergies not requested) and callers should never have to guess which.
+func filterProfileOutput(out ProfileOutput, fields []string) any {
+	if len(fields) == 0 {
+		return out
+	}
+	requested := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		requested[f] = true
+	}
+	filtered := make(map[string]any, len(fields))
+	for _, f := range profileFields {
+		if requested[f.name] {
+			filtered[f.name] = f.value(out)
+		}
+	}
+	return filtered
 }
 
 type DiagnosisSummaryOutput struct {
@@ -131,16 +212,18 @@ type ProfileFileOutput struct {
 }
 
 // profileHandler's Out type parameter is `any`, not ProfileOutput, because
-// the tool has two possible response shapes depending on ProfileInput.Format
-// (see docs/adr/007 §5, "решить на этапе реализации... не переусложнять
-// специально под ADR") — mcp.AddTool's generic Out can't express that
-// directly. This still preserves the Content-mirrors-StructuredContent
-// invariant server_test.go checks: the SDK's toolForErr marshals whatever
-// concrete value the handler returns into both fields identically,
-// regardless of the static Out type (see modelcontextprotocol/go-sdk's
-// server.go toolForErr) — it only loses the auto-generated *output* JSON
-// Schema entry for medical.profile, which the tool Description above
-// compensates for in prose.
+// the tool has more than one possible response shape depending on
+// ProfileInput.Format (see docs/adr/007 §5, "решить на этапе реализации...
+// не переусложнять специально под ADR") and now also ProfileInput.Fields
+// (filterProfileOutput returns a map[string]any instead of ProfileOutput
+// once Fields narrows the response) — mcp.AddTool's generic Out can't
+// express either directly. This still preserves the
+// Content-mirrors-StructuredContent invariant server_test.go checks: the
+// SDK's toolForErr marshals whatever concrete value the handler returns
+// into both fields identically, regardless of the static Out type (see
+// modelcontextprotocol/go-sdk's server.go toolForErr) — it only loses the
+// auto-generated *output* JSON Schema entry for medical.profile, which the
+// tool Description above compensates for in prose.
 func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Store, publicBaseURL string, logger *slog.Logger) mcp.ToolHandlerFor[ProfileInput, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in ProfileInput) (*mcp.CallToolResult, any, error) {
 		subjectID, err := gate.resolveSubject(in.UserID, in.SubjectID)
@@ -154,6 +237,9 @@ func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Stor
 		if format != "json" && format != "file_uri" {
 			return nil, nil, mcpError(codeInvalidFormat, "format must be \"json\" or \"file_uri\", got %q", in.Format)
 		}
+		if err := validateProfileFields(in.Fields); err != nil {
+			return nil, nil, err
+		}
 
 		built, err := pl.GetProfile(ctx, subjectID)
 		if err != nil {
@@ -161,10 +247,10 @@ func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Stor
 			return nil, nil, mcpError(codeStorageError, "%v", err)
 		}
 
-		out := toProfileOutput(built)
+		result := filterProfileOutput(toProfileOutput(built), in.Fields)
 
 		if format == "file_uri" {
-			jsonBytes, err := json.Marshal(out)
+			jsonBytes, err := json.Marshal(result)
 			if err != nil {
 				return nil, nil, fmt.Errorf("mcpserver: marshal profile for file_uri: %w", err)
 			}
@@ -173,12 +259,12 @@ func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Stor
 				logger.Error("profile: mint file_uri link failed", "userId", in.UserID, "subjectId", subjectID, "error", err)
 				return nil, nil, mcpError(codeStorageError, "%v", err)
 			}
-			logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format, "expiresAt", expiresAt)
+			logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format, "fields", in.Fields, "expiresAt", expiresAt)
 			fileOut := ProfileFileOutput{FileURI: linkURI(publicBaseURL, linkID), ExpiresAt: expiresAt.Format(time.RFC3339)}
 			return nil, fileOut, nil
 		}
 
-		logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format)
+		logger.Info("profile", "userId", in.UserID, "subjectId", subjectID, "format", format, "fields", in.Fields)
 		// Deliberately no hand-built Content here (unlike other handlers in
 		// this package that write a short human summary) — see
 		// docs/adr/002-structured-profile-response.md: a caller reading
@@ -186,11 +272,11 @@ func profileHandler(pl *pipeline.Pipeline, gate *userGate, links *linkstore.Stor
 		// section (allergies, labs, vitals, ...), and a lossy one-line
 		// count of just 3 of the 7 sections was silently starving that
 		// caller of the rest. Leaving Content nil makes the SDK fall back
-		// to serializing the full, schema-validated `out` as the Content
+		// to serializing the full, schema-validated `result` as the Content
 		// text (see modelcontextprotocol/go-sdk's toolForErr) — the same
 		// value already returned as StructuredContent, so the two can
 		// never drift apart.
-		return nil, out, nil
+		return nil, result, nil
 	}
 }
 

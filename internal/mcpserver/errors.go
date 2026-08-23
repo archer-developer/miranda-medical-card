@@ -32,4 +32,5 @@ const (
 	codeDiagnosisNotFound       = "DIAGNOSIS_NOT_FOUND"
 	codeMedicationNotFound      = "MEDICATION_NOT_FOUND"
 	codeInvalidFormat           = "INVALID_FORMAT"
+	codeInvalidFields           = "INVALID_FIELDS"
 )

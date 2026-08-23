@@ -136,3 +136,58 @@ func TestServer_Profile_InvalidFormatReturnsError(t *testing.T) {
 	result := callTool(t, session, "medical.profile", map[string]any{"userId": "alex", "format": "xml"})
 	require.True(t, result.IsError)
 }
+
+// TestServer_Profile_FieldsRestrictsToRequestedSections is the regression
+// test for the fields parameter: a caller that only needs e.g. nutrition
+// guidance and vaccinations shouldn't get (or pay context budget for) the
+// other seven sections of the profile.
+func TestServer_Profile_FieldsRestrictsToRequestedSections(t *testing.T) {
+	provider := llmtest.New("fake")
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+
+	result := callTool(t, session, "medical.profile", map[string]any{
+		"userId": "alex", "fields": []string{"nutritionGuidance", "vaccinations"},
+	})
+	require.False(t, result.IsError, "%v", result.Content)
+
+	out := decodeStructured[map[string]any](t, result)
+	require.ElementsMatch(t, []string{"nutritionGuidance", "vaccinations"}, keysOf(out),
+		"only the requested sections must be present — a section that wasn't asked for must be genuinely absent, not present-but-empty")
+}
+
+// TestServer_Profile_FieldsOmittedReturnsFullProfile guards that leaving
+// fields unset preserves the exact pre-existing full-profile response shape
+// (every ProfileOutput field, not a map) — the default this parameter must
+// not change for callers that never pass it.
+func TestServer_Profile_FieldsOmittedReturnsFullProfile(t *testing.T) {
+	provider := llmtest.New("fake")
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+
+	result := callTool(t, session, "medical.profile", map[string]any{"userId": "alex"})
+	require.False(t, result.IsError, "%v", result.Content)
+
+	out := decodeStructured[map[string]any](t, result)
+	require.ElementsMatch(t, []string{
+		"activeDiagnoses", "chronicConditions", "activeMedications", "allergies", "vaccinations",
+		"surgeries", "latestLabResults", "latestVitalSigns", "nutritionGuidance",
+	}, keysOf(out))
+}
+
+// TestServer_Profile_InvalidFieldReturnsError guards that an unrecognized
+// field name fails loudly (INVALID_FIELDS) rather than silently being
+// ignored or silently returning the full profile.
+func TestServer_Profile_InvalidFieldReturnsError(t *testing.T) {
+	provider := llmtest.New("fake")
+	session := newTestSession(t, provider, []config.UserConfig{{ID: "alex"}})
+
+	result := callTool(t, session, "medical.profile", map[string]any{"userId": "alex", "fields": []string{"bloodType"}})
+	require.True(t, result.IsError)
+}
+
+func keysOf(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
