@@ -1,3 +1,6 @@
+
+![Miranda Medical Card poster](docs/poster.png)
+
 # Miranda Medical Card
 
 **A family electronic health record that reads your lab results, discharge summaries, and prescriptions itself — and answers questions about your health in plain language.**

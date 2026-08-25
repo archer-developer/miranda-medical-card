@@ -936,6 +936,7 @@ func Extract(ctx context.Context, ocrProvider, ocrEscalate ChatProvider, structu
 		logger = slog.Default()
 	}
 
+	logger.Debug("extraction: ocr start", "mimeType", mimeType, "inputBytes", len(imageBase64)*3/4)
 	text, err := ocrWithEscalation(ctx, ocrProvider, ocrEscalate, imageBase64, mimeType, logger)
 	if err != nil {
 		return Result{}, nil, false, err

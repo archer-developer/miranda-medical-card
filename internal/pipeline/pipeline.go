@@ -317,6 +317,7 @@ func (p *Pipeline) run(ctx context.Context, userID, documentID string, file stor
 		if err != nil {
 			return extraction.Result{}, nil, false, fmt.Errorf("read file: %w", err)
 		}
+		p.logger.Debug("pipeline: file read", "documentId", documentID, "sizeBytes", len(data), "contentType", file.ContentType)
 		return extraction.Extract(ctx, p.ocrProvider, p.ocrEscalation, p.extractionProvider, p.extractionEscalation, base64.StdEncoding.EncodeToString(data), file.ContentType, p.logger)
 	})
 }
@@ -377,7 +378,12 @@ func (p *Pipeline) ReextractDocument(ctx context.Context, userID, documentID str
 // caller, since the original error is more actionable.
 func (p *Pipeline) process(ctx context.Context, userID, documentID string, version int, extractFunc func() (extraction.Result, json.RawMessage, bool, error)) (Result, error) {
 	fail := func(err error) (Result, error) {
-		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
+		// context.Background() instead of ctx: ctx may already be cancelled
+		// (e.g. TurnTimeout fired mid-OCR), but marking the document FAILED
+		// is a fast local SQLite write that must succeed regardless — without
+		// it the document stays stuck in RUNNING and every subsequent upload
+		// of the same file returns DOCUMENT_ALREADY_IMPORTED forever.
+		_ = p.documentRepo.UpdateStatus(context.Background(), documentID, userID, storage.DocumentStatusFailed)
 		return Result{}, err
 	}
 
@@ -454,9 +460,10 @@ func (p *Pipeline) RenormalizeDocument(ctx context.Context, userID, documentID s
 	// past this point, RenormalizeDocument shares normalizeAndPersist's
 	// failure handling with process/ReextractDocument, and every one of
 	// those failure paths marks the document FAILED rather than leaving it
-	// stuck in RUNNING.
+	// stuck in RUNNING. context.Background() for the same reason as
+	// process's fail: ctx may be cancelled by the time fail is called.
 	fail := func(err error) (Result, error) {
-		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
+		_ = p.documentRepo.UpdateStatus(context.Background(), documentID, userID, storage.DocumentStatusFailed)
 		return Result{}, err
 	}
 
@@ -475,7 +482,9 @@ func (p *Pipeline) RenormalizeDocument(ctx context.Context, userID, documentID s
 // process's own doc comment describes.
 func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID string, extracted extraction.Result) (Result, error) {
 	fail := func(err error) (Result, error) {
-		_ = p.documentRepo.UpdateStatus(ctx, documentID, userID, storage.DocumentStatusFailed)
+		// context.Background() for the same reason as process's fail: ctx
+		// may already be cancelled when a downstream persistence step fails.
+		_ = p.documentRepo.UpdateStatus(context.Background(), documentID, userID, storage.DocumentStatusFailed)
 		return Result{}, err
 	}
 
