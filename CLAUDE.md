@@ -11,9 +11,10 @@ Miranda is the orchestrator; this service is the medical expert it delegates to 
 inside this service — Miranda never analyzes medical data itself, it only routes a question here and
 relays the answer back verbatim.
 
-`docs/architecture/*.md` and `docs/mcp/*.md` are the source of truth for anything domain-specific
-(processing pipeline, Knowledge Providers pattern, storage layout, each MCP tool's contract) — this
-file only orients you across the codebase and states conventions; it doesn't duplicate that material.
+`docs/architecture/*.md`, `docs/domain/*.md`, and `docs/mcp/*.md` are the source of truth for anything
+domain-specific (processing pipeline, Knowledge Providers pattern, storage layout, each medical entity's
+business model, each MCP tool's contract) — this file only orients you across the codebase and states
+conventions; it doesn't duplicate that material.
 
 ## Architecture at a glance
 
@@ -57,6 +58,11 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   Services as the MCP server (`internal/pipeline.Pipeline`, `internal/ask.Asker`), never
   `internal/storage` directly. Shipped alongside the service binary by `scripts/deploy.sh` for one-off
   ops against the live database.
+- **`cmd/extract-test`, `cmd/renormalize-labs`** — throwaway/one-off tools, not part of production
+  wiring and not shipped by `scripts/deploy.sh` — each says so in its own doc comment. `extract-test` is
+  a harness for validating the Structured Extraction prompt against real documents outside the real
+  Pipeline; `renormalize-labs` is a standalone migration that re-derives `LabResult.IndicatorName` for
+  rows persisted before `internal/normalization/indicator_aliases.go` existed.
 - **`internal/ask`** — the Agent Loop: `Asker`/`Ask` (agent_loop.go), the Knowledge Provider abstraction
   (`Provider`/`Registry`/`KnowledgeChunk`/`KnowledgeRequest`, provider.go) and its ~10 concrete
   implementations (providers.go, search_providers.go), per-provider `llm.ToolDef` schema construction
@@ -87,6 +93,24 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
 - **`internal/pipeline`, `internal/extraction`, `internal/normalization`, `internal/timeline`,
   `internal/profile`, `internal/search`** — the Document Pipeline's stages, each following
   docs/architecture/02-processing-pipeline.md.
+- **`internal/events`** — Structured Extraction for Self-Reported Events (docs/mcp/07-events.md §3), the
+  text-only counterpart to `internal/extraction`'s document-based extraction — powers `medical.log_event`.
+- **`internal/planning`, `internal/planmatch`, `internal/decline`** — Planned Actions
+  (docs/adr/004-planned-actions.md): `planning` defines the raw, LLM-facing shape of a future medical
+  action recommended in a document or self-reported note; `planmatch` is the auto-completion half —
+  given the entities Normalization just produced, decide which still-pending PlannedActions it satisfies
+  (docs/adr/005-planned-action-cross-source-dedup.md); `decline` is a small reusable "which of the user's
+  few current `<thing>`s does this free-text message refer to" matcher, built for
+  `medical.decline_planned_action`'s matching step but reused wherever free text needs to resolve to one
+  of a short list of candidates.
+- **`internal/nutrition`** — the Nutrition Advisor Domain Service (docs/adr/006-nutrition-guidance.md): a
+  small, one-shot Structured LLM call turning a household member's active diagnoses/allergies/age/sex
+  into dietary guidance; consumes the `users[].language` config field for its prompt.
+- **`internal/mcrypto`** — the AES-256-GCM encryption-at-rest pattern (docs/architecture/06-storage.md
+  §14, the same pattern proven in `miranda-diary`'s `internal/diary/crypto.go`), opted into per-user via
+  `encryption: true` in that user's config — mutually exclusive with `shared_with` (a shared user can't
+  hold someone else's key). Miranda injects the per-user key on each MCP call touching encrypted data;
+  Medical Service never stores or logs it itself.
 - **`internal/filestore`** — binary file storage on disk, keyed by content hash; SQLite only ever
   stores a reference, never file bytes.
 - **`internal/linkstore`** — short-lived, random-ID links for ephemeral/derived data (as opposed to
@@ -110,7 +134,8 @@ Same family-wide conventions as [miranda-service-skeleton](../miranda-service-sk
   codebase maintained intermittently; future-you benefits more from carried-forward reasoning than
   terse code.
 - **Keep docs in the same change, not a follow-up** — if a change alters behavior that
-  `docs/architecture/*.md`, `docs/mcp/*.md`, `docs/cli/*.md`, or this file describes, update that doc as
+  `docs/architecture/*.md`, `docs/domain/*.md`, `docs/mcp/*.md`, `docs/cli/*.md`, or this file describes,
+  update that doc as
   part of the same change. Cheap now, expensive later: this file's own opening line calls those docs
   "the source of truth," and a stale one actively misleads the next person (or the next Claude Code
   session) who trusts it instead of the code. Periodic on-demand doc-vs-code audits are a backstop for
