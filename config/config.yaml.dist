@@ -144,4 +144,9 @@
 #     encryption: false
 
 logging:
+  # At "debug", mirrors LLM request/response traces into logs/llm.log and
+  # everything below info into logs/debug.log; both rotate by size.
   level: "info"
+  max_size_mb: 10
+  max_backups: 5
+  max_age_days: 30

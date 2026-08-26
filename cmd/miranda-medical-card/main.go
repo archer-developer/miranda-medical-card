@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/anthropic"
@@ -495,11 +496,28 @@ func buildAskRouter(providers map[string]extraction.Provider, configs []config.P
 	return r, nil
 }
 
+// rotatingLogFile builds a *lumberjack.Logger for filename under
+// debugLogDir, size/age-bounded per cfg — mirrors miranda's own
+// rotatingLogFile helper (cmd/miranda/main.go) so both services' logs/
+// directories are managed identically. Compress is hard-coded true, same as
+// miranda: old backups are read rarely enough (see CLAUDE.md's
+// medical-dev llm-trace debugging loop) that the disk savings are worth the
+// one-time gzip cost on rotation.
+func rotatingLogFile(cfg config.LoggingConfig, filename string) *lumberjack.Logger {
+	return &lumberjack.Logger{
+		Filename:   filepath.Join(debugLogDir, filename),
+		MaxSize:    cfg.MaxSizeMB,
+		MaxBackups: cfg.MaxBackups,
+		MaxAge:     cfg.MaxAgeDays,
+		Compress:   true,
+	}
+}
+
 // buildLLMTraceWriter opens logs/llm.log for router.Router.SetTracer (see
 // run()) when debug logging is enabled — mirrors buildLogger's own
-// open/lifecycle pattern (same directory, same append-mode open). Returns
-// (nil, nil), not an error, when debug logging is off, so the caller
-// simply skips wiring a tracer.
+// open/lifecycle pattern (same directory, same rotatingLogFile helper).
+// Returns (nil, nil), not an error, when debug logging is off, so the
+// caller simply skips wiring a tracer.
 func buildLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
 	if cfg.Level != "debug" {
 		return nil, nil
@@ -507,12 +525,7 @@ func buildLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
 	if err := os.MkdirAll(debugLogDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create llm log dir: %w", err)
 	}
-	path := filepath.Join(debugLogDir, llmLogFile)
-	w, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open llm log %s: %w", path, err)
-	}
-	return w, nil
+	return rotatingLogFile(cfg, llmLogFile), nil
 }
 
 // cleanupExpiredLinks periodically sweeps expired internal/linkstore rows
@@ -585,11 +598,7 @@ func buildLogger(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
 	if err := os.MkdirAll(debugLogDir, 0o755); err != nil {
 		return nil, noop, fmt.Errorf("main: create debug log dir: %w", err)
 	}
-	debugPath := filepath.Join(debugLogDir, debugLogFile)
-	debugWriter, err := os.OpenFile(debugPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, noop, fmt.Errorf("main: open debug log %s: %w", debugPath, err)
-	}
+	debugWriter := rotatingLogFile(cfg, debugLogFile)
 	debugHandler := slog.NewTextHandler(debugWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 
 	handler := &levelSplitHandler{stdout: stdoutHandler, debugFile: debugHandler}

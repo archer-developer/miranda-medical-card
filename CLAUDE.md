@@ -53,7 +53,9 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   config → logger → SQLite + filestore → LLM providers (`buildProviders`) → `router.Router`
   (`buildAskRouter`) → Pipeline + Asker → MCP server → Streamable HTTP behind bearer auth. `logs/llm.log`
   (full LLM request/response trace) and `logs/debug.log` are both only written when `logging.level:
-  debug`.
+  debug`, and both rotate by size via `gopkg.in/natefinch/lumberjack.v2` (`rotatingLogFile`,
+  `logging.max_size_mb`/`max_backups`/`max_age_days` in config) — the same pattern as miranda's own
+  `cmd/miranda/main.go`.
 - **`cmd/medical-dev`** — scoped diagnostic CLI (docs/cli/medical_dev.md) using the same Application
   Services as the MCP server (`internal/pipeline.Pipeline`, `internal/ask.Asker`), never
   `internal/storage` directly. Shipped alongside the service binary by `scripts/deploy.sh` for one-off

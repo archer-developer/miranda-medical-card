@@ -206,9 +206,22 @@ type SearchConfig struct {
 	MaxLimit     int `yaml:"max_limit"`
 }
 
-// LoggingConfig controls slog output level.
+// LoggingConfig controls slog output level and, for the debug-only
+// logs/debug.log and logs/llm.log files (see cmd/miranda-medical-card's
+// buildLogger/buildLLMTraceWriter), size/age-based rotation — mirrors
+// miranda's own LoggingConfig/rotatingLogFile so both services manage their
+// log directories the same way.
 type LoggingConfig struct {
 	Level string `yaml:"level"`
+	// MaxSizeMB is the size in megabytes a log file reaches before it's
+	// rotated (gzip-compressed) and a fresh one started.
+	MaxSizeMB int `yaml:"max_size_mb"`
+	// MaxBackups is how many rotated backups to keep before the oldest is
+	// deleted. 0 means keep all of them (bounded only by MaxAgeDays, if set).
+	MaxBackups int `yaml:"max_backups"`
+	// MaxAgeDays is how long to keep a rotated backup regardless of
+	// MaxBackups. 0 means no age-based cleanup.
+	MaxAgeDays int `yaml:"max_age_days"`
 }
 
 // Default returns the built-in configuration. Every field has a safe,
@@ -259,7 +272,10 @@ func Default() Config {
 		},
 		Users: nil,
 		Logging: LoggingConfig{
-			Level: "info",
+			Level:      "info",
+			MaxSizeMB:  10,
+			MaxBackups: 5,
+			MaxAgeDays: 30,
 		},
 	}
 }
