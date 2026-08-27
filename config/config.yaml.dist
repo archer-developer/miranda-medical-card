@@ -60,8 +60,13 @@
 # miranda's own config/llm.yaml providers/default_provider shape (see
 # internal/config.ProviderConfig's doc comment) so the two formats stay
 # directly comparable. api_key_envs supports several environment variables
-# for automatic key rotation on rate limits (gemini only — useful on
-# free-tier keys) — list as many as you have.
+# for automatic key rotation on rate limits — every provider type (gemini,
+# anthropic, openai_compat) rotates across however many resolve to a set env
+# var, retrying on quota (429) or a per-key auth failure (401/403) but never
+# on a 5xx (every key would just hit the same struggling backend — see each
+# miranda-llm package's isRetryable doc comment) — list as many as you have.
+# The gemini_rotation key below tunes rotation for every provider type
+# alike; the name is a historical holdover from when only gemini rotated.
 #
 # escalation means two different things depending on which stage the
 # provider is configured for:

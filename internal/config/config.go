@@ -116,13 +116,17 @@ type ProviderConfig struct {
 	BaseURL string `yaml:"base_url,omitempty"`
 	Model   string `yaml:"model"`
 	// APIKeyEnvs names environment variables holding API keys, never the
-	// keys themselves. Only "gemini" actually rotates across more than one
-	// entry (see GeminiRotation) — "anthropic" and "openai_compat" use only
-	// APIKeyEnvs[0], same convention as miranda's own firstAPIKey.
+	// keys themselves. Every provider type rotates across however many
+	// entries resolve to a set env var (Rotation tunes how) — "gemini",
+	// "anthropic", and "openai_compat" all hold one client per resolved
+	// key and cycle on a retryable error (quota/per-key auth, never a 5xx
+	// — see each package's own isRetryable doc comment for why).
 	APIKeyEnvs []string `yaml:"api_key_envs"`
-	// GeminiRotation tunes key-rotation behavior. Only meaningful when
-	// Type == "gemini".
-	GeminiRotation GeminiRotationConfig `yaml:"gemini_rotation,omitempty"`
+	// Rotation tunes key-rotation behavior for every provider type alike.
+	// The yaml tag is a historical holdover from when only "gemini"
+	// rotated multiple keys — kept as-is so existing config/*.yaml files
+	// don't need editing now that anthropic/openai_compat rotate too.
+	Rotation RotationConfig `yaml:"gemini_rotation,omitempty"`
 	// Escalation names a fallback provider (by Name, elsewhere in
 	// Providers) this provider can hand off to. Two independent mechanisms
 	// read it, depending on which stage this provider is configured for:
@@ -144,9 +148,10 @@ type ProviderConfig struct {
 	Escalation EscalationConfig `yaml:"escalation,omitempty"`
 }
 
-// GeminiRotationConfig tunes internal/llm/gemini-equivalent key rotation —
-// mirrors miranda's GeminiRotationConfig field-for-field.
-type GeminiRotationConfig struct {
+// RotationConfig tunes miranda-llm's per-package RotationConfig (gemini,
+// anthropic, and openaicompat each define their own identically-shaped
+// type) — mirrors miranda's own GeminiRotationConfig field-for-field.
+type RotationConfig struct {
 	CooldownSeconds int `yaml:"cooldown_seconds"`
 	MaxRetryCycles  int `yaml:"max_retry_cycles"`
 }
@@ -249,13 +254,13 @@ func Default() Config {
 			Providers: []ProviderConfig{
 				{
 					Name: "gemini-document", Type: "gemini", Model: "gemini-3.6-flash",
-					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
-					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
+					APIKeyEnvs: []string{"GEMINI_API_KEY_1"},
+					Rotation:   RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
 				},
 				{
 					Name: "gemini-agent", Type: "gemini", Model: "gemini-3.6-flash",
-					APIKeyEnvs:     []string{"GEMINI_API_KEY_1"},
-					GeminiRotation: GeminiRotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
+					APIKeyEnvs: []string{"GEMINI_API_KEY_1"},
+					Rotation:   RotationConfig{CooldownSeconds: 30, MaxRetryCycles: 1},
 				},
 			},
 			OCRProvider:        "gemini-document",

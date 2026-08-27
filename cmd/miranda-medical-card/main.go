@@ -378,7 +378,7 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 		case "gemini":
 			p, err := gemini.New(ctx, c.Name, c.Model, c.APIKeyEnvs,
 				gemini.ToolsConfig{},
-				gemini.RotationConfig{CooldownSeconds: c.GeminiRotation.CooldownSeconds, MaxRetryCycles: c.GeminiRotation.MaxRetryCycles},
+				gemini.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
 				logger,
 			)
 			if err != nil {
@@ -386,32 +386,25 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 			}
 			providers[c.Name] = p
 		case "anthropic":
-			apiKey := firstAPIKey(c.APIKeyEnvs)
-			if apiKey == "" {
-				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			p, err := anthropic.New(c.Name, c.Model, c.APIKeyEnvs,
+				anthropic.ToolsConfig{},
+				anthropic.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				logger,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
 			}
-			providers[c.Name] = anthropic.New(c.Name, c.Model, apiKey, anthropic.ToolsConfig{})
+			providers[c.Name] = p
 		case "openai_compat":
-			apiKey := firstAPIKey(c.APIKeyEnvs)
-			if apiKey == "" {
-				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
-			}
-			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, apiKey)
+			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, c.APIKeyEnvs,
+				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				logger,
+			)
 		default:
 			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
 		}
 	}
 	return providers, nil
-}
-
-// firstAPIKey mirrors miranda's own helper of the same name: only the
-// first configured env var is used for provider types with no built-in
-// key rotation (anthropic, openai_compat) — see ProviderConfig.APIKeyEnvs.
-func firstAPIKey(envs []string) string {
-	if len(envs) == 0 {
-		return ""
-	}
-	return os.Getenv(envs[0])
 }
 
 // resolveProvider looks up name in providers, erroring with the

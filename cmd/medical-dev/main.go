@@ -232,11 +232,10 @@ func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, l
 	return pipeline.New(ocrProvider, ocrEscalation, extractionProvider, extractionEscalation, embedder, "gemini", cfg.Embedding.Model, files, store, logger, pipeline.NewConfigUserRepository(cfg.Users)), nil
 }
 
-// buildProviders, firstAPIKey, resolveProvider, and resolveEscalationProvider
-// mirror cmd/miranda-medical-card/main.go's helpers of the same name — see
-// that copy's doc comments. Duplicated rather than shared since these are
-// two separate main packages, same as this file's other construction
-// helpers.
+// buildProviders, resolveProvider, and resolveEscalationProvider mirror
+// cmd/miranda-medical-card/main.go's helpers of the same name — see that
+// copy's doc comments. Duplicated rather than shared since these are two
+// separate main packages, same as this file's other construction helpers.
 func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger *slog.Logger) (map[string]extraction.Provider, error) {
 	providers := make(map[string]extraction.Provider, len(configs))
 	for _, c := range configs {
@@ -244,7 +243,7 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 		case "gemini":
 			p, err := gemini.New(ctx, c.Name, c.Model, c.APIKeyEnvs,
 				gemini.ToolsConfig{},
-				gemini.RotationConfig{CooldownSeconds: c.GeminiRotation.CooldownSeconds, MaxRetryCycles: c.GeminiRotation.MaxRetryCycles},
+				gemini.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
 				logger,
 			)
 			if err != nil {
@@ -252,29 +251,25 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 			}
 			providers[c.Name] = p
 		case "anthropic":
-			apiKey := firstAPIKey(c.APIKeyEnvs)
-			if apiKey == "" {
-				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
+			p, err := anthropic.New(c.Name, c.Model, c.APIKeyEnvs,
+				anthropic.ToolsConfig{},
+				anthropic.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				logger,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
 			}
-			providers[c.Name] = anthropic.New(c.Name, c.Model, apiKey, anthropic.ToolsConfig{})
+			providers[c.Name] = p
 		case "openai_compat":
-			apiKey := firstAPIKey(c.APIKeyEnvs)
-			if apiKey == "" {
-				return nil, fmt.Errorf("build provider %q: environment variable %s (named by api_key_envs[0]) is not set", c.Name, c.APIKeyEnvs[0])
-			}
-			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, apiKey)
+			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, c.APIKeyEnvs,
+				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				logger,
+			)
 		default:
 			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
 		}
 	}
 	return providers, nil
-}
-
-func firstAPIKey(envs []string) string {
-	if len(envs) == 0 {
-		return ""
-	}
-	return os.Getenv(envs[0])
 }
 
 func resolveProvider(providers map[string]extraction.Provider, name, field string) (extraction.Provider, error) {
