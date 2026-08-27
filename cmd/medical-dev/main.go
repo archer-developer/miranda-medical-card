@@ -517,7 +517,7 @@ var pipelineStages = map[string]bool{
 // internal/pipeline.Pipeline's process/normalizeAndPersist) is visible
 // immediately — docs/cli/medical_dev.md §13's "подробный лог выполнения",
 // without needing to enable server-wide debug logging or tail
-// logs/debug.log separately.
+// logs/miranda-medical-card.log separately.
 //
 // --all loops over every document --user has instead of a single
 // documentId, with a quieter Warn-level logger and one summary line per

@@ -643,7 +643,7 @@ func isSuspiciouslyEmpty(result Result) bool {
 // provider, retrying while the result looks suspiciously empty (see
 // isSuspiciouslyEmpty). stage ("primary"/"escalation") tags each Debug log
 // line so the two phases StructuredWithRetry can run are distinguishable
-// in logs/debug.log. A hard error from any single Structured call aborts
+// in logs/miranda-medical-card.log. A hard error from any single Structured call aborts
 // immediately, uncounted as a further attempt — see StructuredWithRetry's
 // doc comment for why a 429/401 never even reaches here as a completed
 // call in the first place.
@@ -726,11 +726,11 @@ func structuredAttempts(ctx context.Context, provider StructuredProvider, text s
 // medical.reprocess_document if genuinely wrong.
 //
 // A nil logger falls back to slog.Default(). Every attempt is logged at
-// Debug (see cmd/miranda-medical-card/main.go's buildLogger for how to
-// route Debug records to logs/debug.log without flooding stdout); if the
-// final result is still suspiciously empty, that's logged at Warn instead,
-// since it's the one outcome worth noticing even without debug logging
-// enabled.
+// Debug (see cmd/miranda-medical-card/main.go's buildLogger for how to route
+// Debug records to logs/miranda-medical-card.log without flooding stdout);
+// if the final result is still suspiciously empty, that's logged at Warn
+// instead, since it's the one outcome worth noticing even without debug
+// logging enabled.
 func StructuredWithRetry(ctx context.Context, provider StructuredProvider, escalate StructuredProvider, text string, logger *slog.Logger) (Result, json.RawMessage, error) {
 	if logger == nil {
 		logger = slog.Default()

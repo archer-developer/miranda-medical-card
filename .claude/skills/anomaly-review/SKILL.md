@@ -86,9 +86,10 @@ only exists on a host where debug logging was on when the turn happened.
    - **Prompt rule blocking valid data use**: `internal/ask/prompt.go`'s `answerRules` preventing the
      model from using something it already has.
    - For `slow_call` specifically: check the surrounding blocks' request/response for retry/rate-limit
-     warnings in the accompanying app log around the same timestamp (`logs/debug.log` or the journal) —
-     a `503`/key-rotation retry storm on the provider side is a transient infrastructure blip, not a code
-     bug, and isn't worth chasing as one.
+     warnings in the accompanying app log around the same timestamp (`logs/miranda-medical-card.log` —
+     it carries WARN/ERROR too, not just Debug trace, so the journal is rarely needed as a second source
+     any more) — a `503`/key-rotation retry storm on the provider side is a transient infrastructure
+     blip, not a code bug, and isn't worth chasing as one.
    - For `repeated_tool_call`/`iteration_cap`: read the full turn — is the tool result actually
      unhelpful/ambiguous (bad data), or is there a real gap in what the model can ask for (missing
      capability)?

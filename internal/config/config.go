@@ -207,10 +207,10 @@ type SearchConfig struct {
 }
 
 // LoggingConfig controls slog output level and, for the debug-only
-// logs/debug.log and logs/llm.log files (see cmd/miranda-medical-card's
-// buildLogger/buildLLMTraceWriter), size/age-based rotation — mirrors
-// miranda's own LoggingConfig/rotatingLogFile so both services manage their
-// log directories the same way.
+// logs/miranda-medical-card.log and logs/llm.log files (see
+// cmd/miranda-medical-card's buildLogger/buildLLMTraceWriter), size/age-based
+// rotation — mirrors miranda's own LoggingConfig/rotatingLogFile so both
+// services manage their log directories the same way.
 type LoggingConfig struct {
 	Level string `yaml:"level"`
 	// MaxSizeMB is the size in megabytes a log file reaches before it's

@@ -60,11 +60,17 @@ const (
 	defaultConfigDir = "config"
 	configDirEnv     = "MEDICAL_CARD_CONFIG_DIR"
 	shutdownTimeout  = 10 * time.Second
-	debugLogDir      = "logs"
-	debugLogFile     = "debug.log"
+	logDir           = "logs"
+	// appLogFile carries the full app log — every level from Debug up once
+	// logging.level: debug is set (see buildLogger's teeHandler), not just
+	// DEBUG-level lines — hence "miranda-medical-card.log", not
+	// "debug.log": that older name undersold what ends up in it (every
+	// WARN/ERROR too) and nothing about the file itself is debug-only,
+	// only its existence is gated on debug logging being enabled at all.
+	appLogFile = "miranda-medical-card.log"
 	// llmLogFile carries every LLM request/response the router.Router
 	// backing the medical.ask agent loop traces (see buildLLMTraceWriter) —
-	// only written when logging.level is "debug", same as debugLogFile.
+	// only written when logging.level is "debug", same as appLogFile.
 	llmLogFile = "llm.log"
 	// anomaliesDirName holds one file per agent-loop turn that
 	// llmtrace/anomaly.Detect flagged (a slow call, a stuck tool retry, an
@@ -304,8 +310,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		// llm.log itself (see anomaliesDirName's doc comment) — a Recorder
 		// attached to ctx would never receive a Trace call otherwise.
 		asker.SetAnomalyConfig(ask.AnomalyConfig{
-			LLMLogPath: filepath.Join(debugLogDir, llmLogFile),
-			Dir:        filepath.Join(debugLogDir, anomaliesDirName),
+			LLMLogPath: filepath.Join(logDir, llmLogFile),
+			Dir:        filepath.Join(logDir, anomaliesDirName),
 		})
 	}
 
@@ -497,7 +503,7 @@ func buildAskRouter(providers map[string]extraction.Provider, configs []config.P
 }
 
 // rotatingLogFile builds a *lumberjack.Logger for filename under
-// debugLogDir, size/age-bounded per cfg — mirrors miranda's own
+// logDir, size/age-bounded per cfg — mirrors miranda's own
 // rotatingLogFile helper (cmd/miranda/main.go) so both services' logs/
 // directories are managed identically. Compress is hard-coded true, same as
 // miranda: old backups are read rarely enough (see CLAUDE.md's
@@ -505,7 +511,7 @@ func buildAskRouter(providers map[string]extraction.Provider, configs []config.P
 // one-time gzip cost on rotation.
 func rotatingLogFile(cfg config.LoggingConfig, filename string) *lumberjack.Logger {
 	return &lumberjack.Logger{
-		Filename:   filepath.Join(debugLogDir, filename),
+		Filename:   filepath.Join(logDir, filename),
 		MaxSize:    cfg.MaxSizeMB,
 		MaxBackups: cfg.MaxBackups,
 		MaxAge:     cfg.MaxAgeDays,
@@ -522,7 +528,7 @@ func buildLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
 	if cfg.Level != "debug" {
 		return nil, nil
 	}
-	if err := os.MkdirAll(debugLogDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create llm log dir: %w", err)
 	}
 	return rotatingLogFile(cfg, llmLogFile), nil
@@ -595,44 +601,44 @@ func buildLogger(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
 		return slog.New(stdoutHandler), noop, nil
 	}
 
-	if err := os.MkdirAll(debugLogDir, 0o755); err != nil {
-		return nil, noop, fmt.Errorf("main: create debug log dir: %w", err)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, noop, fmt.Errorf("main: create app log dir: %w", err)
 	}
-	debugWriter := rotatingLogFile(cfg, debugLogFile)
-	debugHandler := slog.NewTextHandler(debugWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
+	appLogWriter := rotatingLogFile(cfg, appLogFile)
+	appLogHandler := slog.NewTextHandler(appLogWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 
-	handler := &teeHandler{stdout: stdoutHandler, debugFile: debugHandler}
-	return slog.New(handler), func() { _ = debugWriter.Close() }, nil
+	handler := &teeHandler{stdout: stdoutHandler, file: appLogHandler}
+	return slog.New(handler), func() { _ = appLogWriter.Close() }, nil
 }
 
 // teeHandler fans every record out to both destinations, each gated by its
 // own Enabled check — NOT an exclusive split. An earlier version routed
 // each record to exactly one handler (level < Info => file only, level >=
 // Info => stdout only), which meant every WARN/ERROR (a failed LLM call, an
-// escalation, "upload_document failed") never reached debug.log at all —
-// only stdout/journal got them, so debug.log's own trace of a request
+// escalation, "upload_document failed") never reached the app log file at
+// all — only stdout/journal got them, so the file's own trace of a request
 // stopped cold at the last DEBUG line with no visible reason why (found in
 // production 2026-08-27, debugging a stalled OCR call: the 503 and the
 // follow-up 400 that actually explained it were sitting in `journalctl`,
 // nowhere in the file). miranda's own setupLogging (cmd/miranda/main.go)
 // avoids this class of bug entirely by writing one io.MultiWriter'd handler
-// instead of splitting by level; debug.log keeps its own, lower stdout
+// instead of splitting by level; this file keeps its own, lower stdout
 // floor (see stdoutLevel above) so routine DEBUG-level pipeline steps don't
 // flood the journal, which is why a simple MultiWriter doesn't fit here and
 // this tee exists instead.
 type teeHandler struct {
-	stdout    slog.Handler
-	debugFile slog.Handler
+	stdout slog.Handler
+	file   slog.Handler
 }
 
 func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.stdout.Enabled(ctx, level) || h.debugFile.Enabled(ctx, level)
+	return h.stdout.Enabled(ctx, level) || h.file.Enabled(ctx, level)
 }
 
 func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 	var errs []error
-	if h.debugFile.Enabled(ctx, r.Level) {
-		if err := h.debugFile.Handle(ctx, r.Clone()); err != nil {
+	if h.file.Enabled(ctx, r.Level) {
+		if err := h.file.Handle(ctx, r.Clone()); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -646,14 +652,14 @@ func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 
 func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &teeHandler{
-		stdout:    h.stdout.WithAttrs(attrs),
-		debugFile: h.debugFile.WithAttrs(attrs),
+		stdout: h.stdout.WithAttrs(attrs),
+		file:   h.file.WithAttrs(attrs),
 	}
 }
 
 func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{
-		stdout:    h.stdout.WithGroup(name),
-		debugFile: h.debugFile.WithGroup(name),
+		stdout: h.stdout.WithGroup(name),
+		file:   h.file.WithGroup(name),
 	}
 }
