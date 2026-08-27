@@ -54,8 +54,17 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   (`buildAskRouter`) → Pipeline + Asker → MCP server → Streamable HTTP behind bearer auth. `logs/llm.log`
   (full LLM request/response trace) and `logs/debug.log` are both only written when `logging.level:
   debug`, and both rotate by size via `gopkg.in/natefinch/lumberjack.v2` (`rotatingLogFile`,
-  `logging.max_size_mb`/`max_backups`/`max_age_days` in config) — the same pattern as miranda's own
-  `cmd/miranda/main.go`.
+  `logging.max_size_mb`/`max_backups`/`max_age_days` in config). `debug.log` is a superset of what
+  stdout/journal sees, not a level-exclusive subset of it: `buildLogger`'s `teeHandler` fans every
+  record out to both stdout (floored at Info, so routine DEBUG-level pipeline steps don't flood the
+  journal) and the file (floored at Debug) independently — mirroring how miranda's own
+  `cmd/miranda/main.go` (`setupLogging`) writes one `io.MultiWriter`'d handler instead of splitting by
+  level, just with an extra, lower floor on the file side since medical-card's DEBUG trace is much
+  chattier than miranda's own. An earlier version routed each record to exactly one destination by level
+  (DEBUG ⇒ file only, everything else ⇒ stdout only), so a WARN/ERROR — a failed LLM call, a provider
+  escalation, `"upload_document failed"` — never reached `debug.log` at all; only `journalctl` had it,
+  so `debug.log` alone could go quiet mid-request with no visible reason why (found in production
+  2026-08-27, see git log around `teeHandler`).
 - **`cmd/medical-dev`** — scoped diagnostic CLI (docs/cli/medical_dev.md) using the same Application
   Services as the MCP server (`internal/pipeline.Pipeline`, `internal/ask.Asker`), never
   `internal/storage` directly. Shipped alongside the service binary by `scripts/deploy.sh` for one-off

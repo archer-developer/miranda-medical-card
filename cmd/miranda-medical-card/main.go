@@ -601,35 +601,58 @@ func buildLogger(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
 	debugWriter := rotatingLogFile(cfg, debugLogFile)
 	debugHandler := slog.NewTextHandler(debugWriter, &slog.HandlerOptions{Level: slog.LevelDebug})
 
-	handler := &levelSplitHandler{stdout: stdoutHandler, debugFile: debugHandler}
+	handler := &teeHandler{stdout: stdoutHandler, debugFile: debugHandler}
 	return slog.New(handler), func() { _ = debugWriter.Close() }, nil
 }
 
-type levelSplitHandler struct {
+// teeHandler fans every record out to both destinations, each gated by its
+// own Enabled check — NOT an exclusive split. An earlier version routed
+// each record to exactly one handler (level < Info => file only, level >=
+// Info => stdout only), which meant every WARN/ERROR (a failed LLM call, an
+// escalation, "upload_document failed") never reached debug.log at all —
+// only stdout/journal got them, so debug.log's own trace of a request
+// stopped cold at the last DEBUG line with no visible reason why (found in
+// production 2026-08-27, debugging a stalled OCR call: the 503 and the
+// follow-up 400 that actually explained it were sitting in `journalctl`,
+// nowhere in the file). miranda's own setupLogging (cmd/miranda/main.go)
+// avoids this class of bug entirely by writing one io.MultiWriter'd handler
+// instead of splitting by level; debug.log keeps its own, lower stdout
+// floor (see stdoutLevel above) so routine DEBUG-level pipeline steps don't
+// flood the journal, which is why a simple MultiWriter doesn't fit here and
+// this tee exists instead.
+type teeHandler struct {
 	stdout    slog.Handler
 	debugFile slog.Handler
 }
 
-func (h *levelSplitHandler) Enabled(ctx context.Context, level slog.Level) bool {
+func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.stdout.Enabled(ctx, level) || h.debugFile.Enabled(ctx, level)
 }
 
-func (h *levelSplitHandler) Handle(ctx context.Context, r slog.Record) error {
-	if r.Level < slog.LevelInfo {
-		return h.debugFile.Handle(ctx, r)
+func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
+	if h.debugFile.Enabled(ctx, r.Level) {
+		if err := h.debugFile.Handle(ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return h.stdout.Handle(ctx, r)
+	if h.stdout.Enabled(ctx, r.Level) {
+		if err := h.stdout.Handle(ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-func (h *levelSplitHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &levelSplitHandler{
+func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &teeHandler{
 		stdout:    h.stdout.WithAttrs(attrs),
 		debugFile: h.debugFile.WithAttrs(attrs),
 	}
 }
 
-func (h *levelSplitHandler) WithGroup(name string) slog.Handler {
-	return &levelSplitHandler{
+func (h *teeHandler) WithGroup(name string) slog.Handler {
+	return &teeHandler{
 		stdout:    h.stdout.WithGroup(name),
 		debugFile: h.debugFile.WithGroup(name),
 	}
