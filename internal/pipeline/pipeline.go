@@ -511,6 +511,7 @@ func (p *Pipeline) normalizeAndPersist(ctx context.Context, userID, documentID s
 	if err := p.diagnoses.ReplaceForDocument(ctx, documentID, normalized.Diagnoses); err != nil {
 		return fail(fmt.Errorf("pipeline: process: persist diagnoses: %w", err))
 	}
+	p.reconcileDiagnosesForDocument(ctx, userID, documentID)
 	if err := p.medications.ReplaceForDocument(ctx, documentID, normalized.Medications); err != nil {
 		return fail(fmt.Errorf("pipeline: process: persist medications: %w", err))
 	}

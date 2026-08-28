@@ -100,6 +100,16 @@ var commandCatalog = []commandHelp{
 		},
 	},
 	{
+		Name:    "reconcile-diagnoses",
+		Summary: "One-off migration: replay a user's existing diagnoses chronologically through Diagnosis Reconciliation, marking older ones superseded/resolved where a later one refines/cancels them — dry-run by default, --apply to persist",
+		Usage:   "reconcile-diagnoses --user <id> [--apply] [--provider NAME]",
+		Examples: []string{
+			`reconcile-diagnoses --user alex`,
+			`reconcile-diagnoses --user alex --apply`,
+			`reconcile-diagnoses --user alex --apply --provider gemini-agent`,
+		},
+	},
+	{
 		Name:    "llm-trace",
 		Summary: "Analyze logs/llm.log as a per-turn table of what the model actually did — which tool, what args, what came back",
 		Usage:   "llm-trace [--file PATH] [--conversation ID] [--latest] [--untagged]",

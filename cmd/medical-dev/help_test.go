@@ -31,7 +31,7 @@ func TestCommandCatalog_EveryEntryIsUsable(t *testing.T) {
 func TestCommandCatalog_MatchesRunSwitch(t *testing.T) {
 	dispatched := []string{
 		"profile", "timeline", "planned-actions", "document", "ask", "pipeline",
-		"backfill-titles", "reindex-fts", "llm-trace",
+		"backfill-titles", "reindex-fts", "reconcile-diagnoses", "llm-trace",
 	}
 	for _, name := range dispatched {
 		require.True(t, isKnownCommand(name), "run() dispatches %q but it's missing from commandCatalog", name)

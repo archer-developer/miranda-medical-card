@@ -15,10 +15,11 @@
 // stderr — docs/cli/medical_dev.md §13. --stage picks which document-scoped
 // stage boundary to resume from (ocr/extraction/normalization — see
 // pipelineStages' own doc comment); --all loops over every document a user
-// has instead of a single documentId), backfill-titles and reindex-fts —
-// not part of that doc (both are one-off data migrations, not standing
-// diagnostic commands), see pipeline.Pipeline.BackfillStudyTitle's and
-// .ReindexDocumentFTS's own doc comments — and llm-trace (see
+// has instead of a single documentId), backfill-titles, reindex-fts, and
+// reconcile-diagnoses — not part of that doc (all three are one-off data
+// migrations, not standing diagnostic commands), see
+// pipeline.Pipeline.BackfillStudyTitle's, .ReindexDocumentFTS's, and
+// .ReconcileDiagnosisHistory's own doc comments — and llm-trace (see
 // llm_trace.go), also not part of that doc: a
 // reader for logs/llm.log (only ever produced when logging.level: debug —
 // written by cmd/miranda-medical-card/main.go's buildLLMTraceWriter for a
@@ -57,6 +58,7 @@
 //	medical-dev pipeline --all --user alex --stage normalization
 //	medical-dev backfill-titles --user alex [--provider gemini-agent]
 //	medical-dev reindex-fts --user alex
+//	medical-dev reconcile-diagnoses --user alex [--apply] [--provider gemini-agent]
 //	medical-dev llm-trace [--file logs/llm.log] [--conversation ID | --latest]
 package main
 
@@ -147,6 +149,8 @@ func run(args []string) error {
 		return runBackfillTitles(args, cfg, store)
 	case "reindex-fts":
 		return runReindexFTS(args, cfg, store)
+	case "reconcile-diagnoses":
+		return runReconcileDiagnoses(args, cfg, store)
 	default:
 		return fmt.Errorf("unknown command %q — run 'medical-dev help' for the full list", command)
 	}
@@ -728,6 +732,89 @@ func runReindexFTS(args []string, cfg config.Config, store *storage.Store) error
 			continue
 		}
 		fmt.Printf("%s: reindexed (documentType=%s)\n", doc.ID, doc.DocumentType)
+	}
+	return nil
+}
+
+// --- reconcile-diagnoses ---
+
+// runReconcileDiagnoses drives pipeline.Pipeline.ReconcileDiagnosisHistory
+// (see that method's own doc comment) for a single user — a one-off backfill
+// for diagnoses persisted before Diagnosis Reconciliation
+// (docs/adr/008-diagnosis-cross-document-reconciliation.md) existed, so the
+// already-accumulated duplicates the household reported (e.g. "Хронический
+// тонзиллит" sitting next to "Хронический тонзиллит, вне обострения") get
+// resolved retroactively using the same LLM call the live pipeline now runs
+// on every new document.
+//
+// --apply defaults to false: unlike backfill-titles's deterministic metadata
+// patch, this makes an LLM judgment call that changes what's visible in
+// medical.profile over data that's already live — run without --apply first,
+// review the printed transitions, then re-run with --apply once they look
+// right. Wiring (buildProviders/resolveProvider, hand-rolled pipeline.New
+// with users=nil, no escalation) mirrors runBackfillTitles's own for the
+// same reasons: no OCR, no Profile-rebuild-triggering call this command
+// needs to wire up itself.
+func runReconcileDiagnoses(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("reconcile-diagnoses", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	apply := fs.Bool("apply", false, "persist the found transitions instead of only reporting them")
+	providerName := fs.String("provider", "", "override llm.extraction_provider with this configured provider name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := context.Background()
+
+	providers, err := buildProviders(ctx, cfg.LLM.Providers, logger)
+	if err != nil {
+		return err
+	}
+	name := cfg.LLM.ExtractionProvider
+	if *providerName != "" {
+		name = *providerName
+	}
+	provider, err := resolveProvider(providers, name, "extraction_provider")
+	if err != nil {
+		return err
+	}
+	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
+	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
+	if err != nil {
+		return err
+	}
+	files, err := filestore.New(cfg.Files.Dir)
+	if err != nil {
+		return err
+	}
+	// users is nil — ReconcileDiagnosisHistory never triggers rebuildProfile,
+	// so Nutrition Advisor's age/sex input is never consulted here (same
+	// reasoning as runBackfillTitles's own nil).
+	pl := pipeline.New(nil, nil, provider, nil, embedder, "gemini", cfg.Embedding.Model, files, store, logger, nil)
+
+	changes, err := pl.ReconcileDiagnosisHistory(ctx, *user, !*apply)
+	if err != nil {
+		return err
+	}
+
+	mode := "dry run"
+	if *apply {
+		mode = "applied"
+	}
+	if len(changes) == 0 {
+		fmt.Printf("no transitions found (%s)\n", mode)
+		return nil
+	}
+	for _, c := range changes {
+		fmt.Printf("%s %q -> %s by %s %q (%s)\n", c.TargetID, c.TargetName, c.Relation, c.DiagnosisID, c.DiagnosisName, mode)
+	}
+	fmt.Printf("%d transition(s) (%s)\n", len(changes), mode)
+	if !*apply {
+		fmt.Println("re-run with --apply to persist these transitions")
 	}
 	return nil
 }

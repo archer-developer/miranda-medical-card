@@ -117,6 +117,46 @@ func TestDiagnosisRepository_MarkResolved_ScopedToOwningUser(t *testing.T) {
 	require.Equal(t, "active", got[0].Status, "MarkResolved for a different user must be a no-op")
 }
 
+func TestDiagnosisRepository_MarkSuperseded(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{
+		ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1",
+		Name: "Хронический тонзиллит", Status: "chronic",
+		ExpectedResolutionFrom: &from, ExpectedResolutionTo: &to,
+		StatusReasoning: "Хроническое заболевание по формулировке диагноза.",
+	}))
+
+	require.NoError(t, repo.MarkSuperseded(ctx, "dx_doc1_0", "user1", `Заменён более специфичным диагнозом "Хронический тонзиллит, вне обострения".`))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "superseded", got[0].Status)
+	require.Equal(t, `Заменён более специфичным диагнозом "Хронический тонзиллит, вне обострения".`, got[0].StatusReasoning)
+	// Unlike MarkResolved, superseding is not a clinical resolution claim —
+	// ActualResolutionAt must stay untouched.
+	require.Nil(t, got[0].ActualResolutionAt)
+	require.True(t, from.Equal(*got[0].ExpectedResolutionFrom))
+	require.True(t, to.Equal(*got[0].ExpectedResolutionTo))
+}
+
+func TestDiagnosisRepository_MarkSuperseded_ScopedToOwningUser(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewDiagnosisRepository(newTestStore(t))
+
+	require.NoError(t, repo.Add(ctx, normalization.Diagnosis{ID: "dx_doc1_0", UserID: "user1", DocumentID: "doc1", Name: "Хронический тонзиллит", Status: "chronic"}))
+	require.NoError(t, repo.MarkSuperseded(ctx, "dx_doc1_0", "user2", "wrong user"))
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "chronic", got[0].Status, "MarkSuperseded for a different user must be a no-op")
+}
+
 func TestDiagnosisRepository_ReplaceForDocument(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewDiagnosisRepository(newTestStore(t))

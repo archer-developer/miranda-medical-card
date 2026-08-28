@@ -3,8 +3,12 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
+	"github.com/archer-developer/miranda-medical-card/internal/diagnosisreconcile"
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
 
@@ -96,4 +100,108 @@ func (p *Pipeline) ReindexDocumentFTS(ctx context.Context, userID, documentID st
 		return fmt.Errorf("pipeline: reindex document fts: %w", err)
 	}
 	return nil
+}
+
+// DiagnosisReconciliationChange describes one transition
+// ReconcileDiagnosisHistory found — or, in dry-run mode, would apply.
+type DiagnosisReconciliationChange struct {
+	DiagnosisID   string
+	DiagnosisName string
+	TargetID      string
+	TargetName    string
+	Relation      string // diagnosisreconcile.RelationRefines or RelationCancels
+}
+
+// ReconcileDiagnosisHistory is a one-off migration operation (see
+// BackfillStudyTitle's doc comment above for the general shape/rationale):
+// replays userID's existing active/chronic diagnoses through the same
+// decideDiagnosisRelation/applyDiagnosisRelation pair the live pipeline hook
+// uses (diagnoses.go's reconcileOneDiagnosis), in chronological order, as if
+// Diagnosis Reconciliation (docs/adr/008-diagnosis-cross-document-reconciliation.md)
+// had been in place from the start — for diagnoses persisted before that
+// mechanism existed.
+//
+// Sorted by DiagnosedAt; a diagnosis with no DiagnosedAt falls back to its
+// source document's own DocumentDate (documents almost always carry one even
+// when the diagnosis line itself didn't parse a date), so the replay order
+// stays historically meaningful, and finally to the zero time (sorted
+// first) if neither is known.
+//
+// dryRun=true reports every transition Reconcile would make without calling
+// MarkSuperseded/MarkResolved — safe to run repeatedly before committing to
+// --apply. Either way, a found transition still updates the in-memory
+// "currently active" working set for the rest of the replay (the superseded/
+// cancelled candidate is removed, the new diagnosis is added) so later
+// diagnoses in the same replay are compared against what the state would
+// actually be at that point, not the pre-backfill snapshot.
+func (p *Pipeline) ReconcileDiagnosisHistory(ctx context.Context, userID string, dryRun bool) ([]DiagnosisReconciliationChange, error) {
+	all, err := p.diagnoses.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: reconcile diagnosis history: list: %w", err)
+	}
+
+	var ordered []normalization.Diagnosis
+	for _, d := range all {
+		if d.Status == "active" || d.Status == "chronic" {
+			ordered = append(ordered, d)
+		}
+	}
+
+	sortDate := make(map[string]time.Time, len(ordered))
+	for _, d := range ordered {
+		sortDate[d.ID] = p.diagnosisSortDate(ctx, d)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return sortDate[ordered[i].ID].Before(sortDate[ordered[j].ID])
+	})
+
+	var changes []DiagnosisReconciliationChange
+	var working []normalization.Diagnosis
+	for _, d := range ordered {
+		result, err := p.decideDiagnosisRelation(ctx, d, working)
+		if err != nil {
+			return changes, fmt.Errorf("pipeline: reconcile diagnosis history: %w", err)
+		}
+
+		if result.TargetID != "" && (result.Relation == diagnosisreconcile.RelationRefines || result.Relation == diagnosisreconcile.RelationCancels) {
+			targetName := ""
+			remaining := working[:0:0]
+			for _, w := range working {
+				if w.ID == result.TargetID {
+					targetName = w.Name
+					continue
+				}
+				remaining = append(remaining, w)
+			}
+			changes = append(changes, DiagnosisReconciliationChange{
+				DiagnosisID: d.ID, DiagnosisName: d.Name,
+				TargetID: result.TargetID, TargetName: targetName,
+				Relation: result.Relation,
+			})
+			if !dryRun {
+				if err := p.applyDiagnosisRelation(ctx, userID, d, result, sortDate[d.ID]); err != nil {
+					return changes, fmt.Errorf("pipeline: reconcile diagnosis history: apply: %w", err)
+				}
+			}
+			working = remaining
+		}
+		working = append(working, d)
+	}
+	return changes, nil
+}
+
+// diagnosisSortDate resolves the chronological key ReconcileDiagnosisHistory
+// replays d in: d.DiagnosedAt if known, else its source document's own
+// DocumentDate, else the zero time (sorts first — an undated diagnosis with
+// an undated document is treated as the oldest, unknown-provenance data
+// rather than arbitrarily "most recent").
+func (p *Pipeline) diagnosisSortDate(ctx context.Context, d normalization.Diagnosis) time.Time {
+	if d.DiagnosedAt != nil {
+		return *d.DiagnosedAt
+	}
+	doc, err := p.documentRepo.Get(ctx, d.DocumentID, d.UserID)
+	if err != nil || doc.DocumentDate == nil {
+		return time.Time{}
+	}
+	return *doc.DocumentDate
 }

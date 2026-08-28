@@ -47,6 +47,14 @@ type DiagnosisRepository interface {
 	// why the status is what it now is, not why some earlier Extraction
 	// picked whatever it had before.
 	MarkResolved(ctx context.Context, id, userID string, at time.Time, reasoning string) error
+	// MarkSuperseded sets id's status to "superseded" — set only by
+	// cross-document Diagnosis Reconciliation (internal/diagnosisreconcile),
+	// never by Extraction or a direct user action. Deliberately leaves
+	// ActualResolutionAt untouched (unlike MarkResolved): being superseded by
+	// a more specific/informative diagnosis is an administrative "no longer
+	// the active record" transition, not a claim that the condition itself
+	// clinically resolved.
+	MarkSuperseded(ctx context.Context, id, userID, reasoning string) error
 }
 
 type sqliteDiagnosisRepository struct {
@@ -176,6 +184,17 @@ func (r *sqliteDiagnosisRepository) MarkResolved(ctx context.Context, id, userID
 	)
 	if err != nil {
 		return fmt.Errorf("storage: mark diagnosis resolved: %w", err)
+	}
+	return nil
+}
+
+func (r *sqliteDiagnosisRepository) MarkSuperseded(ctx context.Context, id, userID, reasoning string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE diagnoses SET status = 'superseded', status_reasoning = ? WHERE id = ? AND user_id = ?`,
+		reasoning, id, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: mark diagnosis superseded: %w", err)
 	}
 	return nil
 }

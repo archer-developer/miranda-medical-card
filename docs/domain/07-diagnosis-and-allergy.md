@@ -34,7 +34,7 @@
 | `code` | `MedicalCode` (VO, см. `11-value-objects.md` §10) | ❌ | Код диагноза (ICD-10 и т.п.), если распознан. Отсутствие кода не блокирует создание сущности — см. `../architecture/02-processing-pipeline.md` §16 "автоматическое определение ICD-10" как будущее расширение. |
 | `name` | string | ✅ | Название диагноза как в документе. |
 | `diagnosedAt` | date | ✅ | Дата постановки. Extraction указывает её, только если в тексте документа она явно привязана к этому диагнозу (например, диагноз стоит в общем заключении под одной датой документа, без отдельной даты для каждой строки) — в этом случае `internal/normalization` детерминированно подставляет дату документа, так что поле сущности после Normalization никогда не пусто (в отличие от возвращаемого Extraction значения). |
-| `status` | enum (`suspected`, `active`, `chronic`, `resolved`) | ✅ | См. "Определение `status`" ниже. |
+| `status` | enum (`suspected`, `active`, `chronic`, `resolved`, `superseded`) | ✅ | См. "Определение `status`" ниже. |
 | `notes` | text | ❌ | Дополнительный контекст из документа. |
 | `expectedResolutionFrom`, `expectedResolutionTo` | date, date | ❌ | Оценочный диапазон даты разрешения — только для `status = active`. См. ниже. |
 | `statusReasoning` | text | ❌ | Объяснение модели, почему выбран этот `status`/`expectedResolution*`. Не клинический факт — см. ниже. |
@@ -62,10 +62,22 @@
   диагноз упомянут исключительно как семейный анамнез, а не находка этого документа).
 
 Это не единственный источник `status = resolved` — пользователь может напрямую подтвердить разрешение диагноза в
-диалоге ("да, ОРВИ прошла"), минуя новый документ, через `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`). Это
-единственный способ изменить `Diagnosis.status` вне Extraction — см. `actualResolutionAt` ниже.
+диалоге ("да, ОРВИ прошла"), минуя новый документ, через `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`).
 
-Агрегация "актуальные диагнозы на сегодня" — задача `Diagnosis Resolver` при пересборке `MedicalProfile` (см. `05-medical-profile.md`), не поле самой сущности.
+`status = superseded` — третий и последний способ изменить `Diagnosis.status` вне самой Extraction, вместе с
+`resolved` через `medical.resolve_diagnosis` выше. Устанавливается **Diagnosis Reconciliation**
+(`internal/diagnosisreconcile`, `docs/adr/008-diagnosis-cross-document-reconciliation.md`) — межд*окументным* шагом,
+который выполняется сразу после того, как новый документ добавил свой собственный `Diagnosis`: небольшой Structured
+LLM-вызов сравнивает новый диагноз с текущими `active`/`chronic` диагнозами пользователя (та же схема "короткий
+список кандидатов, никогда не гадать", что и в `internal/decline`) и решает, уточняет ли новый диагноз один из них
+(→ старый получает `status = superseded`) или отменяет его (→ старый получает `status = resolved` тем же
+`MarkResolved`, что и `medical.resolve_diagnosis`). Это единственное, ради чего Normalization/Extraction остаются
+document-scoped, но Pipeline всё же смотрит за пределы одного документа для `Diagnosis` — см.
+`../architecture/02-processing-pipeline.md` §6. В отличие от `resolved`, `superseded` не утверждает, что состояние
+клинически разрешилось — только что более новый, информативный диагноз занял его место в качестве "актуального"; поэтому `actualResolutionAt` (ниже) для `superseded`-диагноза остаётся пустым.
+
+Агрегация "актуальные диагнозы на сегодня" — задача `Diagnosis Resolver` при пересборке `MedicalProfile` (см.
+`05-medical-profile.md`), не поле самой сущности; `superseded`, как и `resolved`, туда никогда не попадает.
 
 ## `expectedResolutionFrom`/`expectedResolutionTo`
 
@@ -109,8 +121,12 @@
 если её (без учёта регистра/пробелов) `name` совпадает с именем уже выжившей (подтверждённой пользователем) записи
 этого документа — иначе повторная экстракция того же документа заново назвала бы диагноз тем же именем и создала бы
 рядом с `resolved`-записью визуально неотличимую `active`-дубликат. Дедуп срабатывает только на точное (с точностью
-до регистра/пробелов) совпадение имени — переформулированный диагноз всё ещё может проскочить и лечь рядом с
-выжившей записью как безобидный дубликат, тот же trade-off, что и у `PlannedAction` (`14-planned-action.md`).
+до регистра/пробелов) совпадение имени в рамках **одного и того же** `documentId` — переформулированный диагноз в
+повторной обработке того же документа всё ещё может проскочить, тот же trade-off, что и у `PlannedAction`
+(`14-planned-action.md`). Дубликаты/перекрывающиеся диагнозы, приходящие из **разных** документов — сценарий,
+который эта заметка исторически называла нерешённым (например, "Хронический тонзиллит" и "Хронический тонзиллит,
+вне обострения" из двух разных визитов), теперь адресует Diagnosis Reconciliation (`status = superseded`, см. выше)
+вместо этого document-scoped дедупа.
 
 ## `Overdue` — вычисляется, не хранится
 
@@ -181,4 +197,4 @@ Extraction дополнительно просит модель коротко �
 
 # 5. Repository
 
-`DiagnosisRepository`, `AllergyRepository` — структура методов идентична `MedicationRepository` (`Add`, `ListByUser`, `ListByDocument`, `ReplaceForDocument`), см. `06-medication.md` §6. `DiagnosisRepository` дополнительно имеет `MarkResolved` — единственный targeted-update метод среди этих трёх репозиториев, обслуживающий `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`).
+`DiagnosisRepository`, `AllergyRepository` — структура методов идентична `MedicationRepository` (`Add`, `ListByUser`, `ListByDocument`, `ReplaceForDocument`), см. `06-medication.md` §6. `DiagnosisRepository` дополнительно имеет два targeted-update метода, единственные среди этих трёх репозиториев: `MarkResolved`, обслуживающий `medical.resolve_diagnosis` (`../mcp/09-diagnoses.md`), и `MarkSuperseded`, обслуживающий Diagnosis Reconciliation (`internal/diagnosisreconcile`, `docs/adr/008-diagnosis-cross-document-reconciliation.md`) — в отличие от `MarkResolved`, не трогает `actualResolutionAt`.
