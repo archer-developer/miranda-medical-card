@@ -136,6 +136,15 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
 - **`internal/httpserver`** — bearer-auth gate in front of the MCP handler and `/files/{fileId}`; kept
   free of any MCP-specific knowledge. `/links/{linkId}` (`internal/linkstore`) is the one route mounted
   here without that gate — its random id + TTL is the access control, not the shared token.
+- **`internal/backup`** — periodic snapshotting of everything under `data/` that holds irreplaceable
+  state: `database.path` (via SQLite's `VACUUM INTO`, safe against a live connection — see `Run`'s doc
+  comment for why a raw file copy isn't) and `files.dir` (`internal/filestore`'s uploaded document
+  binaries, plain recursive copy since those files are written once and never mutated), plus
+  `config/*.yaml` and `.env`, into a timestamped subdirectory of `backup.dir`, with old subdirectories
+  pruned past `backup.retention_count` — mirrors miranda's own `internal/backup` field-for-field, opt-in
+  and disabled by default the same way. Driven by a ticker in `main.go`'s `sweepBackups` (gated on
+  `backup.enabled`) and by `miranda-medical-card backup`, a one-shot CLI invocation that runs
+  regardless of that flag and exits without starting the rest of the service.
 
 ## Conventions
 

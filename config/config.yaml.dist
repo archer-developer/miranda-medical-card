@@ -155,3 +155,29 @@ logging:
   max_size_mb: 10
   max_backups: 5
   max_age_days: 30
+
+# backup: off by default — there's no safe auto-detected dir (see below).
+# When enabled, internal/backup periodically snapshots database.path (via
+# SQLite's VACUUM INTO, safe to run against a live connection) and
+# recursively copies files.dir (the filestore's uploaded document binaries)
+# into a timestamped subdirectory of dir, alongside a copy of every
+# config/*.yaml file and .env (needed to actually restore a working
+# deployment from the backup alone). data/tls's self-signed certificate/key
+# are deliberately not included — they're regenerated automatically on
+# startup if missing. Older timestamped subdirectories beyond
+# retention_count are pruned after each successful run.
+#
+# `miranda-medical-card backup` also runs one backup cycle on demand (using
+# these same settings regardless of enabled) and exits, without starting the
+# full service — handy right before a risky change or to sanity-check the
+# config before trusting the ticker.
+# backup:
+#   enabled: false
+#   # An absolute path onto a separately mounted disk is recommended — a
+#   # backup that lives on the same disk as the data it backs up doesn't
+#   # protect against losing that disk. A relative path (under the working
+#   # directory) is also fine for local/dev use. Created automatically if
+#   # missing.
+#   dir: "/mnt/backup/miranda-medical-card"
+#   interval_minutes: 1440  # once a day
+#   retention_count: 7      # keep the 7 most recent backups; 0 = keep all

@@ -41,6 +41,7 @@ import (
 	"github.com/archer-developer/miranda-llm/router"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
+	"github.com/archer-developer/miranda-medical-card/internal/backup"
 	"github.com/archer-developer/miranda-medical-card/internal/config"
 	"github.com/archer-developer/miranda-medical-card/internal/envfile"
 	"github.com/archer-developer/miranda-medical-card/internal/extraction"
@@ -139,6 +140,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// `miranda-medical-card backup` runs one backup cycle
+	// (internal/backup.Run) and exits — for an on-demand run (before
+	// trusting the ticker, or right before a risky change) without starting
+	// the full service (HTTP server, MCP tools, LLM providers, ...). Uses
+	// cfg.Backup.Dir/RetentionCount regardless of cfg.Backup.Enabled, since
+	// that flag only gates the automatic ticker in run/sweepBackups, not
+	// this explicit invocation.
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		if err := backup.Run(context.Background(), cfg.Backup, cfg.Database.Path, cfg.Files.Dir, cfgDir, dotEnvPath, logger); err != nil {
+			logger.Error("backup failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	realLogger, closeLogger, err := buildLogger(cfg.Logging)
 	if err != nil {
 		logger.Error("fatal", "error", err)
@@ -147,7 +163,7 @@ func main() {
 	defer closeLogger()
 	logger = realLogger
 
-	if err := run(cfg, logger); err != nil {
+	if err := run(cfg, logger, cfgDir); err != nil {
 		logger.Error("fatal", "error", err)
 		os.Exit(1)
 	}
@@ -199,7 +215,11 @@ func seedIndicatorAliases(ctx context.Context, store *storage.Store) error {
 	return nil
 }
 
-func run(cfg config.Config, logger *slog.Logger) error {
+// configDir is passed through (rather than re-derived from
+// os.Getenv(configDirEnv) here too) so run's only source of truth for where
+// config.yaml's *.yaml files live is main's own resolution of it, used both
+// to load cfg and, later, by sweepBackups to back the same directory up.
+func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 	token := os.Getenv(cfg.AuthTokenEnv)
 	if token == "" {
 		return fmt.Errorf("main: environment variable %s (named by auth_token_env) is not set — refusing to start with no auth token", cfg.AuthTokenEnv)
@@ -317,6 +337,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	links := linkstore.New(storage.NewEphemeralLinkRepository(store))
 	go cleanupExpiredLinks(ctx, links, logger)
+	go sweepBackups(ctx, cfg.Backup, cfg.Database.Path, cfg.Files.Dir, configDir, dotEnvPath, logger)
 
 	server := mcpserver.New(pl, asker, cfg.Users, cfg.Files.MaxSizeBytes, cfg.PublicBaseURL, links, logger)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
@@ -546,6 +567,33 @@ func cleanupExpiredLinks(ctx context.Context, links *linkstore.Store, logger *sl
 				logger.Error("cleanup expired links failed", "error", err)
 			} else if n > 0 {
 				logger.Info("cleanup expired links", "removed", n)
+			}
+		}
+	}
+}
+
+// sweepBackups runs a full database + filestore + config backup
+// (internal/backup.Run) every cfg.IntervalMinutes. Unlike
+// cleanupExpiredLinks's fixed linkCleanupInterval, the ticker interval here
+// isn't a separate polling cadence decoupled from some per-item due time —
+// every tick just performs a backup, so cfg.IntervalMinutes drives the
+// ticker directly. A no-op if cfg.Enabled is false, and exits once ctx is
+// cancelled at shutdown.
+func sweepBackups(ctx context.Context, cfg config.BackupConfig, dbPath, filesDir, configDir, envPath string, logger *slog.Logger) {
+	if !cfg.Enabled {
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(cfg.IntervalMinutes) * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := backup.Run(ctx, cfg, dbPath, filesDir, configDir, envPath, logger); err != nil {
+				logger.Error("backup failed", "error", err)
 			}
 		}
 	}

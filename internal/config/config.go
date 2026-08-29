@@ -68,6 +68,7 @@ type Config struct {
 	Search        SearchConfig    `yaml:"search"`
 	Users         []UserConfig    `yaml:"users"`
 	Logging       LoggingConfig   `yaml:"logging"`
+	Backup        BackupConfig    `yaml:"backup"`
 }
 
 // TLSConfig controls whether the HTTP server listens with TLS — same
@@ -229,6 +230,36 @@ type LoggingConfig struct {
 	MaxAgeDays int `yaml:"max_age_days"`
 }
 
+// BackupConfig controls periodic snapshotting of Database.Path and
+// Files.Dir — everything under data/ that actually holds irreplaceable
+// state (docs on-disk TLS.CertFile/KeyFile are excluded: EnsureSelfSigned
+// regenerates them from scratch on any startup that finds them missing, see
+// cmd/miranda-medical-card/main.go's run()) — plus config.yaml's *.yaml
+// files and the .env holding API keys, into a timestamped subdirectory of
+// Dir on a fixed interval (internal/backup), with the oldest snapshots
+// pruned once more than RetentionCount accumulate. Mirrors miranda's own
+// config.BackupConfig field-for-field.
+//
+// Opt-in (Enabled defaults false), same posture as miranda's: Dir is
+// deployment-specific (often an absolute path onto a separately mounted
+// disk, so backups actually survive losing the machine this service runs
+// on), so there's no safe default to silently start writing to.
+type BackupConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Dir is where timestamped backup subdirectories are written. May be a
+	// relative path (under the working directory) or an absolute path onto
+	// a separately mounted disk. Created automatically if missing.
+	Dir string `yaml:"dir"`
+	// IntervalMinutes is how often a full backup runs — the actual backup
+	// cadence itself, every tick performs a real backup.
+	IntervalMinutes int `yaml:"interval_minutes"`
+	// RetentionCount is how many of the most recent timestamped backup
+	// subdirectories to keep; older ones are deleted after each successful
+	// run. 0 means keep all of them (same convention as
+	// LoggingConfig.MaxBackups).
+	RetentionCount int `yaml:"retention_count"`
+}
+
 // Default returns the built-in configuration. Every field has a safe,
 // runnable value so a missing or empty config.yaml still produces a working
 // service — except Users, which has no default (see validate()).
@@ -281,6 +312,17 @@ func Default() Config {
 			MaxSizeMB:  10,
 			MaxBackups: 5,
 			MaxAgeDays: 30,
+		},
+		// Disabled by default — see BackupConfig's doc comment for why Dir
+		// has no safe auto-detected default. Interval/RetentionCount are
+		// still filled in with sane values so enabling it only requires
+		// flipping Enabled, unless a deployment wants an external-disk Dir
+		// instead.
+		Backup: BackupConfig{
+			Enabled:         false,
+			Dir:             "./data/backups",
+			IntervalMinutes: 24 * 60,
+			RetentionCount:  7,
 		},
 	}
 }
@@ -447,6 +489,17 @@ func (c Config) validate() error {
 			if !seen[sharedID] {
 				return fmt.Errorf("config: users[%d] (%s): shared_with references unknown user %q", i, u.ID, sharedID)
 			}
+		}
+	}
+	if c.Backup.Enabled {
+		if c.Backup.Dir == "" {
+			return fmt.Errorf("config: backup.dir must not be empty when backup.enabled is true")
+		}
+		if c.Backup.IntervalMinutes < 1 {
+			return fmt.Errorf("config: backup.interval_minutes must be at least 1 when backup.enabled is true")
+		}
+		if c.Backup.RetentionCount < 0 {
+			return fmt.Errorf("config: backup.retention_count must not be negative")
 		}
 	}
 	return nil

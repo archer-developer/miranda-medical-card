@@ -279,3 +279,44 @@ llm:
 	require.Equal(t, "escalate_to_claude", cfg.LLM.Providers[0].Escalation.ToolName)
 	require.Equal(t, "Hand off hard questions.", cfg.LLM.Providers[0].Escalation.Description)
 }
+
+func TestLoad_BackupDisabledByDefault(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.False(t, cfg.Backup.Enabled)
+	require.Equal(t, 7, cfg.Backup.RetentionCount, "sane defaults are pre-filled even though disabled")
+}
+
+func TestLoad_BackupEnabledWithoutDirRejected(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+backup:
+  enabled: true
+  dir: ""
+`)
+	_, err := config.Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "backup.dir")
+}
+
+func TestLoad_BackupEnabledWithValidDirAccepted(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+backup:
+  enabled: true
+  dir: /mnt/backup/medical-card
+  interval_minutes: 60
+  retention_count: 3
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Equal(t, "/mnt/backup/medical-card", cfg.Backup.Dir)
+	require.Equal(t, 60, cfg.Backup.IntervalMinutes)
+	require.Equal(t, 3, cfg.Backup.RetentionCount)
+}
