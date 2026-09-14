@@ -33,7 +33,7 @@
 | `indicatorName` | string | ✅ | Название показателя, канонизированное (например `ALT`, `LDL`) — см. `../architecture/02-processing-pipeline.md` §6. |
 | `code` | `MedicalCode` (VO, см. `11-value-objects.md` §10) | ❌ | LOINC-код показателя, если распознан. Отсутствие кода не блокирует создание сущности — см. §8 за механизмом распознавания. |
 | `value` | `LabValue` (VO) | ✅ | Значение (числовое `value` и/или описательное `qualitativeValue`) + единица измерения + референсный диапазон, см. `11-value-objects.md` §3. |
-| `takenAt` | date | ✅ | Дата забора/исследования. |
+| `takenAt` | date | ✅ | Дата забора/исследования. Если Structured Extraction не смогла привязать дату к конкретной строке результата (многостраничный бланк, где дата указана один раз в шапке, а не рядом с каждым показателем), Normalization подставляет `documentDate` документа-источника — см. `internal/normalization/normalization.go`'s LabResults loop. Остаётся `null` только если и `documentDate` самого документа неизвестен. |
 
 ## Timeline
 

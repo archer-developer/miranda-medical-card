@@ -313,10 +313,12 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 	// loop below and docs/adr/004-planned-actions.md). Computed once, up
 	// front, since both loops need it.
 	anchor := time.Now().UTC()
-	if documentDate, err := parseOptionalDate(extracted.DocumentDate); err != nil {
+	var documentDate *time.Time
+	if parsed, err := parseOptionalDate(extracted.DocumentDate); err != nil {
 		addErr("documentDate %q: %w", extracted.DocumentDate, err)
-	} else if documentDate != nil {
-		anchor = *documentDate
+	} else if parsed != nil {
+		documentDate = parsed
+		anchor = *parsed
 	}
 
 	for i, d := range extracted.Diagnoses {
@@ -393,6 +395,17 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 		takenAt, err := parseOptionalDate(l.TakenAt)
 		if err != nil {
 			addErr("labResults[%d] %q: takenAt: %w", i, l.Name, err)
+		}
+		// A multi-page lab report often states its order/collection date once
+		// in the document header rather than repeating it next to every
+		// individual result row, so Structured Extraction sometimes can't
+		// attach a per-item date even though the document's own date is
+		// known. Falling back to it here (rather than leaving TakenAt nil)
+		// keeps LatestByIndicator's "nil TakenAt never wins over a dated one"
+		// tie-break (internal/storage/lab_result.go) from preferring a truly
+		// older, merely-better-dated result over this one.
+		if takenAt == nil {
+			takenAt = documentDate
 		}
 		indicatorName, aliasErr := canonicalizeIndicatorName(ctx, indicatorAliases, l.Name)
 		if aliasErr != nil {

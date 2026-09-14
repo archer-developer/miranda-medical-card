@@ -190,6 +190,92 @@ func (p *Pipeline) ReconcileDiagnosisHistory(ctx context.Context, userID string,
 	return changes, nil
 }
 
+// LabResultDateBackfillChange describes one LabResult BackfillLabResultDates
+// found with no TakenAt — or, in dry-run mode, would give one.
+type LabResultDateBackfillChange struct {
+	LabResultID   string
+	IndicatorName string
+	DocumentID    string
+	TakenAt       time.Time
+}
+
+// BackfillLabResultDates is a one-off migration operation (see
+// BackfillStudyTitle's doc comment above for the general shape/rationale):
+// gives every userID LabResult with no TakenAt its source document's own
+// DocumentDate, for rows persisted before Normalize's LabResults loop
+// (internal/normalization/normalization.go) fell back to it itself.
+//
+// A multi-page lab report often states its order/collection date once in
+// the document header rather than repeating it next to every individual
+// result row, so Structured Extraction sometimes couldn't attach a per-item
+// date even though the document's own date was known — leaving TakenAt nil
+// for that LabResult forever after, which in turn made
+// LabResultRepository.LatestByIndicator's "nil TakenAt never wins over a
+// dated one" tie-break (internal/storage/lab_result.go) prefer a truly
+// older, merely-better-dated result for that indicator. Found investigating
+// a wrong "current ferritin level" answer on 2026-09-14 (see git log around
+// this function).
+//
+// A LabResult whose document itself has no DocumentDate either is left
+// alone (nothing to backfill from) and not counted as a change.
+//
+// dryRun=true reports every row that would change without calling
+// ReplaceForDocument — safe to run repeatedly before committing to --apply.
+func (p *Pipeline) BackfillLabResultDates(ctx context.Context, userID string, dryRun bool) ([]LabResultDateBackfillChange, error) {
+	all, err := p.labResults.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: backfill lab result dates: list: %w", err)
+	}
+
+	byDocument := make(map[string][]normalization.LabResult)
+	for _, l := range all {
+		byDocument[l.DocumentID] = append(byDocument[l.DocumentID], l)
+	}
+
+	var changes []LabResultDateBackfillChange
+	for documentID, results := range byDocument {
+		hasUndated := false
+		for _, l := range results {
+			if l.TakenAt == nil {
+				hasUndated = true
+				break
+			}
+		}
+		if !hasUndated {
+			continue
+		}
+
+		doc, err := p.documentRepo.Get(ctx, documentID, userID)
+		if err != nil {
+			return changes, fmt.Errorf("pipeline: backfill lab result dates: get document %s: %w", documentID, err)
+		}
+		if doc.DocumentDate == nil {
+			continue
+		}
+
+		changed := false
+		for i, l := range results {
+			if l.TakenAt != nil {
+				continue
+			}
+			results[i].TakenAt = doc.DocumentDate
+			changed = true
+			changes = append(changes, LabResultDateBackfillChange{
+				LabResultID:   l.ID,
+				IndicatorName: l.IndicatorName,
+				DocumentID:    documentID,
+				TakenAt:       *doc.DocumentDate,
+			})
+		}
+		if changed && !dryRun {
+			if err := p.labResults.ReplaceForDocument(ctx, documentID, results); err != nil {
+				return changes, fmt.Errorf("pipeline: backfill lab result dates: replace %s: %w", documentID, err)
+			}
+		}
+	}
+	return changes, nil
+}
+
 // diagnosisSortDate resolves the chronological key ReconcileDiagnosisHistory
 // replays d in: d.DiagnosedAt if known, else its source document's own
 // DocumentDate, else the zero time (sorts first — an undated diagnosis with

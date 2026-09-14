@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/archer-developer/miranda-llm/llmtest"
 
 	"github.com/archer-developer/miranda-medical-card/internal/filestore"
+	"github.com/archer-developer/miranda-medical-card/internal/normalization"
 	"github.com/archer-developer/miranda-medical-card/internal/pipeline"
 	"github.com/archer-developer/miranda-medical-card/internal/profile"
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
@@ -346,6 +348,72 @@ func TestReindexDocumentFTS_DropsLabReportRawTextButKeepsSummary(t *testing.T) {
 	bySummary, err := fts.SearchDocuments(ctx, "user1", "Лабораторное", 10)
 	require.NoError(t, err)
 	require.Len(t, bySummary, 1, "Summary must still be indexed after reindexing")
+}
+
+// TestBackfillLabResultDates_DryRunThenApply is a regression test for a real
+// bug found investigating a wrong "current ferritin level" answer on
+// 2026-09-14 (see internal/normalization/normalization.go and this method's
+// own doc comment): a LabResult with no TakenAt (a multi-page lab report
+// stated its date once in the header, not next to every result row) never
+// won LatestByIndicator's "nil never beats a dated one" tie-break against a
+// genuinely older but dated reading for the same indicator.
+func TestBackfillLabResultDates_DryRunThenApply(t *testing.T) {
+	ctx := context.Background()
+	s, fs := newTestBackend(t)
+	docRepo := storage.NewDocumentRepository(s)
+	labResults := storage.NewLabResultRepository(s)
+
+	oldDate := time.Date(2025, 4, 15, 0, 0, 0, 0, time.UTC)
+	_, err := docRepo.Add(ctx, storage.MedicalDocument{
+		ID: "doc_old", UserID: "user1", FileID: "file_old", Status: storage.DocumentStatusReady,
+		DocumentDate: &oldDate, UploadedAt: oldDate,
+	})
+	require.NoError(t, err)
+	require.NoError(t, labResults.Add(ctx, normalization.LabResult{
+		ID: "lab_old", UserID: "user1", DocumentID: "doc_old",
+		IndicatorName: "Ферритин", Value: 63.79, Unit: "нг/мл", TakenAt: &oldDate,
+	}))
+
+	newDate := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	_, err = docRepo.Add(ctx, storage.MedicalDocument{
+		ID: "doc_new", UserID: "user1", FileID: "file_new", Status: storage.DocumentStatusReady,
+		DocumentDate: &newDate, UploadedAt: newDate,
+	})
+	require.NoError(t, err)
+	// This is the actual result from the multi-page report: TakenAt is nil
+	// even though its document's own DocumentDate is known.
+	require.NoError(t, labResults.Add(ctx, normalization.LabResult{
+		ID: "lab_new", UserID: "user1", DocumentID: "doc_new",
+		IndicatorName: "Ферритин", Value: 20.18, Unit: "нг/мл",
+	}))
+
+	latest, err := labResults.LatestByIndicator(ctx, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "lab_old", latest["Ферритин"].ID, "sanity check: the undated-but-actually-newer reading loses the tie-break before backfill")
+
+	p := pipeline.New(nil, nil, nil, nil, nil, "", "", fs, s, nil, nil)
+
+	// 1. Dry run: reports the fix without mutating storage.
+	changes, err := p.BackfillLabResultDates(ctx, "user1", true)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	require.Equal(t, "lab_new", changes[0].LabResultID)
+	require.True(t, newDate.Equal(changes[0].TakenAt))
+
+	stillNil, err := labResults.ListByDocument(ctx, "doc_new")
+	require.NoError(t, err)
+	require.Nil(t, stillNil[0].TakenAt, "dry run must not mutate storage")
+
+	// 2. Apply: the identical backfill this time persists the date, which
+	// flips LatestByIndicator's pick to the genuinely most recent reading.
+	changes, err = p.BackfillLabResultDates(ctx, "user1", false)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+
+	latest, err = labResults.LatestByIndicator(ctx, "user1")
+	require.NoError(t, err)
+	require.Equal(t, "lab_new", latest["Ферритин"].ID, "after backfill, the actually-newer reading must win")
+	require.Equal(t, 20.18, latest["Ферритин"].Value)
 }
 
 func TestUploadDocument_SecondCallSameFileReturnsAlreadyImported(t *testing.T) {

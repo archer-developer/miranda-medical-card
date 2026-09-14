@@ -110,6 +110,15 @@ var commandCatalog = []commandHelp{
 		},
 	},
 	{
+		Name:    "backfill-lab-dates",
+		Summary: "One-off migration: give every LabResult with no TakenAt its source document's own DocumentDate — no LLM calls, dry-run by default, --apply to persist",
+		Usage:   "backfill-lab-dates --user <id> [--apply]",
+		Examples: []string{
+			`backfill-lab-dates --user alex`,
+			`backfill-lab-dates --user alex --apply`,
+		},
+	},
+	{
 		Name:    "llm-trace",
 		Summary: "Analyze logs/llm.log as a per-turn table of what the model actually did — which tool, what args, what came back",
 		Usage:   "llm-trace [--file PATH] [--conversation ID] [--latest] [--untagged]",

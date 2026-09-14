@@ -15,11 +15,12 @@
 // stderr — docs/cli/medical_dev.md §13. --stage picks which document-scoped
 // stage boundary to resume from (ocr/extraction/normalization — see
 // pipelineStages' own doc comment); --all loops over every document a user
-// has instead of a single documentId), backfill-titles, reindex-fts, and
-// reconcile-diagnoses — not part of that doc (all three are one-off data
-// migrations, not standing diagnostic commands), see
-// pipeline.Pipeline.BackfillStudyTitle's, .ReindexDocumentFTS's, and
-// .ReconcileDiagnosisHistory's own doc comments — and llm-trace (see
+// has instead of a single documentId), backfill-titles, reindex-fts,
+// backfill-lab-dates, and reconcile-diagnoses — not part of that doc (all
+// four are one-off data migrations, not standing diagnostic commands), see
+// pipeline.Pipeline.BackfillStudyTitle's, .ReindexDocumentFTS's,
+// .BackfillLabResultDates's, and .ReconcileDiagnosisHistory's own doc
+// comments — and llm-trace (see
 // llm_trace.go), also not part of that doc: a
 // reader for logs/llm.log (only ever produced when logging.level: debug —
 // written by cmd/miranda-medical-card/main.go's buildLLMTraceWriter for a
@@ -58,6 +59,7 @@
 //	medical-dev pipeline --all --user alex --stage normalization
 //	medical-dev backfill-titles --user alex [--provider gemini-agent]
 //	medical-dev reindex-fts --user alex
+//	medical-dev backfill-lab-dates --user alex [--apply]
 //	medical-dev reconcile-diagnoses --user alex [--apply] [--provider gemini-agent]
 //	medical-dev llm-trace [--file logs/llm.log] [--conversation ID | --latest]
 package main
@@ -151,6 +153,8 @@ func run(args []string) error {
 		return runReindexFTS(args, cfg, store)
 	case "reconcile-diagnoses":
 		return runReconcileDiagnoses(args, cfg, store)
+	case "backfill-lab-dates":
+		return runBackfillLabDates(args, cfg, store)
 	default:
 		return fmt.Errorf("unknown command %q — run 'medical-dev help' for the full list", command)
 	}
@@ -732,6 +736,52 @@ func runReindexFTS(args []string, cfg config.Config, store *storage.Store) error
 			continue
 		}
 		fmt.Printf("%s: reindexed (documentType=%s)\n", doc.ID, doc.DocumentType)
+	}
+	return nil
+}
+
+// --- backfill-lab-dates ---
+
+// runBackfillLabDates drives pipeline.Pipeline.BackfillLabResultDates (see
+// its own doc comment) for a single user — no LLM calls, no re-OCR, just a
+// plain fill-in from each affected LabResult's own document, same wiring
+// reasoning as runReindexFTS above.
+func runBackfillLabDates(args []string, cfg config.Config, store *storage.Store) error {
+	fs := flag.NewFlagSet("backfill-lab-dates", flag.ExitOnError)
+	user := fs.String("user", "", "user id")
+	apply := fs.Bool("apply", false, "persist the found dates instead of only reporting them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *user == "" {
+		return fmt.Errorf("--user is required")
+	}
+
+	ctx := context.Background()
+	pl, err := newPipeline(cfg, store)
+	if err != nil {
+		return err
+	}
+
+	changes, err := pl.BackfillLabResultDates(ctx, *user, !*apply)
+	if err != nil {
+		return err
+	}
+
+	mode := "dry run"
+	if *apply {
+		mode = "applied"
+	}
+	if len(changes) == 0 {
+		fmt.Printf("no undated lab results with a known document date found (%s)\n", mode)
+		return nil
+	}
+	for _, c := range changes {
+		fmt.Printf("%s %q -> %s (document %s) (%s)\n", c.LabResultID, c.IndicatorName, c.TakenAt.Format("2006-01-02"), c.DocumentID, mode)
+	}
+	fmt.Printf("%d lab result(s) (%s)\n", len(changes), mode)
+	if !*apply {
+		fmt.Println("re-run with --apply to persist these dates")
 	}
 	return nil
 }
