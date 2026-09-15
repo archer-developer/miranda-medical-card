@@ -413,7 +413,8 @@ func runTimeline(args []string, cfg config.Config, store *storage.Store) error {
 		if err != nil {
 			return fmt.Errorf("--to: %w", err)
 		}
-		filter.To = &t
+		endOfDay := t.Add(24*time.Hour - time.Nanosecond)
+		filter.To = &endOfDay
 	}
 	if *eventType != "" {
 		filter.Types = []string{*eventType}

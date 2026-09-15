@@ -60,7 +60,12 @@ func timelineHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 			if err != nil {
 				return nil, TimelineOutput{}, mcpError(codeInvalidEvent, "to must be YYYY-MM-DD, got %q", in.To)
 			}
-			filter.To = &t
+			// time.Parse gives midnight (00:00:00 UTC). Storage compares
+			// date <= To.Unix(), so midnight excludes every event logged
+			// later that day. Move to end-of-day so the full calendar day
+			// is included.
+			endOfDay := t.Add(24*time.Hour - time.Nanosecond)
+			filter.To = &endOfDay
 		}
 
 		events, err := pl.GetTimeline(ctx, subjectID, filter)
