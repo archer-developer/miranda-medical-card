@@ -175,7 +175,12 @@ func decodeKnowledgeRequest(providerName, argsJSON string) (KnowledgeRequest, er
 		if err != nil {
 			return KnowledgeRequest{}, fmt.Errorf("ask: %s: parse to date %q: %w", providerName, args.To, err)
 		}
-		req.To = &t
+		// The model passes a date like "2026-09-15"; time.Parse gives midnight
+		// (00:00:00 UTC). Storage compares date <= To.Unix(), so midnight would
+		// exclude every event logged later that day. Move to end-of-day so the
+		// full calendar day is included.
+		endOfDay := t.Add(24*time.Hour - time.Nanosecond)
+		req.To = &endOfDay
 	}
 	return req, nil
 }
