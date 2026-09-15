@@ -117,9 +117,13 @@ func (p *SelfReportedEventProvider) Collect(ctx context.Context, req KnowledgeRe
 		// Always self-reported by construction (Types filter above), unlike
 		// TimelineProvider which mixes sources and branches on DocumentID —
 		// see docs/domain/12-self-reported-events.md §6 for the 0.90 scale.
+		// Include HH:MM so that events with identical Summary text on the
+		// same date (e.g. ten "Отмечены шевеления ребенка." entries logged
+		// throughout one day) each produce a distinct Content string and
+		// are not collapsed by RankChunks' exact-content dedup.
 		chunks[i] = KnowledgeChunk{
 			Source: "self_reported_events", Title: e.Title, Confidence: 0.90,
-			Content: fmt.Sprintf("%s: %s. %s", e.Date.Format("2006-01-02"), e.Title, e.Summary),
+			Content: fmt.Sprintf("%s: %s. %s", e.Date.Format("2006-01-02 15:04"), e.Title, e.Summary),
 			EventID: e.SourceEntityID,
 		}
 	}
