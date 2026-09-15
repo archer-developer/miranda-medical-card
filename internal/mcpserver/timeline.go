@@ -77,7 +77,7 @@ func timelineHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 		items := make([]TimelineEventOutput, len(events))
 		for i, e := range events {
 			items[i] = TimelineEventOutput{
-				EventID: e.ID, Date: e.Date.Format("2006-01-02"), Type: e.Type,
+				EventID: e.ID, Date: e.Date.Format("2006-01-02 15:04"), Type: e.Type,
 				Title: e.Title, Summary: e.Summary, DocumentID: e.DocumentID,
 			}
 		}
