@@ -3,6 +3,7 @@ package ask
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // agentSystemPrompt is the single system prompt for the medical.ask agent
@@ -12,8 +13,8 @@ import (
 // rules (answer.go's answerPrompt, removed — see answerRules below, carried
 // over from it almost verbatim) — since one model now does both jobs across
 // the same open conversation instead of two separate isolated calls.
-func agentSystemPrompt(registry *Registry) string {
-	return fmt.Sprintf(toolUsePrompt, describeProviders(registry)) + "\n\n" + answerRules
+func agentSystemPrompt(registry *Registry, now time.Time) string {
+	return fmt.Sprintf(toolUsePrompt, now.Format("2006-01-02"), describeProviders(registry)) + "\n\n" + answerRules
 }
 
 // describeProviders mirrors the old planner.go helper of the same name —
@@ -28,6 +29,8 @@ func describeProviders(registry *Registry) string {
 }
 
 const toolUsePrompt = `You are a medical information assistant helping a user understand their own medical history, stored in this service's knowledge base.
+
+Today's date: %s. Use this when the user asks about "today", "this week", "recently", or any relative time reference, and when filtering tool calls by date.
 
 Available tools (knowledge sources):
 %s

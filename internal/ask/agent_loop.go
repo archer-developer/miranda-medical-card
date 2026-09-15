@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/llmtrace"
@@ -64,7 +65,7 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 	}
 
 	messages := make([]llm.Message, 0, len(history)+2)
-	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: agentSystemPrompt(a.registry)})
+	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: agentSystemPrompt(a.registry, time.Now())})
 	messages = append(messages, history...)
 	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: question})
 
