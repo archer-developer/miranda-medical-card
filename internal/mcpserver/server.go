@@ -56,7 +56,7 @@ func New(pl *pipeline.Pipeline, asker *ask.Asker, users []config.UserConfig, max
 	registerEventTools(server, pl, gate, logger)
 	registerAskTool(server, asker, gate, logger)
 	registerProfileTool(server, pl, gate, links, publicBaseURL, logger)
-	registerTimelineTool(server, pl, gate, logger)
+	registerTimelineTool(server, pl, gate, config.UserLocations(users), logger)
 	registerPlannedActionsTool(server, pl, gate, logger)
 	registerDeclinePlannedActionTool(server, pl, gate, logger)
 	registerCompletePlannedActionTool(server, pl, gate, logger)

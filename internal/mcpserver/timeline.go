@@ -11,11 +11,11 @@ import (
 	"github.com/archer-developer/miranda-medical-card/internal/storage"
 )
 
-func registerTimelineTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) {
+func registerTimelineTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, locations map[string]*time.Location, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.timeline",
 		Description: "Returns the chronological sequence of medical events: lab results, consultations, diagnoses, prescriptions, procedures, vaccinations, self-reported events. Does not perform analysis — data only, unlike medical.ask.",
-	}, timelineHandler(pl, gate, logger))
+	}, timelineHandler(pl, gate, locations, logger))
 }
 
 type TimelineInput struct {
@@ -40,11 +40,16 @@ type TimelineOutput struct {
 	Events []TimelineEventOutput `json:"events"`
 }
 
-func timelineHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[TimelineInput, TimelineOutput] {
+func timelineHandler(pl *pipeline.Pipeline, gate *userGate, locations map[string]*time.Location, logger *slog.Logger) mcp.ToolHandlerFor[TimelineInput, TimelineOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in TimelineInput) (*mcp.CallToolResult, TimelineOutput, error) {
 		subjectID, err := gate.resolveSubject(in.UserID, in.SubjectID)
 		if err != nil {
 			return nil, TimelineOutput{}, err
+		}
+
+		loc := time.UTC
+		if l, ok := locations[subjectID]; ok && l != nil {
+			loc = l
 		}
 
 		filter := storage.TimelineFilter{Types: in.Types, Limit: in.Limit}
@@ -77,7 +82,7 @@ func timelineHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 		items := make([]TimelineEventOutput, len(events))
 		for i, e := range events {
 			items[i] = TimelineEventOutput{
-				EventID: e.ID, Date: e.Date.Format("2006-01-02 15:04"), Type: e.Type,
+				EventID: e.ID, Date: e.Date.In(loc).Format("2006-01-02 15:04"), Type: e.Type,
 				Title: e.Title, Summary: e.Summary, DocumentID: e.DocumentID,
 			}
 		}
