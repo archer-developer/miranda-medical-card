@@ -142,6 +142,7 @@
 #     birth_date: "1988-04-12"
 #     sex: "male"
 #     language: "ru"  # Nutrition Advisor writes restrictions/recommendations in this language (ISO 639-1 code or plain name, either works), see docs/adr/006-nutrition-guidance.md; omit to let it infer from the input instead
+#     timezone: "Europe/Moscow"  # IANA timezone name used to format self-reported event timestamps shown to the medical.ask agent; omit to default to UTC
 #   - id: "kid"
 #     display_name: "Kid"
 #     birth_date: "2020-01-01"

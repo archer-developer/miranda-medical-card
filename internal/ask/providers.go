@@ -88,10 +88,23 @@ func (p *TimelineProvider) Collect(ctx context.Context, req KnowledgeRequest) ([
 // doesn't have to wade through document-derived events to find them.
 var selfReportedEventTypes = []string{"symptom", "medication_taken"}
 
-type SelfReportedEventProvider struct{ repo storage.TimelineRepository }
+type SelfReportedEventProvider struct {
+	repo      storage.TimelineRepository
+	locations map[string]*time.Location // userID → local timezone; nil or absent → UTC
+}
 
-func NewSelfReportedEventProvider(repo storage.TimelineRepository) *SelfReportedEventProvider {
-	return &SelfReportedEventProvider{repo: repo}
+// NewSelfReportedEventProvider builds a provider. locations maps each userID
+// to their configured local timezone (config.UserLocations); nil is valid and
+// falls back to UTC for every user.
+func NewSelfReportedEventProvider(repo storage.TimelineRepository, locations map[string]*time.Location) *SelfReportedEventProvider {
+	return &SelfReportedEventProvider{repo: repo, locations: locations}
+}
+
+func (p *SelfReportedEventProvider) userLocation(userID string) *time.Location {
+	if loc, ok := p.locations[userID]; ok && loc != nil {
+		return loc
+	}
+	return time.UTC
 }
 
 func (p *SelfReportedEventProvider) Metadata() ProviderMetadata {
@@ -117,13 +130,15 @@ func (p *SelfReportedEventProvider) Collect(ctx context.Context, req KnowledgeRe
 		// Always self-reported by construction (Types filter above), unlike
 		// TimelineProvider which mixes sources and branches on DocumentID —
 		// see docs/domain/12-self-reported-events.md §6 for the 0.90 scale.
-		// Include HH:MM so that events with identical Summary text on the
-		// same date (e.g. ten "Отмечены шевеления ребенка." entries logged
-		// throughout one day) each produce a distinct Content string and
-		// are not collapsed by RankChunks' exact-content dedup.
+		// Include HH:MM+timezone so that events with identical Summary text
+		// on the same date (e.g. ten "Отмечены шевеления ребенка." entries
+		// logged throughout one day) each produce a distinct Content string
+		// and are not collapsed by RankChunks' exact-content dedup. Using
+		// the user's configured local timezone (UTC if unset) keeps the time
+		// consistent with what the user wrote in their event descriptions.
 		chunks[i] = KnowledgeChunk{
 			Source: "self_reported_events", Title: e.Title, Confidence: 0.90,
-			Content: fmt.Sprintf("%s: %s. %s", e.Date.Format("2006-01-02 15:04 UTC"), e.Title, e.Summary),
+			Content: fmt.Sprintf("%s: %s. %s", e.Date.In(p.userLocation(req.UserID)).Format("2006-01-02 15:04 MST"), e.Title, e.Summary),
 			EventID: e.SourceEntityID,
 		}
 	}

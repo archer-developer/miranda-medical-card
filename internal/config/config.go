@@ -34,6 +34,13 @@ type UserConfig struct {
 	// symptoms/etc. given in the prompt, same as before this field
 	// existed.
 	Language string `yaml:"language"`
+	// Timezone, if set, is an IANA timezone name (e.g. "Europe/Moscow",
+	// "America/New_York", "UTC") used to format timestamps in self-reported
+	// event chunks shown to the medical.ask agent — so times appear in the
+	// user's local time rather than UTC. Empty defaults to UTC, which is
+	// unambiguous but may confuse the model when the user references local
+	// times in their event descriptions.
+	Timezone string `yaml:"timezone"`
 	// SharedWith is a read-only allowlist: other users' ids allowed to read
 	// this user's data via subjectId (see docs/domain/02-user.md §4). Empty
 	// by default — visible only to the owner.
@@ -473,6 +480,11 @@ func (c Config) validate() error {
 		if u.Sex != "" && u.Sex != "male" && u.Sex != "female" {
 			return fmt.Errorf("config: users[%d].sex must be \"male\" or \"female\" if set, got %q", i, u.Sex)
 		}
+		if u.Timezone != "" {
+			if _, err := time.LoadLocation(u.Timezone); err != nil {
+				return fmt.Errorf("config: users[%d].timezone %q is not a valid IANA timezone name", i, u.Timezone)
+			}
+		}
 		// encryption and shared_with are mutually exclusive — a shared user
 		// can't hold a key another reader would also need, see
 		// docs/domain/02-user.md §5 and docs/architecture/06-storage.md §14.
@@ -503,4 +515,23 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// UserLocations builds a map of user ID → *time.Location from the configured
+// timezone strings. Users with no Timezone (or an unrecognised one, which
+// validate() would have already rejected) are absent from the map; callers
+// fall back to time.UTC for absent entries.
+func UserLocations(users []UserConfig) map[string]*time.Location {
+	locs := make(map[string]*time.Location, len(users))
+	for _, u := range users {
+		if u.Timezone == "" {
+			continue
+		}
+		loc, err := time.LoadLocation(u.Timezone)
+		if err != nil {
+			continue // validate() already rejects bad names at startup; skip defensively here
+		}
+		locs[u.ID] = loc
+	}
+	return locs
 }

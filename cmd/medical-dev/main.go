@@ -948,7 +948,7 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	timelineRepo := storage.NewTimelineRepository(store)
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(timelineRepo),
-		ask.NewSelfReportedEventProvider(timelineRepo),
+		ask.NewSelfReportedEventProvider(timelineRepo, config.UserLocations(cfg.Users)),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(store)),
 		ask.NewDiagnosisProvider(storage.NewDiagnosisRepository(store)),
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),

@@ -289,7 +289,7 @@ func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 	timelineRepo := storage.NewTimelineRepository(store)
 	registry := ask.NewRegistry(
 		ask.NewTimelineProvider(timelineRepo),
-		ask.NewSelfReportedEventProvider(timelineRepo),
+		ask.NewSelfReportedEventProvider(timelineRepo, config.UserLocations(cfg.Users)),
 		ask.NewMedicationProvider(storage.NewMedicationRepository(store)),
 		ask.NewDiagnosisProvider(storage.NewDiagnosisRepository(store)),
 		ask.NewLabProvider(storage.NewLabResultRepository(store)),

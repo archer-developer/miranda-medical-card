@@ -44,7 +44,7 @@ func TestSelfReportedEventProvider_ReturnsOnlySelfReportedTypes(t *testing.T) {
 		Title: "Анализ крови", DocumentID: "doc1",
 	}))
 
-	provider := ask.NewSelfReportedEventProvider(repo)
+	provider := ask.NewSelfReportedEventProvider(repo, nil)
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
 	require.NoError(t, err)
 	require.Len(t, chunks, 2, "must include symptom and medication_taken, exclude lab_result")
@@ -68,7 +68,7 @@ func TestSelfReportedEventProvider_FiltersByDateRange(t *testing.T) {
 		SourceEntityType: "self_reported_event", SourceEntityID: "selfevt_2",
 	}))
 
-	provider := ask.NewSelfReportedEventProvider(repo)
+	provider := ask.NewSelfReportedEventProvider(repo, nil)
 	from, to := mustDate("2026-01-01"), mustDate("2026-12-31")
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", From: from, To: to})
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestSelfReportedEventProvider_FiltersByDateRange(t *testing.T) {
 
 func TestSelfReportedEventProvider_NoEventsReturnsEmpty(t *testing.T) {
 	s := newTestStore(t)
-	provider := ask.NewSelfReportedEventProvider(storage.NewTimelineRepository(s))
+	provider := ask.NewSelfReportedEventProvider(storage.NewTimelineRepository(s), nil)
 
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestSelfReportedEventProvider_DistinctChunksForSameDaySameText(t *testing.T
 		}))
 	}
 
-	provider := ask.NewSelfReportedEventProvider(repo)
+	provider := ask.NewSelfReportedEventProvider(repo, nil)
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1"})
 	require.NoError(t, err)
 	require.Len(t, chunks, 3, "each event must produce a distinct chunk even with identical Summary text")
@@ -149,7 +149,7 @@ func TestSelfReportedEventProvider_SameDayFilterIncludesAllHours(t *testing.T) {
 
 	midnight := mustDate("2026-09-15")                                         // 00:00:00 UTC — what time.Parse gives
 	endOfDay := mustDateEndOfDay("2026-09-15")                                 // 23:59:59.999… UTC — what the fix produces
-	provider := ask.NewSelfReportedEventProvider(repo)
+	provider := ask.NewSelfReportedEventProvider(repo, nil)
 
 	// Passing midnight as To (the old, broken behaviour) returns nothing on that day.
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{
@@ -164,4 +164,45 @@ func TestSelfReportedEventProvider_SameDayFilterIncludesAllHours(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, chunks, 4, "end-of-day To must include all events logged that day")
+}
+
+// TestSelfReportedEventProvider_UsesConfiguredTimezone verifies that the chunk
+// Content shows the event time in the user's configured local timezone, not UTC.
+func TestSelfReportedEventProvider_UsesConfiguredTimezone(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewTimelineRepository(s)
+
+	// 18:58 UTC = 21:58 MSK (UTC+3)
+	utc, err := time.Parse(time.RFC3339, "2026-09-15T18:58:00Z")
+	require.NoError(t, err)
+	require.NoError(t, repo.Add(context.Background(), timeline.Event{
+		ID: "evt_1", UserID: "anna", Date: utc, Type: "symptom",
+		Title: "Наблюдение", Summary: "Шевеление.",
+		SourceEntityType: "self_reported_event", SourceEntityID: "selfevt_1",
+	}))
+
+	moscow, err := time.LoadLocation("Europe/Moscow")
+	require.NoError(t, err)
+	locations := map[string]*time.Location{"anna": moscow}
+
+	provider := ask.NewSelfReportedEventProvider(repo, locations)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "anna"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+
+	// Content must show 21:58 MSK, not 18:58 UTC.
+	require.Contains(t, chunks[0].Content, "21:58", "time must be in user's local timezone (MSK), not UTC")
+	require.Contains(t, chunks[0].Content, "MSK", "timezone abbreviation must appear in Content")
+
+	// Same provider, different user without a configured timezone → UTC.
+	require.NoError(t, repo.Add(context.Background(), timeline.Event{
+		ID: "evt_2", UserID: "alex", Date: utc, Type: "symptom",
+		Title: "Наблюдение", Summary: "Шевеление.",
+		SourceEntityType: "self_reported_event", SourceEntityID: "selfevt_2",
+	}))
+	chunks, err = provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "alex"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Contains(t, chunks[0].Content, "18:58", "user with no configured timezone must see UTC time")
+	require.Contains(t, chunks[0].Content, "UTC", "UTC label must appear when no timezone is configured")
 }
