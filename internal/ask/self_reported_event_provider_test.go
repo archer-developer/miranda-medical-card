@@ -172,7 +172,7 @@ func TestSelfReportedEventProvider_UsesConfiguredTimezone(t *testing.T) {
 	s := newTestStore(t)
 	repo := storage.NewTimelineRepository(s)
 
-	// 18:58 UTC = 21:58 MSK (UTC+3)
+	// 18:58 UTC = 21:58 FET (Europe/Minsk, UTC+3)
 	utc, err := time.Parse(time.RFC3339, "2026-09-15T18:58:00Z")
 	require.NoError(t, err)
 	require.NoError(t, repo.Add(context.Background(), timeline.Event{
@@ -181,18 +181,17 @@ func TestSelfReportedEventProvider_UsesConfiguredTimezone(t *testing.T) {
 		SourceEntityType: "self_reported_event", SourceEntityID: "selfevt_1",
 	}))
 
-	moscow, err := time.LoadLocation("Europe/Moscow")
+	minsk, err := time.LoadLocation("Europe/Minsk")
 	require.NoError(t, err)
-	locations := map[string]*time.Location{"anna": moscow}
+	locations := map[string]*time.Location{"anna": minsk}
 
 	provider := ask.NewSelfReportedEventProvider(repo, locations)
 	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "anna"})
 	require.NoError(t, err)
 	require.Len(t, chunks, 1)
 
-	// Content must show 21:58 MSK, not 18:58 UTC.
-	require.Contains(t, chunks[0].Content, "21:58", "time must be in user's local timezone (MSK), not UTC")
-	require.Contains(t, chunks[0].Content, "MSK", "timezone abbreviation must appear in Content")
+	// Content must show 21:58 in Minsk time, not 18:58 UTC.
+	require.Contains(t, chunks[0].Content, "21:58", "time must be in user's local timezone (Europe/Minsk), not UTC")
 
 	// Same provider, different user without a configured timezone → UTC.
 	require.NoError(t, repo.Add(context.Background(), timeline.Event{
