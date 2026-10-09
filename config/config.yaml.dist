@@ -159,14 +159,29 @@ logging:
 
 # backup: off by default — there's no safe auto-detected dir (see below).
 # When enabled, internal/backup periodically snapshots database.path (via
-# SQLite's VACUUM INTO, safe to run against a live connection) and
-# recursively copies files.dir (the filestore's uploaded document binaries)
-# into a timestamped subdirectory of dir, alongside a copy of every
-# config/*.yaml file and .env (needed to actually restore a working
-# deployment from the backup alone). data/tls's self-signed certificate/key
-# are deliberately not included — they're regenerated automatically on
-# startup if missing. Older timestamped subdirectories beyond
+# SQLite's VACUUM INTO, safe to run against a live connection, then checked
+# with PRAGMA integrity_check) and, if include_files is on, recursively
+# copies files.dir (the filestore's uploaded document binaries) too,
+# alongside a copy of every config/*.yaml file and .env (needed to actually
+# restore a working deployment from the backup alone) — all packed into a
+# single dir/medical-card-<UTC timestamp>.tar.gz archive plus a
+# manifest.json listing what's inside. data/tls's self-signed
+# certificate/key are deliberately not included — they're regenerated
+# automatically on startup if missing. Older archives beyond
 # retention_count are pruned after each successful run.
+#
+# Everything above is staged and verified under temp_dir (local disk) first
+# — dir is only ever written to as one already-finished archive file, via a
+# .tar.gz.part + atomic rename. This is deliberate: dir (and, in
+# production, files.dir) is often a network mount (CIFS/SMB to a NAS), and
+# SQLite's VACUUM INTO cannot take the lock it needs on a destination file
+# that lives on one — it fails with "database is locked (5)
+# (SQLITE_BUSY)" even though the identical VACUUM INTO against a local path
+# succeeds. A plain file copy has no such requirement, so only a plain copy
+# ever touches dir. include_files defaults to false for the same NAS
+# reason: if files.dir is itself already on the same NAS dir points at,
+# copying it into every archive would just be a pointless NAS -> NAS
+# network copy — the files already live there independently of any backup.
 #
 # `miranda-medical-card backup` also runs one backup cycle on demand (using
 # these same settings regardless of enabled) and exits, without starting the
@@ -177,8 +192,16 @@ logging:
 #   # An absolute path onto a separately mounted disk is recommended — a
 #   # backup that lives on the same disk as the data it backs up doesn't
 #   # protect against losing that disk. A relative path (under the working
-#   # directory) is also fine for local/dev use. Created automatically if
-#   # missing.
+#   # directory) is also fine for local/dev use, and a network mount
+#   # (CIFS/SMB/NFS) is fully supported now — see the staging explanation
+#   # above. Created automatically if missing.
 #   dir: "/mnt/backup/miranda-medical-card"
+#   # Where each run stages and verifies its work before copying the
+#   # finished archive toward dir. Must be ordinary local disk — empty
+#   # (the default) uses the OS temp directory, which is almost always right.
+#   temp_dir: ""
+#   # Pack files.dir into the archive too. Leave this off if files.dir is
+#   # itself a network mount back onto the same storage dir lives on.
+#   include_files: false
 #   interval_minutes: 1440  # once a day
-#   retention_count: 7      # keep the 7 most recent backups; 0 = keep all
+#   retention_count: 7      # keep the 7 most recent archives; 0 = keep all

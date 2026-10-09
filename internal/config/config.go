@@ -237,13 +237,15 @@ type LoggingConfig struct {
 	MaxAgeDays int `yaml:"max_age_days"`
 }
 
-// BackupConfig controls periodic snapshotting of Database.Path and
-// Files.Dir — everything under data/ that actually holds irreplaceable
-// state (docs on-disk TLS.CertFile/KeyFile are excluded: EnsureSelfSigned
-// regenerates them from scratch on any startup that finds them missing, see
+// BackupConfig controls periodic snapshotting of Database.Path —
+// everything under data/ that actually holds irreplaceable state and needs
+// VACUUM INTO's transactional-copy treatment (docs on-disk
+// TLS.CertFile/KeyFile are excluded: EnsureSelfSigned regenerates them from
+// scratch on any startup that finds them missing, see
 // cmd/miranda-medical-card/main.go's run()) — plus config.yaml's *.yaml
-// files and the .env holding API keys, into a timestamped subdirectory of
-// Dir on a fixed interval (internal/backup), with the oldest snapshots
+// files and the .env holding API keys. Everything is staged on local disk,
+// verified, and packed into a single timestamped tar.gz archive that's
+// copied into Dir atomically (internal/backup), with the oldest archives
 // pruned once more than RetentionCount accumulate. Mirrors miranda's own
 // config.BackupConfig field-for-field.
 //
@@ -251,19 +253,42 @@ type LoggingConfig struct {
 // deployment-specific (often an absolute path onto a separately mounted
 // disk, so backups actually survive losing the machine this service runs
 // on), so there's no safe default to silently start writing to.
+//
+// Dir is routinely a network mount (CIFS/SMB to a NAS, as in production).
+// SQLite's VACUUM INTO cannot take the lock it needs on a destination file
+// that lives on such a filesystem — see internal/backup's package doc for
+// the "database is locked (5) (SQLITE_BUSY)" failure this staging design
+// exists to avoid. Nothing SQLite-shaped is ever written directly into
+// Dir; only a finished, already-verified archive file ever lands there.
 type BackupConfig struct {
 	Enabled bool `yaml:"enabled"`
-	// Dir is where timestamped backup subdirectories are written. May be a
-	// relative path (under the working directory) or an absolute path onto
-	// a separately mounted disk. Created automatically if missing.
+	// Dir is where finished backup archives are written. May be a relative
+	// path (under the working directory) or an absolute path onto a
+	// separately mounted disk, including a network mount. Created
+	// automatically if missing.
 	Dir string `yaml:"dir"`
+	// TempDir is where each run's staging work happens — VACUUM INTO,
+	// PRAGMA integrity_check, and building the tar.gz archive all happen
+	// here, on local disk, before the single finished archive is ever
+	// copied toward Dir. Empty (the default) means os.TempDir(). This must
+	// resolve to ordinary local disk, not a network mount — see
+	// BackupConfig's own doc comment for why.
+	TempDir string `yaml:"temp_dir"`
+	// IncludeFiles controls whether Files.Dir (the filestore's uploaded
+	// document binaries, internal/filestore) is packed into the archive
+	// too. Defaults to false: in production Files.Dir is itself a CIFS
+	// mount back onto the same NAS that Dir lives on, so copying it into
+	// every backup would mean copying it NAS → NAS over the network for no
+	// benefit — the files already live there independently of any backup.
+	// Turn this on for a deployment where Files.Dir is genuinely local and
+	// would otherwise not be backed up at all.
+	IncludeFiles bool `yaml:"include_files"`
 	// IntervalMinutes is how often a full backup runs — the actual backup
 	// cadence itself, every tick performs a real backup.
 	IntervalMinutes int `yaml:"interval_minutes"`
-	// RetentionCount is how many of the most recent timestamped backup
-	// subdirectories to keep; older ones are deleted after each successful
-	// run. 0 means keep all of them (same convention as
-	// LoggingConfig.MaxBackups).
+	// RetentionCount is how many of the most recent backup archives to
+	// keep; older ones are deleted after each successful run. 0 means keep
+	// all of them (same convention as LoggingConfig.MaxBackups).
 	RetentionCount int `yaml:"retention_count"`
 }
 
@@ -328,6 +353,8 @@ func Default() Config {
 		Backup: BackupConfig{
 			Enabled:         false,
 			Dir:             "./data/backups",
+			TempDir:         "",
+			IncludeFiles:    false,
 			IntervalMinutes: 24 * 60,
 			RetentionCount:  7,
 		},
