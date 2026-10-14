@@ -97,6 +97,13 @@
 #       gemini_rotation:
 #         cooldown_seconds: 30
 #         max_retry_cycles: 1
+#         # Optional, per provider (<= 0 / omitted = miranda-llm defaults of
+#         # 10s / 30s). Raise both for providers running OCR/extraction on
+#         # large scans: a call slower than overload_timeout_seconds bans its
+#         # key for 30 min even when it succeeded, and max_call_seconds
+#         # cancels an in-flight call outright.
+#         overload_timeout_seconds: 90
+#         max_call_seconds: 90
 #       escalation:
 #         enabled: true
 #         target_provider: "claude-escalation"

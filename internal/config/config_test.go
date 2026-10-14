@@ -320,3 +320,29 @@ backup:
 	require.Equal(t, 60, cfg.Backup.IntervalMinutes)
 	require.Equal(t, 3, cfg.Backup.RetentionCount)
 }
+
+func TestLoad_RotationTimeouts(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-strong
+      type: gemini
+      model: m
+      api_key_envs: ["K"]
+      gemini_rotation:
+        cooldown_seconds: 30
+        max_retry_cycles: 1
+        overload_timeout_seconds: 90
+        max_call_seconds: 90
+  ocr_provider: gemini-strong
+  extraction_provider: gemini-strong
+  agent_provider: gemini-strong
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	r := cfg.LLM.Providers[0].Rotation
+	require.Equal(t, 90, r.OverloadTimeoutSeconds)
+	require.Equal(t, 90, r.MaxCallSeconds)
+}

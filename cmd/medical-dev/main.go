@@ -251,7 +251,7 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 		case "gemini":
 			p, err := gemini.New(ctx, c.Name, c.Model, c.APIKeyEnvs,
 				gemini.ToolsConfig{},
-				gemini.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				gemini.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles, OverloadTimeoutSeconds: c.Rotation.OverloadTimeoutSeconds, MaxCallSeconds: c.Rotation.MaxCallSeconds},
 				logger,
 			)
 			if err != nil {
@@ -261,7 +261,7 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 		case "anthropic":
 			p, err := anthropic.New(c.Name, c.Model, c.APIKeyEnvs,
 				anthropic.ToolsConfig{},
-				anthropic.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				anthropic.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles, OverloadTimeoutSeconds: c.Rotation.OverloadTimeoutSeconds, MaxCallSeconds: c.Rotation.MaxCallSeconds},
 				logger,
 			)
 			if err != nil {
@@ -270,7 +270,7 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 			providers[c.Name] = p
 		case "openai_compat":
 			providers[c.Name] = openaicompat.New(c.Name, c.BaseURL, c.Model, c.APIKeyEnvs,
-				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles},
+				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles, OverloadTimeoutSeconds: c.Rotation.OverloadTimeoutSeconds, MaxCallSeconds: c.Rotation.MaxCallSeconds},
 				logger,
 			)
 		default:

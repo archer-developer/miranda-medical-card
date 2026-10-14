@@ -162,6 +162,18 @@ type ProviderConfig struct {
 type RotationConfig struct {
 	CooldownSeconds int `yaml:"cooldown_seconds"`
 	MaxRetryCycles  int `yaml:"max_retry_cycles"`
+	// OverloadTimeoutSeconds is how long a call may take end-to-end (and how
+	// long to wait for the first streamed event) before the key is treated as
+	// overloaded and banned for future calls — even if that call succeeded.
+	// <= 0 uses miranda-llm's built-in default (10s). Raise it for providers
+	// that run heavy OCR/extraction: a slow-but-successful 28s Claude OCR call
+	// banned the only Claude key for 30 minutes and failed the whole upload
+	// (found in production 2026-10-13).
+	OverloadTimeoutSeconds int `yaml:"overload_timeout_seconds,omitempty"`
+	// MaxCallSeconds is the hard per-attempt ceiling after which an in-flight
+	// call is cancelled and the next key tried. <= 0 uses miranda-llm's
+	// built-in default (30s), which is too short for large scanned documents.
+	MaxCallSeconds int `yaml:"max_call_seconds,omitempty"`
 }
 
 // EscalationConfig mirrors miranda's own EscalationConfig field-for-field
