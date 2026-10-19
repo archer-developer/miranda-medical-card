@@ -19,7 +19,13 @@ import (
 // safety net independent of any provider-level limit, not a substitute for
 // one (see LabProvider.Collect's own limitOrDefault fix for the actual
 // per-provider bug that first surfaced this).
-const maxToolResultBytes = 4000
+//
+// 12000, not the original 4000: Cyrillic text is two bytes per character
+// and every line carries its own " [id: doc_...]" suffix (~50 bytes), so a
+// single 44-row lab report (three sampling sites x ~15 parameters) needs
+// ~7.5KB — at 4000 only ~22 rows survived and the rest were reported as
+// "omitted", which the model read as "no such results".
+const maxToolResultBytes = 12000
 
 // formatToolResult renders one tool call's returned chunks into the text
 // that becomes that call's RoleTool message Content — scoped to exactly
@@ -40,25 +46,37 @@ const maxToolResultBytes = 4000
 // always keeps at least the first chunk, even if that one chunk alone
 // exceeds the budget, so a result is never silently emptied outright.
 func formatToolResult(chunks []KnowledgeChunk) string {
+	return formatToolResultOmitting(chunks, 0)
+}
+
+// formatToolResultOmitting is formatToolResult for chunks that a caller has
+// already dropped droppedByCap more of (executeToolCall's per-call
+// maxChunks cap) — folded into the same trailing "omitted" note as any
+// byte-budget truncation, so the model sees one honest total instead of a
+// complete-looking prefix.
+func formatToolResultOmitting(chunks []KnowledgeChunk, droppedByCap int) string {
 	if len(chunks) == 0 {
 		return "No matching data found."
 	}
 	lines := make([]string, 0, len(chunks))
 	size := 0
+	omitted := droppedByCap
 	for i, c := range chunks {
 		line := "- " + c.Content
 		if c.DocumentID != "" {
 			line += fmt.Sprintf(" [id: %s]", c.DocumentID)
 		}
 		if len(lines) > 0 && size+len(line)+1 > maxToolResultBytes {
-			omitted := len(chunks) - i
-			lines = append(lines, fmt.Sprintf(
-				"... %d more result(s) omitted for size — narrow your query (date range, specific indicator, or documentId) to see them.",
-				omitted))
+			omitted += len(chunks) - i
 			break
 		}
 		lines = append(lines, line)
 		size += len(line) + 1
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"... %d more result(s) omitted for size — narrow your query (date range, specific indicator, or documentId) to see them.",
+			omitted))
 	}
 	return strings.Join(lines, "\n")
 }

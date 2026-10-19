@@ -131,6 +131,7 @@ type ProcedureSummary struct {
 // fabricated.
 type LabResultSummary struct {
 	IndicatorName    string
+	Specimen         string
 	Value            float64
 	QualitativeValue string
 	Unit             string
@@ -487,11 +488,16 @@ func (b *Builder) toLabResultSummaries(ctx context.Context, userID string, lates
 			return nil, err
 		}
 		result = append(result, LabResultSummary{
-			IndicatorName: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue,
+			IndicatorName: l.IndicatorName, Specimen: l.Specimen, Value: l.Value, QualitativeValue: l.QualitativeValue,
 			Unit: l.Unit, TakenAt: l.TakenAt, DocumentTitle: title,
 		})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].IndicatorName < result[j].IndicatorName })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].IndicatorName != result[j].IndicatorName {
+			return result[i].IndicatorName < result[j].IndicatorName
+		}
+		return result[i].Specimen < result[j].Specimen
+	})
 	return result, nil
 }
 

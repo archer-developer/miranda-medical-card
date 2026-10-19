@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS lab_results (
     user_id           TEXT NOT NULL,
     document_id       TEXT NOT NULL,
     indicator_name    TEXT NOT NULL,
+    specimen          TEXT NOT NULL DEFAULT '',
     code              TEXT NOT NULL DEFAULT '',
     code_system       TEXT NOT NULL DEFAULT '',
     value             REAL NOT NULL DEFAULT 0,
@@ -399,6 +400,7 @@ CREATE INDEX IF NOT EXISTS idx_ephemeral_links_expires_at ON ephemeral_links(exp
 // replay against a database that already has it (including a fresh one).
 var schemaMigrations = []string{
 	`ALTER TABLE lab_results ADD COLUMN qualitative_value TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE lab_results ADD COLUMN specimen TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE diagnoses ADD COLUMN expected_resolution_from INTEGER`,
 	`ALTER TABLE diagnoses ADD COLUMN expected_resolution_to INTEGER`,
 	`ALTER TABLE diagnoses ADD COLUMN status_reasoning TEXT NOT NULL DEFAULT ''`,

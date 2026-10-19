@@ -242,7 +242,7 @@ func buildLabResultsEvent(userID, documentID, documentTitle string, documentDate
 		if flag == "" {
 			continue
 		}
-		notable = append(notable, fmt.Sprintf("%s %g %s (%s)", r.IndicatorName, r.Value, r.Unit, flag))
+		notable = append(notable, fmt.Sprintf("%s %g %s (%s)", r.DisplayName(), r.Value, r.Unit, flag))
 		if len(notable) == 3 {
 			break
 		}

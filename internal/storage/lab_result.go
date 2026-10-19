@@ -17,8 +17,9 @@ type LabResultRepository interface {
 	ListByUser(ctx context.Context, userID string) ([]normalization.LabResult, error)
 	ListByDocument(ctx context.Context, documentID string) ([]normalization.LabResult, error)
 	ReplaceForDocument(ctx context.Context, documentID string, results []normalization.LabResult) error
-	// LatestByIndicator returns, for each indicatorName userID has at
-	// least one LabResult for, the single most recent one (by TakenAt) —
+	// LatestByIndicator returns, for each LabResult.DisplayName (indicator
+	// name, plus specimen when set) userID has at least one LabResult for,
+	// the single most recent one (by TakenAt) —
 	// used by ProfileBuilder (see docs/domain/05-medical-profile.md §3).
 	LatestByIndicator(ctx context.Context, userID string) (map[string]normalization.LabResult, error)
 	// HistoryByIndicator returns every LabResult userID has whose indicator
@@ -50,13 +51,13 @@ func NewLabResultRepository(s *Store) LabResultRepository {
 	return &sqliteLabResultRepository{db: s.db}
 }
 
-const labResultSelectColumns = `SELECT id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at`
+const labResultSelectColumns = `SELECT id, user_id, document_id, indicator_name, specimen, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at`
 
 func (r *sqliteLabResultRepository) Add(ctx context.Context, l normalization.LabResult) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.ID, l.UserID, l.DocumentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
+		INSERT INTO lab_results (id, user_id, document_id, indicator_name, specimen, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.UserID, l.DocumentID, l.IndicatorName, l.Specimen, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
 		l.NormalizedValue, l.NormalizedUnit, l.ReferenceLow, l.ReferenceHigh, nullUnix(l.TakenAt),
 	)
 	if err != nil {
@@ -71,7 +72,13 @@ func (r *sqliteLabResultRepository) Add(ctx context.Context, l normalization.Lab
 // LabProvider.Collect's Limit truncation (see internal/ask/providers.go)
 // actually keeps the most recent results, matching what the lab_results
 // tool's own schema promises the model ("most recent first").
-const labResultOrderBy = ` ORDER BY taken_at IS NULL, taken_at DESC`
+//
+// rowid is the final tie-breaker: every row of one document shares the same
+// taken_at, so without it their relative order is whatever SQLite happens to
+// return — and a Limit truncation over a single document's rows (or the
+// order a model reads them in) would be arbitrary instead of the document's
+// own printed order, which Replace/Add insert in.
+const labResultOrderBy = ` ORDER BY taken_at IS NULL, taken_at DESC, rowid`
 
 func (r *sqliteLabResultRepository) ListByUser(ctx context.Context, userID string) ([]normalization.LabResult, error) {
 	rows, err := r.db.QueryContext(ctx, labResultSelectColumns+` FROM lab_results WHERE user_id = ?`+labResultOrderBy, userID)
@@ -103,9 +110,9 @@ func (r *sqliteLabResultRepository) ReplaceForDocument(ctx context.Context, docu
 	}
 	for _, l := range results {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO lab_results (id, user_id, document_id, indicator_name, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			l.ID, l.UserID, documentID, l.IndicatorName, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
+			INSERT INTO lab_results (id, user_id, document_id, indicator_name, specimen, code, code_system, value, qualitative_value, unit, normalized_value, normalized_unit, reference_low, reference_high, taken_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			l.ID, l.UserID, documentID, l.IndicatorName, l.Specimen, l.Code, l.CodeSystem, l.Value, l.QualitativeValue, l.Unit,
 			l.NormalizedValue, l.NormalizedUnit, l.ReferenceLow, l.ReferenceHigh, nullUnix(l.TakenAt),
 		)
 		if err != nil {
@@ -132,9 +139,14 @@ func (r *sqliteLabResultRepository) LatestByIndicator(ctx context.Context, userI
 	}
 	latest := make(map[string]normalization.LabResult)
 	for _, l := range all {
-		current, ok := latest[l.IndicatorName]
+		// Keyed by DisplayName, not bare IndicatorName: one document can
+		// report the same parameter for several specimens (a smear's
+		// "Лейкоциты" from urethra vs. cervix), and those must each keep
+		// their own "latest", not overwrite one another.
+		key := l.DisplayName()
+		current, ok := latest[key]
 		if !ok || isAfter(l.TakenAt, current.TakenAt) {
-			latest[l.IndicatorName] = l
+			latest[key] = l
 		}
 	}
 	return latest, nil
@@ -160,7 +172,9 @@ func (r *sqliteLabResultRepository) HistoryByIndicator(ctx context.Context, user
 	needle := strings.ToLower(strings.TrimSpace(query))
 	var result []normalization.LabResult
 	for _, l := range all {
-		if strings.Contains(strings.ToLower(l.IndicatorName), needle) || canonicalMatches[l.IndicatorName] {
+		// DisplayName (not bare IndicatorName) so a query naming the
+		// specimen — "уретра", "задний свод" — finds its results too.
+		if strings.Contains(strings.ToLower(l.DisplayName()), needle) || canonicalMatches[l.IndicatorName] {
 			result = append(result, l)
 		}
 	}
@@ -221,7 +235,7 @@ func scanLabResults(rows *sql.Rows) ([]normalization.LabResult, error) {
 	for rows.Next() {
 		var l normalization.LabResult
 		var takenAt sql.NullInt64
-		if err := rows.Scan(&l.ID, &l.UserID, &l.DocumentID, &l.IndicatorName, &l.Code, &l.CodeSystem, &l.Value, &l.QualitativeValue, &l.Unit,
+		if err := rows.Scan(&l.ID, &l.UserID, &l.DocumentID, &l.IndicatorName, &l.Specimen, &l.Code, &l.CodeSystem, &l.Value, &l.QualitativeValue, &l.Unit,
 			&l.NormalizedValue, &l.NormalizedUnit, &l.ReferenceLow, &l.ReferenceHigh, &takenAt); err != nil {
 			return nil, fmt.Errorf("storage: scan lab result: %w", err)
 		}

@@ -39,7 +39,10 @@ func Match(normalized normalization.Result, pending []normalization.PlannedActio
 				continue
 			}
 			for _, l := range normalized.LabResults {
-				if l.IndicatorName == p.MatchIndicatorName {
+				// DisplayName, not bare IndicatorName: a planned "Лейкоциты" (a blood
+				// test) must not be completed by a smear's urethra "Лейкоциты" — the
+				// specimen is part of what was actually measured.
+				if l.DisplayName() == p.MatchIndicatorName {
 					completions = append(completions, Completion{PlannedActionID: p.ID, MatchedEntityID: l.ID})
 					break
 				}

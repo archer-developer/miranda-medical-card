@@ -427,3 +427,31 @@ func TestDocumentProvider_UnknownOrForeignDocumentIDReturnsNothing(t *testing.T)
 	require.NoError(t, err, "an unknown or another user's document id must resolve to no results, not an error")
 	require.Empty(t, chunks)
 }
+
+// TestLabProvider_DocumentIDReturnsEveryRowBeyondDefaultLimit is the
+// regression test for a real bug: a 44-row smear report (three specimens)
+// asked for by documentId was cut to defaultProviderLimit (30), so the model
+// told the user the last specimen had no results. A document-scoped lookup
+// is bounded by the document itself — only an explicit limit may truncate it.
+func TestLabProvider_DocumentIDReturnsEveryRowBeyondDefaultLimit(t *testing.T) {
+	s := newTestStore(t)
+	repo := storage.NewLabResultRepository(s)
+	for i := 0; i < 44; i++ {
+		specimen := []string{"Уретра", "Цервикальный канал", "Задний свод влагалища"}[i/15]
+		require.NoError(t, repo.Add(context.Background(), normalization.LabResult{
+			ID: fmt.Sprintf("l%d", i), UserID: "user1", DocumentID: "doc1", IndicatorName: fmt.Sprintf("Параметр %d", i),
+			Specimen: specimen, QualitativeValue: "не обнаружено", TakenAt: mustDate("2026-10-17"),
+		}))
+	}
+
+	provider := ask.NewLabProvider(repo)
+	chunks, err := provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "doc1"})
+	require.NoError(t, err)
+	require.Len(t, chunks, 44, "a document-scoped call must not be truncated by the default limit")
+	require.Equal(t, "Уретра. Параметр 0: не обнаружено (2026-10-17).", chunks[0].Content, "content must carry the specimen so same-named rows stay distinguishable, in document order")
+	require.Contains(t, chunks[43].Content, "Задний свод влагалища.")
+
+	chunks, err = provider.Collect(context.Background(), ask.KnowledgeRequest{UserID: "user1", DocumentID: "doc1", Limit: 5})
+	require.NoError(t, err)
+	require.Len(t, chunks, 5, "an explicit limit must still apply to a document-scoped call")
+}

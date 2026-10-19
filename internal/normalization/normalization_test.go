@@ -475,3 +475,29 @@ func TestNormalize_IndicatorAlias_AmbiguousNamesAreLeftUnaliased(t *testing.T) {
 	require.Equal(t, "Белок", result.LabResults[0].IndicatorName)
 	require.Equal(t, "Общий белок", result.LabResults[1].IndicatorName)
 }
+
+// TestNormalize_LabResultSpecimen_KeptSeparateFromIndicatorName covers a
+// smear report printing the same parameter under several sampling sites:
+// Specimen must carry the site (trimmed) while IndicatorName stays the bare
+// parameter — and, because the alias dictionary matches the bare name, a
+// specimen-bearing "Лейкоциты" still canonicalizes like any other.
+func TestNormalize_LabResultSpecimen_KeptSeparateFromIndicatorName(t *testing.T) {
+	extracted := extraction.Result{
+		LabResults: []extraction.LabResult{
+			{Name: "Лейкоциты", Specimen: "Уретра", QualitativeValue: "5-10"},
+			{Name: "Лейкоциты", Specimen: " Цервикальный канал ", QualitativeValue: "10-15"},
+			{Name: "Лейкоциты", Value: 6.1, Unit: "10^9 клеток/л"},
+		},
+	}
+	result, errs := normalization.Normalize(context.Background(), "user_test", "doc_1", extracted, nil, nil)
+	require.Empty(t, errs)
+	require.Len(t, result.LabResults, 3)
+	require.Equal(t, "Уретра", result.LabResults[0].Specimen)
+	require.Equal(t, "Цервикальный канал", result.LabResults[1].Specimen)
+	require.Empty(t, result.LabResults[2].Specimen)
+	for _, l := range result.LabResults {
+		require.Equal(t, "Лейкоциты", l.IndicatorName)
+	}
+	require.Equal(t, "Уретра. Лейкоциты", result.LabResults[0].DisplayName())
+	require.Equal(t, "Лейкоциты", result.LabResults[2].DisplayName())
+}

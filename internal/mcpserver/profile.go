@@ -156,6 +156,7 @@ type ProcedureSummaryOutput struct {
 // docs/adr/002-structured-profile-response.md).
 type LabResultSummaryOutput struct {
 	Name             string  `json:"name"`
+	Specimen         string  `json:"specimen,omitempty"`
 	Value            float64 `json:"value,omitempty"`
 	QualitativeValue string  `json:"qualitativeValue,omitempty"`
 	Unit             string  `json:"unit,omitempty"`
@@ -315,7 +316,7 @@ func toProfileOutput(p profile.Profile) ProfileOutput {
 	}
 	for i, l := range p.LatestLabResults {
 		out.LatestLabResults[i] = LabResultSummaryOutput{
-			Name: l.IndicatorName, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit,
+			Name: l.IndicatorName, Specimen: l.Specimen, Value: l.Value, QualitativeValue: l.QualitativeValue, Unit: l.Unit,
 			Date: formatOptionalDate(l.TakenAt), DocumentSource: l.DocumentTitle,
 		}
 	}

@@ -186,6 +186,21 @@ func (a *Asker) executeToolCall(ctx context.Context, subjectID string, tc llm.To
 	// turn's allChunks for the final `sources` — is what guarantees
 	// `sources` can never omit a chunk the model was actually shown (see
 	// Ask's own final RankChunks call, which no longer re-caps).
-	ranked := RankChunks(chunks, a.registry, a.maxChunks)
-	return ranked, formatToolResult(ranked)
+	//
+	// Two refinements, both from one real incident: a 44-row smear report
+	// (one document, three sampling sites) asked for by documentId came back
+	// cut to the first 20 rows with no word of it, and the model told the
+	// user the last site had no results. (1) A documentId-scoped call is
+	// bounded by that one document's own size, not by multi-year history —
+	// the thing this cap exists to bound — so it is exempt. (2) When the cap
+	// does drop chunks, the model is told how many (as formatToolResult
+	// already does for its byte budget) instead of silently seeing a
+	// complete-looking prefix.
+	ranked := RankChunks(chunks, a.registry, 0)
+	dropped := 0
+	if req.DocumentID == "" && a.maxChunks > 0 && len(ranked) > a.maxChunks {
+		dropped = len(ranked) - a.maxChunks
+		ranked = ranked[:a.maxChunks]
+	}
+	return ranked, formatToolResultOmitting(ranked, dropped)
 }

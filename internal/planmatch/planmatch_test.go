@@ -106,3 +106,17 @@ func TestMatch_NoPendingActions(t *testing.T) {
 	}
 	require.Empty(t, planmatch.Match(normalized, nil))
 }
+
+// A planned blood "Лейкоциты" must not be completed by a smear's
+// specimen-qualified "Лейкоциты" — the specimen is part of what was measured.
+func TestMatch_LabTestDoesNotMatchSameNameFromDifferentSpecimen(t *testing.T) {
+	pending := []normalization.PlannedAction{
+		{ID: "plan_1", Type: "lab_test", MatchIndicatorName: "Лейкоциты"},
+	}
+	normalized := normalization.Result{
+		LabResults: []normalization.LabResult{
+			{ID: "lab_1", IndicatorName: "Лейкоциты", Specimen: "Уретра"},
+		},
+	}
+	require.Empty(t, planmatch.Match(normalized, pending))
+}

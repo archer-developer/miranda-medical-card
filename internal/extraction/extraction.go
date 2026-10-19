@@ -76,6 +76,7 @@ Rules:
 - You must attempt to populate every category the text actually contains data for, no matter how many entries there are — e.g. a lab report with 40 result rows must produce 40 entries in "labResults", not a subset and not an empty array. Omitting an individual field within one entry because you're unsure of it is fine; omitting the entire entry, or the entire array, when the text clearly contains the data is not.
 - "labResults" is for laboratory (blood/urine/etc.) test panels only. Measurements and observations from imaging or instrumental studies (ultrasound, MRI, CT, X-ray, ECG, echo-KG) are handled by a separate extraction pass — ignore them here even if the text contains them.
 - A lab result is not always numeric: use "value"+"unit" for a quantitative result, "qualitativeValue" for a non-numeric one (e.g. blood type, a positive/negative/detected/not-detected test result, a text finding) — never force a non-numeric result into "value", and never omit the entry just because it has no numeric value. Recognize qualitative results under any of their common abbreviated or full forms — "отрицат."/"отрицательно"/"negative", "полож."/"положительно"/"positive", "обнаружено"/"не обнаружено", "detected"/"not detected", "норма"/"в пределах нормы" — these are results, not commentary to skip.
+- When a lab report groups its rows under section headings naming where/what the sample was taken from (e.g. a smear report with "Уретра" / "Цервикальный канал" / "Задний свод влагалища" sections that each repeat the same parameters), set "specimen" on every row under a heading to that heading's text, and keep "name" as the bare parameter exactly as printed ("Лейкоциты", not "Уретра. Лейкоциты"). The same parameter appearing under several headings is several separate results — one entry per heading, never merged or dropped as duplicates. A document with no such headings omits "specimen" entirely. A parameter printed over several sub-lines ("Бактериальная флора | палочковая: умеренно" / " | кокковая: умеренно") is one entry per sub-line, with the sub-line label kept in "name" after a colon ("Бактериальная флора: палочковая").
 - A table row under a header like "Исследование"/"Показатель"/"Анализ" + "Результат" + (optionally) "Норма"/"Референсные значения"/"Комментарий" is a lab result row, no matter how many rows the table has — a table with exactly one row is still a table you must extract, not something to treat as an aside. Columns are separated by " | " (see the transcription's own formatting) — use that to tell where the result value ends and an adjacent comment column begins; do not fold a comment column's text into "qualitativeValue".
 - A document's length or the proportion of it that is patient-facing informational/educational text (safety instructions, legal disclaimers, contact information, general health advice) has no bearing on whether to extract the actual clinical data — a document that is 95% boilerplate and 5% one real lab result must still produce that one labResults entry.
 - If you are not confident you can read a value correctly, omit that specific field rather than guessing.
@@ -212,7 +213,8 @@ func Schema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"name":             map[string]any{"type": "string", "description": "Indicator name as printed, e.g. ALT, LDL."},
+						"name":             map[string]any{"type": "string", "description": "Indicator name as printed, e.g. ALT, LDL. Never prefixed with the specimen/sampling site — that goes in \"specimen\"."},
+						"specimen":         map[string]any{"type": "string", "description": "Where/what the sample was taken from, only when the document groups results by it (a section heading such as 'Уретра', 'Цервикальный канал', 'Задний свод влагалища', 'Кровь', 'Моча') — the same heading applies to every row under it until the next heading. Omit when the document states no such grouping."},
 						"code":             map[string]any{"type": "string", "description": "Lab test code, if printed (e.g. LOINC)."},
 						"codeSystem":       map[string]any{"type": "string", "description": "e.g. loinc — only if a code is present."},
 						"value":            map[string]any{"type": "number", "description": "Numeric value, if the result is quantitative."},
@@ -383,6 +385,7 @@ type Medication struct {
 
 type LabResult struct {
 	Name             string  `json:"name"`
+	Specimen         string  `json:"specimen,omitempty"`
 	Code             string  `json:"code,omitempty"`
 	CodeSystem       string  `json:"codeSystem,omitempty"`
 	Value            float64 `json:"value,omitempty"`

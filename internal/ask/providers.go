@@ -429,27 +429,36 @@ func (p *LabProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]Know
 	// my lab results" produces) fell through to ListByUser's entire
 	// multi-year, unbounded history. limitOrDefault closes that gap the
 	// same way every sibling provider already does.
-	limit := limitOrDefault(req.Limit)
-	if len(results) > limit {
-		results = results[:limit]
+	//
+	// A document-scoped lookup is the exception: it is bounded by the one
+	// document's own size, not multi-year history, and silently dropping its
+	// tail is the worse failure — a 44-row smear report (three specimens x
+	// ~15 parameters) was cut to defaultProviderLimit=30, so the model
+	// reported the last specimen as having no results at all. Only an
+	// explicit req.Limit applies there.
+	if req.DocumentID == "" || req.Limit > 0 {
+		limit := limitOrDefault(req.Limit)
+		if len(results) > limit {
+			results = results[:limit]
+		}
 	}
 
 	chunks := make([]KnowledgeChunk, len(results))
 	for i, r := range results {
 		var content string
 		if r.QualitativeValue != "" {
-			content = fmt.Sprintf("%s: %s (%s).", r.IndicatorName, r.QualitativeValue, formatDate(r.TakenAt))
+			content = fmt.Sprintf("%s: %s (%s).", r.DisplayName(), r.QualitativeValue, formatDate(r.TakenAt))
 		} else {
 			value, unit := r.Value, r.Unit
 			if r.NormalizedUnit != "" {
 				value, unit = r.NormalizedValue, r.NormalizedUnit
 			}
-			content = fmt.Sprintf("%s: %g %s (%s).", r.IndicatorName, value, unit, formatDate(r.TakenAt))
+			content = fmt.Sprintf("%s: %g %s (%s).", r.DisplayName(), value, unit, formatDate(r.TakenAt))
 			if r.ReferenceLow != 0 || r.ReferenceHigh != 0 {
 				content += fmt.Sprintf(" Норма: %g–%g.", r.ReferenceLow, r.ReferenceHigh)
 			}
 		}
-		chunks[i] = KnowledgeChunk{Source: "lab_results", Title: r.IndicatorName, Content: content, Confidence: 1.0, DocumentID: r.DocumentID}
+		chunks[i] = KnowledgeChunk{Source: "lab_results", Title: r.DisplayName(), Content: content, Confidence: 1.0, DocumentID: r.DocumentID}
 	}
 	return chunks, nil
 }
@@ -596,6 +605,9 @@ func (p *ProfileProvider) Collect(ctx context.Context, req KnowledgeRequest) ([]
 		var lines []string
 		for _, l := range built.LatestLabResults {
 			line := l.IndicatorName + ": "
+			if l.Specimen != "" {
+				line = l.Specimen + ". " + line
+			}
 			if l.QualitativeValue != "" {
 				line += l.QualitativeValue
 			} else {

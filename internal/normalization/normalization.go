@@ -142,11 +142,21 @@ type Medication struct {
 // isn't numeric at all (e.g. blood type, a positive/negative test) — see
 // that struct's doc comment; exactly one of Value/QualitativeValue is
 // normally populated, but both may be empty.
+//
+// Specimen is where/what the sample was taken from, when the source
+// document groups its results by it — e.g. a gynecological smear report
+// printing the same parameter ("Лейкоциты") once under "Уретра", once under
+// "Цервикальный канал", once under "Задний свод влагалища". It is a field of
+// its own, not a prefix baked into IndicatorName, so the indicator stays
+// groupable by name while the same-named results from different sites stay
+// distinguishable; empty for the (vast majority) case where the document
+// states no such grouping. See DisplayName for how the two read together.
 type LabResult struct {
 	ID               string
 	UserID           string
 	DocumentID       string
 	IndicatorName    string
+	Specimen         string
 	Code             string
 	CodeSystem       string
 	Value            float64
@@ -157,6 +167,20 @@ type LabResult struct {
 	ReferenceLow     float64
 	ReferenceHigh    float64
 	TakenAt          *time.Time
+}
+
+// DisplayName is how a LabResult reads to a human or an LLM: IndicatorName
+// alone when Specimen is empty, "<Specimen>. <IndicatorName>" otherwise
+// (matching the format Structured Extraction used to bake into the name
+// before Specimen became its own field). It is also the identity key for
+// "the latest result per indicator" and planned-action matching — a bare
+// IndicatorName isn't unique once one document reports the same parameter
+// for several sites.
+func (l LabResult) DisplayName() string {
+	if l.Specimen == "" {
+		return l.IndicatorName
+	}
+	return l.Specimen + ". " + l.IndicatorName
 }
 
 // InstrumentalFinding mirrors docs/domain/13-instrumental-finding.md §3.
@@ -435,6 +459,7 @@ func Normalize(ctx context.Context, userID, documentID string, extracted extract
 			UserID:           userID,
 			DocumentID:       documentID,
 			IndicatorName:    indicatorName,
+			Specimen:         strings.TrimSpace(l.Specimen),
 			Code:             code,
 			CodeSystem:       codeSystem,
 			Value:            l.Value,

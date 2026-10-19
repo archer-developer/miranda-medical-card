@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -302,4 +303,31 @@ func TestAsk_SessionContinuity_ReplaysHistoryIntoSecondCall(t *testing.T) {
 	require.Equal(t, "Первый вопрос", msgs[1].Content)
 	require.Equal(t, "Первый ответ.", msgs[2].Content)
 	require.Equal(t, "Второй вопрос", msgs[3].Content)
+}
+
+// TestAsk_DocumentScopedCallIsExemptFromMaxChunks is the regression test for
+// a real bug: a 44-row lab report fetched by documentId was cut to
+// maxChunks (20) rows with no notice, and the model reported the last
+// sampling site as having no results. A documentId-scoped call is bounded by
+// its one document, so only an unscoped call is capped. Each chunk carries
+// its own DocumentID so len(Sources) equals the number of chunks shown.
+func TestAsk_DocumentScopedCallIsExemptFromMaxChunks(t *testing.T) {
+	var chunks []ask.KnowledgeChunk
+	for i := 0; i < 5; i++ {
+		chunks = append(chunks, ask.KnowledgeChunk{Source: "lab_results", Content: fmt.Sprintf("Параметр %d", i), DocumentID: fmt.Sprintf("doc%d", i)})
+	}
+	run := func(args string) ask.Result {
+		provider := &scriptedProvider{name: "lab_results", chunks: chunks}
+		fake := llmtest.New("fake",
+			llmtest.Response{ToolCall: &llm.ToolCall{ID: "call_1", Name: "lab_results", Arguments: args}},
+			llmtest.Response{Text: "Ответ."},
+		)
+		asker := ask.NewAsker(newRouterWithFake(t, fake), ask.NewRegistry(provider), ask.NewSessionStore(nil), testProviderTimeout, 2, 8, nil)
+		result, err := asker.Ask(context.Background(), "alex", "alex", "", "Вопрос")
+		require.NoError(t, err)
+		return result
+	}
+
+	require.Len(t, run(`{}`).Sources, 2, "an unscoped call must still be capped at maxChunks")
+	require.Len(t, run(`{"documentId":"docX"}`).Sources, 5, "a document-scoped call must not be capped")
 }

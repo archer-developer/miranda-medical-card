@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -141,4 +142,45 @@ func TestLabResultRepository_ReplaceForDocument(t *testing.T) {
 	got, err := repo.ListByDocument(ctx, "doc1")
 	require.NoError(t, err)
 	require.Len(t, got, 2)
+}
+
+func TestLabResultRepository_SpecimenRoundTripsAndKeepsLatestPerSpecimen(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewLabResultRepository(newTestStore(t))
+
+	for i, sp := range []string{"Уретра", "Цервикальный канал", ""} {
+		require.NoError(t, repo.Add(ctx, normalization.LabResult{
+			ID: fmt.Sprintf("lab_%d", i), UserID: "user1", DocumentID: "doc1",
+			IndicatorName: "Лейкоциты", Specimen: sp, QualitativeValue: "x",
+			TakenAt: mustDate("2026-10-17"),
+		}))
+	}
+
+	got, err := repo.ListByDocument(ctx, "doc1")
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	require.Equal(t, "Уретра", got[0].Specimen, "rows of one document must come back in insertion order, not arbitrary")
+	require.Equal(t, "Цервикальный канал", got[1].Specimen)
+
+	latest, err := repo.LatestByIndicator(ctx, "user1")
+	require.NoError(t, err)
+	require.Len(t, latest, 3, "same indicator under different specimens (and none) must each keep their own latest, not collapse into one")
+	require.Contains(t, latest, "Уретра. Лейкоциты")
+	require.Contains(t, latest, "Лейкоциты")
+}
+
+func TestLabResultRepository_HistoryByIndicator_MatchesSpecimen(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewLabResultRepository(newTestStore(t))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "l1", UserID: "user1", DocumentID: "doc1", IndicatorName: "Лейкоциты", Specimen: "Задний свод влагалища", QualitativeValue: "15-20", TakenAt: mustDate("2026-10-17")}))
+	require.NoError(t, repo.Add(ctx, normalization.LabResult{ID: "l2", UserID: "user1", DocumentID: "doc1", IndicatorName: "Лейкоциты", Specimen: "Уретра", QualitativeValue: "5-10", TakenAt: mustDate("2026-10-17")}))
+
+	got, err := repo.HistoryByIndicator(ctx, "user1", "задний свод")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "l1", got[0].ID)
+
+	got, err = repo.HistoryByIndicator(ctx, "user1", "лейкоциты")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "a bare indicator query must still find every specimen's results")
 }
