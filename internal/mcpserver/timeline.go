@@ -14,7 +14,7 @@ import (
 func registerTimelineTool(server *mcp.Server, pl *pipeline.Pipeline, gate *userGate, locations map[string]*time.Location, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "medical.timeline",
-		Description: "Returns the chronological sequence of medical events: lab results, consultations, diagnoses, prescriptions, procedures, vaccinations, self-reported events. Does not perform analysis — data only: use it when the user asks to see or list events; to answer a question about them (counting, comparing, interpreting), use medical.ask instead.",
+		Description: "Returns the chronological sequence of medical events: lab results, consultations, diagnoses, prescriptions, procedures, vaccinations, self-reported events. Does not perform analysis — data only: fine for showing, listing or counting events; for anything needing medical judgment about them (is it normal, what it means, causes), use medical.ask.",
 	}, timelineHandler(pl, gate, locations, logger))
 }
 
