@@ -89,8 +89,9 @@ claude.ai, а тулы остаются Miranda'иными и доступны �
 `llm-trace` показывал пустые результаты, а детектор `tool_error` не видел `error: ...` — это
 касалось и трасс Miranda'иного оркестратора.
 
-`miranda/internal/claudecode` пока остаётся собственной копией Miranda: перевод Miranda на
-`miranda-llm/claudecode` — отдельная задача (см. §8).
+Miranda тоже переведена на этот пакет (2026-11-08, miranda `233008a`): её собственная копия
+`internal/claudecode` удалена, оркестратор `claude_code` использует `Process`, `TraceBuilder` и
+`RenderTranscript` отсюда, а `ToolSearch` добавляет сам.
 
 ## 4. Провайдер для Document Pipeline
 
@@ -253,8 +254,10 @@ agent:
 
 ## 8. Дальше
 
-- Перевести Miranda с `miranda/internal/claudecode` на `miranda-llm/claudecode` (изменения
-  обратно совместимы, кроме явного `ToolSearch` в `BuiltinTools` и нового
-  `NewTraceBuilder(tracer, …)`/`AddResponse(ctx, id, b)`).
+- ~~Перевести Miranda с `miranda/internal/claudecode` на `miranda-llm/claudecode`~~ — сделано
+  (miranda `233008a`).
+- Локальный MCP-сервер с маршрутизацией по bearer-токену (`toolUseID`, `randomToken`, выбор
+  хэндлера по токену) почти одинаково написан в движках обоих сервисов; вынести его в
+  `miranda-llm` можно, но тогда библиотека начнёт зависеть от go-sdk MCP.
 - Если холодный старт `medical.ask` станет проблемой — долгоживущий процесс на `sessionId` по
   образцу Miranda.
