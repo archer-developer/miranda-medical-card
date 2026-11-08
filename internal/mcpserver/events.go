@@ -28,7 +28,7 @@ func registerEventTools(server *mcp.Server, pl *pipeline.Pipeline, gate *userGat
 type LogEventInput struct {
 	UserID     string `json:"userId" jsonschema:"User identifier."`
 	Text       string `json:"text" jsonschema:"The event's text in natural language, exactly as the user reported it."`
-	OccurredAt string `json:"occurredAt,omitempty" jsonschema:"When the event happened (ISO 8601). Defaults to the time of the call."`
+	OccurredAt string `json:"occurredAt,omitempty" jsonschema:"When the event happened (RFC 3339, with offset). Must not be in the future. Defaults to the time of the call — omit it for something happening now."`
 }
 
 type MedicationIntakeOutput struct {
@@ -58,6 +58,10 @@ type LogEventOutput struct {
 	PlannedAction    *LoggedPlannedActionOutput `json:"plannedAction,omitempty"`
 }
 
+// maxOccurredAtSkew tolerates clock skew and "in a minute" rounding between
+// the caller and this service before an occurredAt counts as in the future.
+const maxOccurredAtSkew = time.Hour
+
 func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger) mcp.ToolHandlerFor[LogEventInput, LogEventOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in LogEventInput) (*mcp.CallToolResult, LogEventOutput, error) {
 		if err := gate.requireUser(in.UserID); err != nil {
@@ -72,6 +76,15 @@ func logEventHandler(pl *pipeline.Pipeline, gate *userGate, logger *slog.Logger)
 			t, err := time.Parse(time.RFC3339, in.OccurredAt)
 			if err != nil {
 				return nil, LogEventOutput{}, mcpError(codeInvalidEvent, "occurredAt must be RFC3339, got %q", in.OccurredAt)
+			}
+			// A self-reported event is something that already happened. A
+			// future occurredAt is the caller's date arithmetic gone wrong —
+			// found in production: a note logged 2026-10-01 arrived dated
+			// 2026-12-11, then sat outside every "today"/"this week" timeline
+			// query. Refused (not clamped) so the caller notices and retries
+			// with the right date, or omits it for "now".
+			if t.After(time.Now().Add(maxOccurredAtSkew)) {
+				return nil, LogEventOutput{}, mcpError(codeInvalidEvent, "occurredAt %s is in the future — it must be when the event already happened; omit it to mean now", in.OccurredAt)
 			}
 			occurredAt = &t
 		}

@@ -473,6 +473,14 @@ func TestServer_LogEventThenDeleteEvent(t *testing.T) {
 	require.True(t, deleteOut.Deleted)
 }
 
+func TestServer_LogEventRejectsFutureOccurredAt(t *testing.T) {
+	session := newTestSession(t, llmtest.New("fake"), []config.UserConfig{{ID: "alex"}})
+	future := time.Now().Add(72 * time.Hour).Format(time.RFC3339)
+	result := callTool(t, session, "medical.log_event", map[string]any{"userId": "alex", "text": "шевеления ребенка", "occurredAt": future})
+	require.True(t, result.IsError, "a future occurredAt must be refused, not stored")
+	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, "in the future")
+}
+
 func TestServer_TimelineContentMirrorsStructuredContent(t *testing.T) {
 	provider := llmtest.New("fake").WithStructured(llmtest.StructuredResponse{
 		JSON: json.RawMessage(`{"category":"symptom","description":"Головная боль"}`),

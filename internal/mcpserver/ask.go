@@ -15,8 +15,10 @@ func registerAskTool(server *mcp.Server, asker *ask.Asker, gate *userGate, logge
 		Name: "medical.ask",
 		Description: "Answers the user's medical question in natural language, using the full available medical history: " +
 			"Timeline, medications, diagnoses, lab results, documents. The service's main tool for questions that require analysis, " +
-			"root-cause search, or cross-referencing data from multiple sources — use medical.profile for a plain snapshot of current state, " +
-			"medical.timeline for a chronology of events.",
+			"root-cause search, or cross-referencing data from multiple sources. Use it for ANY question the user asks about their (or a family " +
+			"member's) health data — including counting, comparing, summarizing or judging records (\"how many…\", \"when was the last…\", " +
+			"\"is this normal…\") — and relay its answer to the user verbatim: the caller must not analyze medical data itself. " +
+			"medical.profile/medical.timeline only return raw data, for when the user asks to see or list the records themselves.",
 	}, askHandler(asker, gate, logger))
 }
 
