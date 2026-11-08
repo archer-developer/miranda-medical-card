@@ -78,6 +78,7 @@ import (
 
 	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/anthropic"
+	"github.com/archer-developer/miranda-llm/claudecode"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
 	"github.com/archer-developer/miranda-llm/llmtrace"
@@ -228,6 +229,23 @@ func newPipelineWithLoggerAndProvider(cfg config.Config, store *storage.Store, l
 		return nil, err
 	}
 	extractionEscalation := resolveEscalationProvider(providers, cfg.LLM.Providers, extractionName)
+	// Trace pipeline calls into logs/llm.log like the service does (debug
+	// only), so a `medical-dev pipeline` run against a new provider — e.g. a
+	// claude_code one — can be inspected with llm-trace. The writer is left
+	// open for the process's lifetime: an unbuffered *os.File, nothing to
+	// flush.
+	llmLogWriter, err := openLLMTraceWriter(cfg.Logging)
+	if err != nil {
+		return nil, err
+	}
+	if llmLogWriter != nil {
+		tracer := &llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)}
+		for _, p := range providers {
+			if t, ok := p.(interface{ SetTracer(llm.Tracer) }); ok {
+				t.SetTracer(tracer)
+			}
+		}
+	}
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
 	if err != nil {
@@ -273,6 +291,12 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles, OverloadTimeoutSeconds: c.Rotation.OverloadTimeoutSeconds, MaxCallSeconds: c.Rotation.MaxCallSeconds},
 				logger,
 			)
+		case "claude_code":
+			p, err := claudecode.New(c.Name, c.ClaudeCodeConfig(), logger)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
+			}
+			providers[c.Name] = p
 		default:
 			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
 		}
@@ -310,6 +334,9 @@ func resolveEscalationProvider(providers map[string]extraction.Provider, configs
 func buildAskRouter(providers map[string]extraction.Provider, configs []config.ProviderConfig, agentProviderName string) (*router.Router, error) {
 	routerProviders := make([]llm.Provider, 0, len(providers))
 	for name, p := range providers {
+		if _, ok := p.(*claudecode.Provider); ok {
+			continue // can't call tools — see the main.go copy
+		}
 		lp, ok := p.(llm.Provider)
 		if !ok {
 			return nil, fmt.Errorf("provider %q (%T) does not implement llm.Provider", name, p)
@@ -905,11 +932,12 @@ func openLLMTraceWriter(cfg config.LoggingConfig) (io.WriteCloser, error) {
 func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("ask", flag.ExitOnError)
 	user := fs.String("user", "", "user id")
+	engine := fs.String("engine", "", "override agent.engine: miranda | claude_code")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: medical-dev ask --user <user> \"question\"")
+		return fmt.Errorf("usage: medical-dev ask --user <user> [--engine miranda|claude_code] \"question\"")
 	}
 	question := strings.Join(fs.Args(), " ")
 	if *user == "" {
@@ -932,13 +960,15 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	if err != nil {
 		return err
 	}
+	var tracer llm.Tracer
 	if llmLogWriter != nil {
 		defer func() { _ = llmLogWriter.Close() }()
 		// Wrapped in ContextTracer, not SetTracer(llmtrace.New(...)) alone —
 		// mirrors cmd/miranda-medical-card/main.go's own run() exactly, so
 		// SetAnomalyConfig below actually has a live tracer to tee onto (see
 		// llmtrace.WithTracer's doc comment).
-		askRouter.SetTracer(&llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)})
+		tracer = &llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)}
+		askRouter.SetTracer(tracer)
 	}
 	apiKey := os.Getenv(cfg.Embedding.APIKeyEnv)
 	embedder, err := embedding.NewGemini(ctx, apiKey, cfg.Embedding.Model)
@@ -968,6 +998,20 @@ func runAsk(args []string, cfg config.Config, store *storage.Store, logger *slog
 	asker := ask.NewAsker(askRouter, registry, sessionStore, 20*time.Second, 20, 16, logger)
 	if llmLogWriter != nil {
 		asker.SetAnomalyConfig(ask.AnomalyConfig{LLMLogPath: llmLogPath, Dir: filepath.Join(filepath.Dir(llmLogPath), "anomalies")})
+	}
+	engineName := cfg.Agent.Engine
+	if *engine != "" {
+		engineName = *engine
+	}
+	switch engineName {
+	case config.AgentEngineMiranda:
+	case config.AgentEngineClaudeCode:
+		if err := asker.EnableClaudeCode(ask.ClaudeCodeConfigFrom(cfg.Agent.ClaudeCode), tracer); err != nil {
+			return err
+		}
+		defer asker.Close()
+	default:
+		return fmt.Errorf("--engine %q is not one of miranda, claude_code", engineName)
 	}
 
 	fmt.Println("Question")

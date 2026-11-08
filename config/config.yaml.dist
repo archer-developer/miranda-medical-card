@@ -123,9 +123,47 @@
 #       type: anthropic
 #       model: "claude-sonnet-5"
 #       api_key_envs: ["ANTHROPIC_API_KEY"]
+#     # type claude_code: the headless Claude Code CLI on its own claude.ai
+#     # (subscription) login — no api_key_envs. Every OCR/Structured call
+#     # starts a fresh `claude -p` process that exits once it has answered
+#     # (miranda-llm/claudecode.Provider, docs/adr/010-claude-code-engine.md).
+#     # It can't call tools, so it serves ocr_provider/extraction_provider (or
+#     # an escalation target) but never agent_provider — the medical.ask
+#     # counterpart is agent.engine: claude_code below. ANTHROPIC_API_KEY is
+#     # stripped from the process environment unless allow_api_key_env: true,
+#     # or the CLI would silently bill the API key instead.
+#     - name: claude-code
+#       type: claude_code
+#       model: "sonnet"            # --model: sonnet | opus | haiku | full id
+#       claude_code:
+#         binary: "/home/archer/.local/bin/claude"  # absolute: a systemd --user PATH lacks ~/.local/bin
+#         timeout_seconds: 600     # per call, process start included (default 300)
+#         # effort: "high"         # --effort; default: the CLI's own
+#         # allow_api_key_env: false
+#         # extra_args: []
+#       escalation:                # optional: fall back to Gemini, e.g. when
+#         enabled: true            # the subscription's usage limit is hit
+#         target_provider: "gemini-document"
 #   ocr_provider: "gemini-document"
 #   extraction_provider: "gemini-document"
 #   agent_provider: "gemini-agent"
+
+# agent selects the engine behind medical.ask (internal/ask engine,
+# docs/adr/010-claude-code-engine.md): "miranda" (default) is this service's
+# own agent loop over llm.agent_provider's router; "claude_code" starts a
+# fresh headless Claude Code process per question, which calls the Knowledge
+# Providers back over a loopback MCP endpoint and exits once it has answered.
+# llm.agent_provider stays required either way (switching back is one line).
+# agent:
+#   engine: "claude_code"
+#   claude_code:
+#     binary: "/home/archer/.local/bin/claude"
+#     model: "sonnet"
+#     max_turns: 16            # model calls per question (--max-turns)
+#     timeout_seconds: 300     # per question
+#     # effort: "high"
+#     # allow_api_key_env: false
+#     # extra_args: []
 
 # embedding:
 #   api_key_env: "GEMINI_API_KEY_1"

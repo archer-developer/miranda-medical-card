@@ -45,7 +45,6 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 	if a.anomaly.enabled() {
 		recorder = anomaly.NewRecorder(sessionID)
 		ctx = llmtrace.WithTracer(ctx, recorder)
-		outcome.MaxIterations = a.maxIterations
 		defer func() { a.reportAnomalies(sessionID, recorder, outcome) }()
 	}
 
@@ -64,61 +63,80 @@ func (a *Asker) Ask(ctx context.Context, callerUserID, subjectID, sessionID, que
 		a.logger.Warn("ask: record user message failed", "error", err)
 	}
 
-	messages := make([]llm.Message, 0, len(history)+2)
-	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: agentSystemPrompt(a.registry, time.Now())})
-	messages = append(messages, history...)
-	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: question})
+	t := &askTurn{
+		subjectID: subjectID,
+		sessionID: sessionID,
+		system:    agentSystemPrompt(a.registry, time.Now()),
+		history:   history,
+		question:  question,
+		tools:     toolDefsForRegistry(a.registry),
+		outcome:   &outcome,
+	}
+	answer, err := a.engine.run(ctx, t)
+	if err != nil {
+		return Result{}, fmt.Errorf("ask: %w", err)
+	}
+	if err := a.sessions.RecordAssistantFinalMessage(ctx, sessionID, answer); err != nil {
+		a.logger.Warn("ask: record final message failed", "error", err)
+	}
+	// maxChunks == 0 (unbounded) here deliberately: each call's own
+	// contribution to t.chunks was already capped in executeToolCall, to
+	// exactly what the model was shown for that call — re-capping the merged
+	// total here could silently drop a chunk the model actually read and
+	// cited, which is worse than a longer sources list. This pass only
+	// dedupes/sorts across calls.
+	return Result{
+		Answer:  answer,
+		Sources: CollectSources(RankChunks(t.chunks, a.registry, 0)),
+	}, nil
+}
 
-	tools := toolDefsForRegistry(a.registry)
+// mirandaEngine is the default engine (agent.engine: miranda): this
+// service's own agent loop over the llm.agent_provider router.Router — a
+// single open Chat dialogue where the model calls Knowledge Providers as
+// tools until it answers in plain text.
+type mirandaEngine struct{ a *Asker }
 
-	var allChunks []KnowledgeChunk
+func (e mirandaEngine) run(ctx context.Context, t *askTurn) (string, error) {
+	a := e.a
+	t.outcome.MaxIterations = a.maxIterations
+
+	messages := make([]llm.Message, 0, len(t.history)+2)
+	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: t.system})
+	messages = append(messages, t.history...)
+	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: t.question})
+
 	var pinnedProvider string
-
 	for i := 0; i < a.maxIterations; i++ {
-		text, calls, err := a.streamTurn(ctx, messages, tools, &pinnedProvider)
+		text, calls, err := a.streamTurn(ctx, messages, t.tools, &pinnedProvider)
 		if err != nil {
-			outcome.IterationCount = i + 1
-			outcome.TimedOut = errors.Is(err, context.DeadlineExceeded)
-			return Result{}, fmt.Errorf("ask: %w", err)
+			t.outcome.IterationCount = i + 1
+			t.outcome.TimedOut = errors.Is(err, context.DeadlineExceeded)
+			return "", err
 		}
 
 		if len(calls) == 0 {
-			outcome.IterationCount = i + 1
-			if err := a.sessions.RecordAssistantFinalMessage(ctx, sessionID, text); err != nil {
-				a.logger.Warn("ask: record final message failed", "error", err)
-			}
-			// maxChunks == 0 (unbounded) here deliberately: each call's own
-			// contribution to allChunks was already capped in
-			// executeToolCall, to exactly what the model was shown for
-			// that call — re-capping the merged total here could silently
-			// drop a chunk the model actually read and cited, which is
-			// worse than a longer sources list. This pass only
-			// dedupes/sorts across calls.
-			return Result{
-				Answer:  text,
-				Sources: CollectSources(RankChunks(allChunks, a.registry, 0)),
-			}, nil
+			t.outcome.IterationCount = i + 1
+			return text, nil
 		}
 
-		if err := a.sessions.RecordAssistantToolCallMessage(ctx, sessionID, text, calls); err != nil {
+		if err := a.sessions.RecordAssistantToolCallMessage(ctx, t.sessionID, text, calls); err != nil {
 			a.logger.Warn("ask: record assistant tool-call message failed", "error", err)
 		}
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: text, ToolCalls: calls})
 
 		for _, tc := range calls {
-			chunks, resultText := a.executeToolCall(ctx, subjectID, tc)
-			allChunks = append(allChunks, chunks...)
-			if err := a.sessions.RecordToolResultMessage(ctx, sessionID, tc.ID, resultText); err != nil {
-				a.logger.Warn("ask: record tool result message failed", "error", err)
-			}
+			resultText := a.callTool(ctx, t, tc)
 			messages = append(messages, llm.Message{Role: llm.RoleTool, ToolCallID: tc.ID, Content: resultText})
 		}
 	}
 
-	outcome.HitIterationCap = true
-	outcome.IterationCount = a.maxIterations
-	return Result{}, fmt.Errorf("ask: exceeded %d tool-call iterations without a final reply", a.maxIterations)
+	t.outcome.HitIterationCap = true
+	t.outcome.IterationCount = a.maxIterations
+	return "", fmt.Errorf("exceeded %d tool-call iterations without a final reply", a.maxIterations)
 }
+
+func (mirandaEngine) close() {}
 
 // streamTurn runs one Chat call and collects its full text + any requested
 // tool calls. pinnedProvider starts as "" (unpinned — the router's own

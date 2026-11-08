@@ -38,14 +38,25 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   Self-Reported Event extraction and decline matching) are independently configured via
   `llm.ocr_provider`/`llm.extraction_provider` — they may name the same or different providers.
 - **Agent Loop** (`internal/ask`) — `medical.ask`'s internal agent (docs/architecture/05-llm.md §3,
-  docs/adr/001-internal-agent-loop-implementation.md): a single open `llm.Provider.Chat` dialogue,
+  docs/adr/001-internal-agent-loop-implementation.md). `Ask` itself (session history, `sources`,
+  anomalies) is shared; the reasoning is a swappable `engine` (`internal/ask/engine.go`, selected by
+  `agent.engine`): `miranda` (default) is a single open `llm.Provider.Chat` dialogue,
   wrapped in a `*router.Router` (reliability fallback + tool-based escalation), where the model
   iteratively calls registered Knowledge Providers as LLM tools until it has enough to answer directly —
   no separate Planner/Answer Generator calls. Configured via `llm.agent_provider`. Optionally persists
   per-`sessionId` conversation history (`internal/ask/session.go`'s `SessionStore`, backed by
   `internal/storage`'s `ask_sessions`/`ask_messages` tables) so follow-up questions within the same
   Miranda conversation stay in context — a `sessionId` is entirely optional; omitting it reproduces the
-  old fully stateless one-shot behavior.
+  old fully stateless one-shot behavior. `claude_code` (`internal/ask/claude_code_engine.go`) instead
+  starts a fresh headless Claude Code CLI process per question that calls the same Knowledge
+  Providers back over a loopback MCP endpoint and exits once it has answered
+  (docs/adr/010-claude-code-engine.md).
+
+Either subsystem can run on the Claude Code CLI's subscription login instead of API keys: the
+Document Pipeline via an `llm.providers` entry of `type: claude_code` (`miranda-llm/claudecode.Provider`
+— a fresh process per call, no tool calling, so never `agent_provider`), the Agent Loop via
+`agent.engine: claude_code`. Both need `claude` installed and logged in as the OS user the service runs
+as.
 
 ## Package map
 
@@ -76,7 +87,9 @@ Two independent LLM-calling subsystems, both configured under `llm.providers` in
   a harness for validating the Structured Extraction prompt against real documents outside the real
   Pipeline; `renormalize-labs` is a standalone migration that re-derives `LabResult.IndicatorName` for
   rows persisted before `internal/normalization/indicator_aliases.go` existed.
-- **`internal/ask`** — the Agent Loop: `Asker`/`Ask` (agent_loop.go), the Knowledge Provider abstraction
+- **`internal/ask`** — the Agent Loop: `Asker`/`Ask` + `mirandaEngine` (agent_loop.go), the `engine`
+  seam (engine.go), the `claude_code` engine and its loopback "Medical MCP" (claude_code_engine.go), the
+  Knowledge Provider abstraction
   (`Provider`/`Registry`/`KnowledgeChunk`/`KnowledgeRequest`, provider.go) and its ~10 concrete
   implementations (providers.go, search_providers.go), per-provider `llm.ToolDef` schema construction
   (tools.go), the merged system prompt including the clinical-safety answer rules (prompt.go), session

@@ -60,6 +60,14 @@ medical-dev ask \
     "Почему врач отменил статины?"
 ```
 
+Флаг `--engine miranda|claude_code` подменяет `agent.engine` из конфига — тот же вопрос можно
+задать собственному циклу сервиса или headless Claude Code (см. `../adr/010-claude-code-engine.md`)
+и сравнить трассы в `medical-dev llm-trace --untagged`:
+
+```bash
+medical-dev ask --user alex --engine claude_code "Почему врач отменил статины?"
+```
+
 ## Пример вывода
 
 ```text
@@ -428,6 +436,17 @@ medical-dev pipeline --all --user alex --stage extraction
 ```bash
 medical-dev pipeline --all --user alex --stage extraction --provider gemini-agent
 ```
+
+`--provider` принимает и провайдер `type: claude_code` (headless Claude Code CLI, свежий процесс на
+каждый вызов — см. `../adr/010-claude-code-engine.md`) — так этапы конвейера проверяются на
+Claude Code без правки `config/llm.yaml`:
+
+```bash
+medical-dev pipeline doc_01J8... --user alex --provider claude-code
+```
+
+При `logging.level: debug` вызовы конвейера трассируются в `logs/llm.log`, как в самом сервисе, и
+читаются `medical-dev llm-trace --untagged`.
 
 Используется при разработке Pipeline и диагностике ошибок обработки документов.
 

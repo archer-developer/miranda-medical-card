@@ -34,6 +34,7 @@ import (
 
 	llm "github.com/archer-developer/miranda-llm"
 	"github.com/archer-developer/miranda-llm/anthropic"
+	"github.com/archer-developer/miranda-llm/claudecode"
 	"github.com/archer-developer/miranda-llm/embedding"
 	"github.com/archer-developer/miranda-llm/gemini"
 	"github.com/archer-developer/miranda-llm/llmtrace"
@@ -313,6 +314,8 @@ func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 	if err != nil {
 		return fmt.Errorf("main: %w", err)
 	}
+	// tracer stays nil (no tracing anywhere) below logging.level: debug.
+	var tracer llm.Tracer
 	if llmLogWriter != nil {
 		defer func() { _ = llmLogWriter.Close() }()
 		// askRouter wraps every configured provider instance (see
@@ -324,7 +327,8 @@ func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 		// extra, turn-scoped anomaly.Recorder onto this same stream via
 		// ctx — see llmtrace.WithTracer's doc comment for why that's safe
 		// despite the tracer being installed once, globally, here.
-		askRouter.SetTracer(&llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)})
+		tracer = &llmtrace.ContextTracer{Default: llmtrace.New(llmLogWriter)}
+		setTracer(askRouter, providers, tracer)
 
 		// Anomaly detection piggybacks on the same debug-only gate as
 		// llm.log itself (see anomaliesDirName's doc comment) — a Recorder
@@ -334,6 +338,19 @@ func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 			Dir:        filepath.Join(logDir, anomaliesDirName),
 		})
 	}
+
+	// agent.engine: claude_code — enabled after the tracer exists, so its
+	// llm.log blocks go through the same ContextTracer (and so reach each
+	// turn's anomaly Recorder) as the miranda engine's router calls.
+	if cfg.Agent.Engine == config.AgentEngineClaudeCode {
+		if err := asker.EnableClaudeCode(ask.ClaudeCodeConfigFrom(cfg.Agent.ClaudeCode), tracer); err != nil {
+			return fmt.Errorf("main: %w", err)
+		}
+		defer asker.Close()
+	}
+	// Only logs, and `claude auth status` can take seconds — never hold up
+	// serving for it.
+	go logClaudeCodeAuth(cfg, logger)
 
 	links := linkstore.New(storage.NewEphemeralLinkRepository(store))
 	go cleanupExpiredLinks(ctx, links, logger)
@@ -371,6 +388,7 @@ func run(cfg config.Config, logger *slog.Logger, configDir string) error {
 		"extractionProvider", cfg.LLM.ExtractionProvider,
 		"extractionEscalationConfigured", extractionEscalation != nil,
 		"agentProvider", cfg.LLM.AgentProvider,
+		"agentEngine", cfg.Agent.Engine,
 		"embeddingModel", cfg.Embedding.Model,
 		"publicBaseURL", cfg.PublicBaseURL,
 		"addr", cfg.HTTPAddr,
@@ -421,11 +439,58 @@ func buildProviders(ctx context.Context, configs []config.ProviderConfig, logger
 				openaicompat.RotationConfig{CooldownSeconds: c.Rotation.CooldownSeconds, MaxRetryCycles: c.Rotation.MaxRetryCycles, OverloadTimeoutSeconds: c.Rotation.OverloadTimeoutSeconds, MaxCallSeconds: c.Rotation.MaxCallSeconds},
 				logger,
 			)
+		case "claude_code":
+			p, err := claudecode.New(c.Name, c.ClaudeCodeConfig(), logger)
+			if err != nil {
+				return nil, fmt.Errorf("build provider %q: %w", c.Name, err)
+			}
+			providers[c.Name] = p
 		default:
 			return nil, fmt.Errorf("build provider %q: unknown type %q", c.Name, c.Type)
 		}
 	}
 	return providers, nil
+}
+
+// logClaudeCodeAuth logs the Claude Code CLI's login state once per distinct
+// binary any claude_code provider or the claude_code engine uses — a CLI
+// that isn't logged in would otherwise only surface as every call failing
+// with an opaque process exit.
+func logClaudeCodeAuth(cfg config.Config, logger *slog.Logger) {
+	type bin struct {
+		path     string
+		allowKey bool
+	}
+	seen := map[bin]bool{}
+	check := func(path string, allowKey bool) {
+		if path == "" {
+			path = "claude"
+		}
+		if b := (bin{path, allowKey}); !seen[b] {
+			seen[b] = true
+			claudecode.LogAuthStatus(logger, "main: claude_code", path, allowKey)
+		}
+	}
+	for _, p := range cfg.LLM.Providers {
+		if p.Type == "claude_code" {
+			check(p.ClaudeCode.Binary, p.ClaudeCode.AllowAPIKeyEnv)
+		}
+	}
+	if cfg.Agent.Engine == config.AgentEngineClaudeCode {
+		check(cfg.Agent.ClaudeCode.Binary, cfg.Agent.ClaudeCode.AllowAPIKeyEnv)
+	}
+}
+
+// setTracer installs tracer on every provider: through the router for the
+// ones it wraps (router.SetTracer forwards), directly on the rest — the
+// claude_code providers buildAskRouter leaves out.
+func setTracer(r *router.Router, providers map[string]extraction.Provider, tracer llm.Tracer) {
+	r.SetTracer(tracer)
+	for _, p := range providers {
+		if cc, ok := p.(*claudecode.Provider); ok {
+			cc.SetTracer(tracer)
+		}
+	}
 }
 
 // resolveProvider looks up name in providers, erroring with the
@@ -479,6 +544,13 @@ func resolveEscalationProvider(providers map[string]extraction.Provider, configs
 func buildAskRouter(providers map[string]extraction.Provider, configs []config.ProviderConfig, agentProviderName string) (*router.Router, error) {
 	routerProviders := make([]llm.Provider, 0, len(providers))
 	for name, p := range providers {
+		// A claude_code provider can't call tools
+		// (claudecode.ErrToolsUnsupported), so it has no place in the
+		// agent loop's fallback chain — config.validate already refuses it
+		// as agent_provider. Its tracer is installed by setTracer instead.
+		if _, ok := p.(*claudecode.Provider); ok {
+			continue
+		}
 		lp, ok := p.(llm.Provider)
 		if !ok {
 			// Unreachable in practice: every buildProviders branch

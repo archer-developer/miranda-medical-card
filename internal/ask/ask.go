@@ -52,6 +52,10 @@ type Asker struct {
 	maxIterations int
 	logger        *slog.Logger
 
+	// engine runs the reasoning part of each Ask call — mirandaEngine
+	// unless EnableClaudeCode switched it (see engine.go).
+	engine engine
+
 	// anomaly configures per-turn anomaly detection (see agent_loop.go's
 	// Ask and anomaly.go's reportAnomalies) — disabled (zero value) unless
 	// SetAnomalyConfig is called.
@@ -80,8 +84,10 @@ func NewAsker(chat ChatProvider, registry *Registry, sessions *SessionStore, pro
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Asker{
+	a := &Asker{
 		chat: chat, registry: registry, sessions: sessions,
 		providerTimeout: providerTimeout, maxChunks: maxChunks, maxIterations: maxIterations, logger: logger,
 	}
+	a.engine = mirandaEngine{a: a}
+	return a
 }

@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/archer-developer/miranda-llm/claudecode"
 	"os"
 	"strings"
 	"time"
@@ -71,6 +72,7 @@ type Config struct {
 	Database      DatabaseConfig  `yaml:"database"`
 	Files         FilesConfig     `yaml:"files"`
 	LLM           LLMConfig       `yaml:"llm"`
+	Agent         AgentConfig     `yaml:"agent"`
 	Embedding     EmbeddingConfig `yaml:"embedding"`
 	Search        SearchConfig    `yaml:"search"`
 	Users         []UserConfig    `yaml:"users"`
@@ -117,14 +119,21 @@ type FilesConfig struct {
 // ToolName/Description.
 type ProviderConfig struct {
 	Name string `yaml:"name"`
-	// Type selects the miranda-llm package: "gemini", "anthropic", or
-	// "openai_compat".
+	// Type selects the miranda-llm package: "gemini", "anthropic",
+	// "openai_compat", or "claude_code" (miranda-llm/claudecode — a fresh
+	// headless Claude Code CLI process per call, spending the CLI's
+	// subscription login instead of an API key; see
+	// docs/adr/010-claude-code-engine.md). A claude_code provider can't call
+	// tools, so it serves the Document Pipeline (ocr_provider,
+	// extraction_provider, escalation targets) but not agent_provider — the
+	// medical.ask equivalent is agent.engine: claude_code.
 	Type string `yaml:"type"`
 	// BaseURL is only meaningful for Type == "openai_compat".
 	BaseURL string `yaml:"base_url,omitempty"`
 	Model   string `yaml:"model"`
 	// APIKeyEnvs names environment variables holding API keys, never the
-	// keys themselves. Every provider type rotates across however many
+	// keys themselves. Not used (and not required) for Type "claude_code",
+	// which authenticates with the CLI's own login. Every provider type rotates across however many
 	// entries resolve to a set env var (Rotation tunes how) — "gemini",
 	// "anthropic", and "openai_compat" all hold one client per resolved
 	// key and cycle on a retryable error (quota/per-key auth, never a 5xx
@@ -154,6 +163,80 @@ type ProviderConfig struct {
 	//     Chat loop, unlike OCRProvider/ExtractionProvider's one-shot calls,
 	//     so ToolName/Description are functionally read here.
 	Escalation EscalationConfig `yaml:"escalation,omitempty"`
+	// ClaudeCode holds the process-level settings for Type "claude_code";
+	// ignored for every other type. Model is still the ProviderConfig's own
+	// Model ("sonnet", "opus", "haiku" or a full model id).
+	ClaudeCode ClaudeCodeProcessConfig `yaml:"claude_code,omitempty"`
+}
+
+// ClaudeCodeProcessConfig configures how a headless Claude Code CLI process
+// is launched — shared by a "claude_code" LLM provider (one process per
+// pipeline call) and agent.claude_code (one process per medical.ask call).
+type ClaudeCodeProcessConfig struct {
+	// Binary is the CLI executable ("claude" on PATH when empty) — an
+	// absolute path in production, since a systemd --user unit's PATH
+	// usually lacks ~/.local/bin. It must be
+	// logged in (`claude auth login`) as the OS user the service runs as.
+	Binary string `yaml:"binary"`
+	// Effort is passed as --effort (low|medium|high|xhigh|max); "" keeps
+	// the CLI default.
+	Effort string `yaml:"effort,omitempty"`
+	// TimeoutSeconds is the hard ceiling for one call, process start
+	// included; the process is killed when it passes. <= 0 uses the
+	// built-in default (5 minutes).
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// AllowAPIKeyEnv keeps ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN in the
+	// process environment. Off by default: with either set the CLI silently
+	// bills the API key instead of the subscription — and an "anthropic"
+	// provider configured alongside guarantees ANTHROPIC_API_KEY is set.
+	AllowAPIKeyEnv bool `yaml:"allow_api_key_env,omitempty"`
+	// ExtraArgs are appended verbatim to the CLI command line.
+	ExtraArgs []string `yaml:"extra_args,omitempty"`
+}
+
+// ClaudeCodeConfig maps a "claude_code" provider onto miranda-llm/claudecode's
+// own Config — the one mapping both cmd/miranda-medical-card and
+// cmd/medical-dev use, so the diagnostic CLI can never run with different
+// settings than the service.
+func (c ProviderConfig) ClaudeCodeConfig() claudecode.Config {
+	return claudecode.Config{
+		Binary:         c.ClaudeCode.Binary,
+		Model:          c.Model,
+		Effort:         c.ClaudeCode.Effort,
+		Timeout:        time.Duration(c.ClaudeCode.TimeoutSeconds) * time.Second,
+		AllowAPIKeyEnv: c.ClaudeCode.AllowAPIKeyEnv,
+		ExtraArgs:      c.ClaudeCode.ExtraArgs,
+	}
+}
+
+// AgentEngineMiranda and AgentEngineClaudeCode are AgentConfig.Engine's two
+// values.
+const (
+	AgentEngineMiranda    = "miranda"
+	AgentEngineClaudeCode = "claude_code"
+)
+
+// AgentConfig selects which engine runs medical.ask's agent loop (see
+// internal/ask's engine interface and docs/adr/010-claude-code-engine.md).
+type AgentConfig struct {
+	// Engine is "miranda" (default — this service's own loop over
+	// llm.agent_provider's router.Router) or "claude_code" (a fresh headless
+	// Claude Code process per question, calling the Knowledge Providers back
+	// over a loopback MCP endpoint).
+	Engine string `yaml:"engine"`
+	// ClaudeCode configures the claude_code engine; ignored otherwise.
+	ClaudeCode AgentClaudeCodeConfig `yaml:"claude_code"`
+}
+
+// AgentClaudeCodeConfig configures agent.engine: claude_code.
+type AgentClaudeCodeConfig struct {
+	ClaudeCodeProcessConfig `yaml:",inline"`
+	// Model is passed as --model ("sonnet", "opus", a full model id).
+	Model string `yaml:"model"`
+	// MaxTurns bounds one question's model calls inside the CLI
+	// (--max-turns) — the counterpart of the miranda engine's tool-call
+	// iteration cap.
+	MaxTurns int `yaml:"max_turns"`
 }
 
 // RotationConfig tunes miranda-llm's per-package RotationConfig (gemini,
@@ -342,6 +425,16 @@ func Default() Config {
 			ExtractionProvider: "gemini-document",
 			AgentProvider:      "gemini-agent",
 		},
+		Agent: AgentConfig{
+			Engine: AgentEngineMiranda,
+			ClaudeCode: AgentClaudeCodeConfig{
+				ClaudeCodeProcessConfig: ClaudeCodeProcessConfig{Binary: "claude", TimeoutSeconds: 300},
+				Model:                   "sonnet",
+				// Matches the miranda engine's askMaxToolIterations
+				// (cmd/miranda-medical-card/main.go).
+				MaxTurns: 16,
+			},
+		},
 		Embedding: EmbeddingConfig{
 			APIKeyEnv: "GEMINI_API_KEY_1",
 			Model:     "gemini-embedding-2",
@@ -439,6 +532,7 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: llm.providers must not be empty")
 	}
 	providerNames := make(map[string]bool, len(c.LLM.Providers))
+	providerTypes := make(map[string]string, len(c.LLM.Providers))
 	for i, p := range c.LLM.Providers {
 		if p.Name == "" {
 			return fmt.Errorf("config: llm.providers[%d].name must not be empty", i)
@@ -447,13 +541,17 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: llm.providers[%d].name %q is a duplicate", i, p.Name)
 		}
 		providerNames[p.Name] = true
+		providerTypes[p.Name] = p.Type
 		switch p.Type {
-		case "gemini", "anthropic", "openai_compat":
+		case "gemini", "anthropic", "openai_compat", "claude_code":
 		default:
-			return fmt.Errorf("config: llm.providers[%d] (%s): type must be \"gemini\", \"anthropic\", or \"openai_compat\", got %q", i, p.Name, p.Type)
+			return fmt.Errorf("config: llm.providers[%d] (%s): type must be \"gemini\", \"anthropic\", \"openai_compat\", or \"claude_code\", got %q", i, p.Name, p.Type)
 		}
 		if p.Model == "" {
 			return fmt.Errorf("config: llm.providers[%d] (%s): model must not be empty", i, p.Name)
+		}
+		if p.Type == "claude_code" {
+			continue // authenticates with the CLI's own login, no api_key_envs
 		}
 		if len(p.APIKeyEnvs) == 0 {
 			return fmt.Errorf("config: llm.providers[%d] (%s): api_key_envs must not be empty", i, p.Name)
@@ -469,6 +567,14 @@ func (c Config) validate() error {
 		if !providerNames[p.Escalation.TargetProvider] {
 			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.target_provider %q references an unknown provider", i, p.Name, p.Escalation.TargetProvider)
 		}
+		// Tool-based escalation (tool_name set) hands an open agent-loop
+		// conversation, tools and all, to the target inside router.Router —
+		// a claude_code provider can't call tools and isn't in that router,
+		// so the first escalation would fail the whole medical.ask call.
+		// Content-based escalation (no tool_name) to claude_code is fine.
+		if p.Escalation.ToolName != "" && providerTypes[p.Escalation.TargetProvider] == "claude_code" {
+			return fmt.Errorf("config: llm.providers[%d] (%s): escalation.tool_name is set but target_provider %q is a claude_code provider, which can't take over a tool-calling conversation", i, p.Name, p.Escalation.TargetProvider)
+		}
 	}
 	if c.LLM.OCRProvider == "" || c.LLM.ExtractionProvider == "" || c.LLM.AgentProvider == "" {
 		return fmt.Errorf("config: llm.ocr_provider, extraction_provider, and agent_provider must all be set")
@@ -481,6 +587,25 @@ func (c Config) validate() error {
 	}
 	if !providerNames[c.LLM.AgentProvider] {
 		return fmt.Errorf("config: llm.agent_provider %q references an unknown provider", c.LLM.AgentProvider)
+	}
+	// The miranda engine's loop needs tool calling, which a one-shot
+	// claude_code process can't provide (miranda-llm/claudecode's
+	// ErrToolsUnsupported) — refused even when agent.engine is claude_code,
+	// so switching the engine back can never start a broken agent loop.
+	if providerTypes[c.LLM.AgentProvider] == "claude_code" {
+		return fmt.Errorf("config: llm.agent_provider %q is a claude_code provider, which can't call tools — set agent.engine: claude_code instead and point agent_provider at a gemini/anthropic/openai_compat provider", c.LLM.AgentProvider)
+	}
+	switch c.Agent.Engine {
+	case AgentEngineMiranda:
+	case AgentEngineClaudeCode:
+		if c.Agent.ClaudeCode.Binary == "" {
+			return fmt.Errorf("config: agent.claude_code.binary must be set when agent.engine is claude_code")
+		}
+		if c.Agent.ClaudeCode.MaxTurns < 1 {
+			return fmt.Errorf("config: agent.claude_code.max_turns must be at least 1")
+		}
+	default:
+		return fmt.Errorf("config: agent.engine must be %q or %q, got %q", AgentEngineMiranda, AgentEngineClaudeCode, c.Agent.Engine)
 	}
 	if c.Embedding.APIKeyEnv == "" {
 		return fmt.Errorf("config: embedding.api_key_env must not be empty")

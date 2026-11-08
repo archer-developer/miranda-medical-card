@@ -364,7 +364,7 @@ Medical Service не должен реализовывать собственн�
 
 | Требование | Пакет / тип |
 |---|---|
-| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider` — каждый реализует общий интерфейс `llm.Provider`; сконфигурированы через `internal/config.ProviderConfig` (см. ниже) |
+| Несколько провайдеров | `gemini.Provider`, `anthropic.Provider`, `openaicompat.Provider`, `claudecode.Provider` — каждый реализует общий интерфейс `llm.Provider`; сконфигурированы через `internal/config.ProviderConfig` (см. ниже). `claudecode.Provider` (`type: claude_code`) — headless Claude Code CLI под подпиской, свежий процесс на каждый вызов, без тулов — только для этапов Document Pipeline, см. "Claude Code" ниже |
 | Маршрутизация моделей | `internal/config.LLMConfig` — `ocr_provider` (Stage 1) и `extraction_provider` (Stage 2a/2b и всё Structured-подобное в Document Pipeline) конфигурируются по имени независимо друг от друга и от `agent_provider` (agent loop, см. `03-knowledge-providers.md`) — могут называть один и тот же провайдер или разные |
 | Автоматическая эскалация | Два независимых механизма — см. "Tool-based эскалация" и "Конфигурация провайдеров" ниже: `router.Router` (reliability fallback + tool-based эскалация) для `agent_provider`, caller-side проверка качества результата только для OCR/Structured Extraction (`ocr_provider`/`extraction_provider`) |
 | Ротация API-ключей | `keyrotation` (внутри `gemini.Provider`) |
@@ -390,6 +390,23 @@ Planner как отдельный `Structured`-вызов упразднён (с
 2. **Tool-based эскалация** — провайдеру предъявляется инструмент вида `escalate_to_claude`, который модель может вызвать сама, если решит, что вопрос ей не по силам. Раньше это не имело смысла для Medical Service (не было открытого многоходового диалога) — теперь имеет: Agent Loop — это ровно такой диалог.
 
 Medical Service использует `router.Router` для `agent_provider` (и любого другого сконфигурированного провайдера — `cmd/miranda-medical-card/main.go`'s `buildAskRouter` строит один `router.Router` над **всеми** провайдерами из `llm.providers`, чтобы `escalation.target_provider` любого из них резолвился независимо от того, для какой роли он номинально сконфигурирован). `ocr_provider` и `extraction_provider` продолжают резолвиться каждый в ровно один провайдер вне `router.Router`-цепочки для своего этапа Document Pipeline — их собственная эскалация (см. ниже) устроена иначе и настраивается для каждого из двух этапов независимо.
+
+## Claude Code: провайдер конвейера и движок Agent Loop
+
+`docs/adr/010-claude-code-engine.md`. Обе подсистемы можно перевести на headless Claude Code CLI
+(`claude -p`, логин claude.ai — тратится окно подписки, а не API-токены), независимо друг от
+друга:
+
+- **Document Pipeline** — провайдер `type: claude_code` (`miranda-llm/claudecode.Provider`) в
+  `ocr_provider`/`extraction_provider` (или как `escalation.target_provider`). Каждый
+  `Chat`/`Structured` запускает свежий процесс, который умирает сразу после ответа; PDF и
+  изображения передаются content-блоками, `Structured` — через `--json-schema`. Тулов нет,
+  `Temperature` игнорируется, поэтому такой провайдер не может быть `agent_provider`.
+- **Agent Loop** — `agent.engine: claude_code` (`internal/ask/claude_code_engine.go`) заменяет
+  весь цикл `router.Router` на свежий процесс Claude Code на каждый вопрос, который вызывает
+  Knowledge Providers по loopback MCP (bearer-токен на вызов, привязан к субъекту) и умирает
+  после ответа. Общая часть `Ask` (история сессии, `sources`, аномалии) не меняется
+  (`internal/ask/engine.go`).
 
 ## Конфигурация провайдеров и два независимых механизма эскалации
 

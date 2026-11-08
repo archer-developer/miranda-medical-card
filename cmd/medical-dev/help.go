@@ -66,9 +66,10 @@ var commandCatalog = []commandHelp{
 	{
 		Name:    "ask",
 		Summary: "Run the medical.ask agent loop against a question; prints Question/Answer/Sources, traces to logs/llm.log when logging.level: debug",
-		Usage:   `ask --user <id> "question"`,
+		Usage:   `ask --user <id> [--engine miranda|claude_code] "question"`,
 		Examples: []string{
 			`ask --user alex "Какие лекарства я сейчас принимаю?"`,
+			`ask --user alex --engine claude_code "Какой был последний ALT?"`,
 			`ask --user alex "Дай рекомендации по питанию на основании анализов"`,
 		},
 	},
@@ -79,6 +80,7 @@ var commandCatalog = []commandHelp{
 		Examples: []string{
 			`pipeline doc_01J8EXAMPLE --user alex`,
 			`pipeline doc_01J8EXAMPLE --user alex --stage extraction --provider gemini-agent`,
+			`pipeline doc_01J8EXAMPLE --user alex --provider claude-code`,
 			`pipeline --all --user alex --stage normalization`,
 		},
 	},

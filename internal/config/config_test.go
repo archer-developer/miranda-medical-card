@@ -346,3 +346,115 @@ llm:
 	require.Equal(t, 90, r.OverloadTimeoutSeconds)
 	require.Equal(t, 90, r.MaxCallSeconds)
 }
+
+func TestLoad_ClaudeCodeProviderNeedsNoAPIKeys(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-agent
+      type: gemini
+      model: gemini-3.6-flash
+      api_key_envs: [GEMINI_API_KEY_1]
+    - name: claude-code
+      type: claude_code
+      model: sonnet
+      claude_code:
+        binary: /home/x/.local/bin/claude
+        timeout_seconds: 600
+  ocr_provider: claude-code
+  extraction_provider: claude-code
+  agent_provider: gemini-agent
+agent:
+  engine: claude_code
+  claude_code:
+    binary: /home/x/.local/bin/claude
+    model: opus
+`)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Equal(t, "/home/x/.local/bin/claude", cfg.LLM.Providers[1].ClaudeCode.Binary)
+	require.Equal(t, 600, cfg.LLM.Providers[1].ClaudeCode.TimeoutSeconds)
+	require.Equal(t, config.AgentEngineClaudeCode, cfg.Agent.Engine)
+	require.Equal(t, "opus", cfg.Agent.ClaudeCode.Model)
+	require.Equal(t, "/home/x/.local/bin/claude", cfg.Agent.ClaudeCode.Binary, "inline process fields decode at agent.claude_code's top level")
+	require.Equal(t, 16, cfg.Agent.ClaudeCode.MaxTurns, "unset fields keep Default()'s value")
+}
+
+func TestLoad_AgentEngineDefaultsToMiranda(t *testing.T) {
+	cfg, err := config.Load(writeYAML(t, "users:\n  - id: alex\n"))
+	require.NoError(t, err)
+	require.Equal(t, config.AgentEngineMiranda, cfg.Agent.Engine)
+}
+
+func TestLoad_UnknownAgentEngineRejected(t *testing.T) {
+	_, err := config.Load(writeYAML(t, "users:\n  - id: alex\nagent:\n  engine: gpt\n"))
+	require.ErrorContains(t, err, "agent.engine")
+}
+
+func TestLoad_ClaudeCodeProviderCannotBeAgentProvider(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: claude-code
+      type: claude_code
+      model: sonnet
+  ocr_provider: claude-code
+  extraction_provider: claude-code
+  agent_provider: claude-code
+`)
+	_, err := config.Load(path)
+	require.ErrorContains(t, err, "can't call tools")
+}
+
+func TestLoad_ToolEscalationToClaudeCodeRejected(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-agent
+      type: gemini
+      model: gemini-3.6-flash
+      api_key_envs: [GEMINI_API_KEY_1]
+      escalation:
+        enabled: true
+        tool_name: escalate_to_claude
+        target_provider: claude-code
+    - name: claude-code
+      type: claude_code
+      model: sonnet
+  ocr_provider: gemini-agent
+  extraction_provider: gemini-agent
+  agent_provider: gemini-agent
+`)
+	_, err := config.Load(path)
+	require.ErrorContains(t, err, "can't take over a tool-calling conversation")
+}
+
+func TestLoad_ContentEscalationToClaudeCodeAccepted(t *testing.T) {
+	path := writeYAML(t, `
+users:
+  - id: alex
+llm:
+  providers:
+    - name: gemini-agent
+      type: gemini
+      model: gemini-3.6-flash
+      api_key_envs: [GEMINI_API_KEY_1]
+      escalation:
+        enabled: true
+        target_provider: claude-code
+    - name: claude-code
+      type: claude_code
+      model: sonnet
+  ocr_provider: gemini-agent
+  extraction_provider: gemini-agent
+  agent_provider: gemini-agent
+`)
+	_, err := config.Load(path)
+	require.NoError(t, err)
+}
