@@ -518,3 +518,24 @@ func TestServer_SharedWithGrantsSubjectIDReadAccess(t *testing.T) {
 	require.True(t, denied.IsError)
 	require.Contains(t, denied.Content[0].(*mcp.TextContent).Text, "USER_NOT_FOUND")
 }
+
+// TestServer_AskMarksSessionIDAsInjected guards the x-injected declaration
+// Miranda relies on to hide sessionId from its model and fill it in itself
+// (miranda/docs/adr/medical-card-session-injection.md §6) — without it the
+// model sees a required argument it can't know and refuses to call the tool.
+func TestServer_AskMarksSessionIDAsInjected(t *testing.T) {
+	session := newTestSession(t, llmtest.New("fake"), []config.UserConfig{{ID: "alex"}})
+	tools, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	for _, tool := range tools.Tools {
+		if tool.Name != "medical.ask" {
+			continue
+		}
+		schema := tool.InputSchema.(map[string]any)
+		prop := schema["properties"].(map[string]any)["sessionId"].(map[string]any)
+		require.Equal(t, "conversation_id", prop["x-injected"])
+		require.Contains(t, schema["required"], "sessionId", "still required on the wire — the backend, not the model, supplies it")
+		return
+	}
+	t.Fatal("medical.ask not listed")
+}

@@ -2,9 +2,11 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/archer-developer/miranda-medical-card/internal/ask"
@@ -12,7 +14,8 @@ import (
 
 func registerAskTool(server *mcp.Server, asker *ask.Asker, gate *userGate, logger *slog.Logger) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "medical.ask",
+		Name:        "medical.ask",
+		InputSchema: askInputSchema(),
 		Description: "Answers the user's medical question in natural language, using the full available medical history: " +
 			"Timeline, medications, diagnoses, lab results, documents. The service's main tool for questions that require analysis, " +
 			"root-cause search, or cross-referencing data from multiple sources. Use it whenever answering needs medical judgment — " +
@@ -20,6 +23,31 @@ func registerAskTool(server *mcp.Server, asker *ask.Asker, gate *userGate, logge
 			"verbatim: the caller must not interpret medical data itself. Merely showing, listing or counting records, or finding the " +
 			"latest one, needs no judgment — medical.timeline/medical.profile return that data directly.",
 	}, askHandler(asker, gate, logger))
+}
+
+// injectedKeyword marks a tool argument the calling system's backend fills in
+// itself, not the model — Miranda hides such an argument from its model's
+// view of the schema and injects the value (miranda's mcp.InjectedKeyword;
+// miranda/docs/adr/medical-card-session-injection.md §6). Declared here, by
+// the server that owns the argument, instead of in Miranda's per-server
+// config.
+const injectedKeyword = "x-injected"
+
+// askInputSchema is AskInput's inferred schema with sessionId marked
+// `x-injected: conversation_id`. Without the mark the calling model sees a
+// required sessionId it can't know: Claude (Miranda's claude_code
+// orchestrator) refused to call medical.ask at all over it (2026-11-08).
+func askInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[AskInput](nil)
+	if err != nil {
+		panic(fmt.Sprintf("mcpserver: infer medical.ask input schema: %v", err)) // static type: can only fail at development time
+	}
+	prop := schema.Properties["sessionId"]
+	if prop.Extra == nil {
+		prop.Extra = map[string]any{}
+	}
+	prop.Extra[injectedKeyword] = "conversation_id"
+	return schema
 }
 
 type AskInput struct {
@@ -46,7 +74,7 @@ type AskInput struct {
 	// which calls ask.Asker.Ask directly in Go, bypassing this MCP schema
 	// entirely — see that Asker.Ask's own doc comment for why an empty
 	// sessionID is still a valid *Go-level* argument.
-	SessionID string `json:"sessionId" jsonschema:"Session/conversation id: the calling system's own already-resolved conversation identifier, supplied by that system's backend integration — never invented or guessed by the model itself. Required."`
+	SessionID string `json:"sessionId" jsonschema:"Session/conversation id: the calling system's own already-resolved conversation identifier, filled in by that system's backend (marked x-injected) — never by the model."`
 }
 
 type AskSourceOutput struct {
